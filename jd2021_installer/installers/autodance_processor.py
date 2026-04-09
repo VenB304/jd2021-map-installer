@@ -83,12 +83,30 @@ def process_autodance_directory(source_dir: Path, target_dir: Path, codename: st
 
     for ad_dir in ad_dirs:
         for item in ad_dir.iterdir():
-            if item.suffix.lower() == ".ckd":
+            if item.is_file():
+                if item.suffix.lower() == ".ckd":
+                    continue
+                dst = out_dir / item.name
+                if not dst.exists():
+                    shutil.copy2(item, dst)
+                    converted += 1
                 continue
-            dst = out_dir / item.name
-            if not dst.exists():
-                shutil.copy2(item, dst)
-                converted += 1
+
+            if item.is_dir():
+                for nested in item.rglob("*"):
+                    if not nested.is_file():
+                        continue
+                    if nested.suffix.lower() == ".ckd":
+                        continue
+
+                    rel = nested.relative_to(item)
+                    dst = out_dir / item.name / rel
+                    if dst.exists():
+                        continue
+
+                    dst.parent.mkdir(parents=True, exist_ok=True)
+                    shutil.copy2(nested, dst)
+                    converted += 1
 
     return converted
 

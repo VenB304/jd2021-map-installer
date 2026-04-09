@@ -179,7 +179,10 @@ def convert_tape_file(ckd_path: Path, output_path: Path) -> bool:
             parsed = parse_binary_ckd(ckd_path.read_bytes(), ckd_path.name)
             if hasattr(parsed, "as_ubiart_dict"):
                 data = parsed.as_ubiart_dict()
-            elif isinstance(parsed, dict) and "clips" in parsed: # For legacy dicts if any
+            elif isinstance(parsed, dict):
+                # Some non-tape assets (for example autodance templates) parse to
+                # lightweight dictionaries without clip arrays. They are still
+                # representable in Lua and should not be treated as hard errors.
                 data = parsed
             else:
                 logger.error("Binary parse of %s returned non-convertible result", ckd_path.name)

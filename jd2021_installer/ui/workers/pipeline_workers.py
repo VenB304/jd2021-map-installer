@@ -143,6 +143,85 @@ def _pick_ipk_video(search_dirs: list[Path], codename: Optional[str]) -> Optiona
     return candidates[0]
 
 
+def _guess_variant_base_codename(codename: Optional[str]) -> Optional[str]:
+    """Best-effort base map codename inference for variant map names."""
+    if not codename:
+        return None
+
+    name = codename.strip().lower()
+    if not name:
+        return None
+
+    patterns = (
+        r"^(?P<base>.+?)(?:_)?kids(?:\d+)?$",
+        r"^(?P<base>.+?)(?:_)?kid(?:\d+)?$",
+        r"^(?P<base>.+?)(?:_)?alt(?:\d+)?$",
+        r"^(?P<base>.+?)(?:_)?alternate(?:\d+)?$",
+    )
+
+    for pattern in patterns:
+        match = re.match(pattern, name)
+        if not match:
+            continue
+        base = (match.group("base") or "").strip("_-")
+        if base and base != name and len(base) >= 3:
+            return base
+
+    return None
+
+
+def _has_autodance_audio_only_hint(search_dirs: list[Path], codename: Optional[str]) -> bool:
+    """Detect if codename-scoped audio exists only under autodance paths."""
+    if not codename:
+        return False
+
+    codename_low = codename.lower()
+    patterns = ("*.ogg", "*.wav", "*.wav.ckd")
+
+    for root in search_dirs:
+        if not root or not root.is_dir():
+            continue
+        for pattern in patterns:
+            for p in root.rglob(pattern):
+                low_path = str(p).lower().replace("\\", "/")
+                low_name = p.name.lower()
+                if "/autodance/" not in low_path:
+                    continue
+                if low_name.startswith("amb_") or "audiopreview" in low_name:
+                    continue
+                if p.stem.lower() == codename_low or low_name.startswith(f"{codename_low}."):
+                    return True
+
+    return False
+
+
+def _resolve_variant_dependency_audio(maps_root: Path, codename: Optional[str]) -> Optional[Path]:
+    """Resolve installed base-map audio for a variant codename.
+
+    Returns an existing audio path from the inferred base map directory when
+    available; otherwise returns None.
+    """
+    base_codename = _guess_variant_base_codename(codename)
+    if not base_codename:
+        return None
+
+    base_map_dir = maps_root / base_codename
+    if not base_map_dir.is_dir():
+        return None
+
+    candidate_dirs = [base_map_dir / "audio", base_map_dir / "Audio"]
+    for audio_dir in candidate_dirs:
+        if not audio_dir.is_dir():
+            continue
+
+        for suffix in (".wav", ".ogg", ".wav.ckd"):
+            candidate = audio_dir / f"{base_codename}{suffix}"
+            if candidate.exists():
+                return candidate
+
+    return None
+
+
 def _collect_menuart_texture_sources(source_dir: Path, codename: str) -> list[Path]:
     """Collect candidate MenuArt texture directories for decode fallback.
 
@@ -420,10 +499,23 @@ def _validate_ipk_media_presence(
 
     audio = _pick_ipk_audio(search_dirs, codename)
     if not audio:
-        warnings.append(
-            "No audio file found after IPK extraction. "
-            "Ensure the IPK contains .ogg, .wav, or .wav.ckd audio."
-        )
+        base_codename = _guess_variant_base_codename(codename)
+        if base_codename:
+            hint = ""
+            if _has_autodance_audio_only_hint(search_dirs, codename):
+                hint = " Detected only autodance-scoped audio in this variant package."
+
+            logger.warning(
+                "No standalone audio in IPK for variant map '%s'. Deferring to install-time dependency lookup on base map '%s'.%s",
+                codename,
+                base_codename,
+                hint,
+            )
+        else:
+            warnings.append(
+                "No audio file found after IPK extraction. "
+                "Ensure the IPK contains .ogg, .wav, or .wav.ckd audio."
+            )
 
     video = _pick_ipk_video(search_dirs, codename)
     if not video:
@@ -639,11 +731,28 @@ def reprocess_audio(
         if fallback_audio and fallback_audio.exists():
             media.audio_path = fallback_audio
             logger.info("Recovered missing audio source from extraction tree: %s", fallback_audio)
+
+    if not media.audio_path or not media.audio_path.exists():
+        dependency_audio = _resolve_variant_dependency_audio(target_dir.parent, codename)
+        if dependency_audio and dependency_audio.exists():
+            media.audio_path = dependency_audio
+            logger.info(
+                "Using installed base-map audio dependency for variant '%s': %s",
+                codename,
+                dependency_audio,
+            )
     
     if not media.audio_path or not media.audio_path.exists():
+        dependency_base = _guess_variant_base_codename(codename)
+        dependency_hint = ""
+        if dependency_base:
+            dependency_hint = (
+                f" Detected variant map dependency. Install base map '{dependency_base}' first, then retry '{codename}'."
+            )
         raise RuntimeError(
             f"Audio source missing for '{codename}'. "
             "Bundle/IPK map cannot be finalized without decoded audio."
+            f"{dependency_hint}"
         )
 
     # Generates audio/<codename>.wav and .ogg
@@ -759,6 +868,16 @@ def reprocess_audio_readjust(
             media.audio_path = fallback_audio
             logger.info("Recovered missing audio source from extraction tree: %s", fallback_audio)
 
+    if not media.audio_path or not media.audio_path.exists():
+        dependency_audio = _resolve_variant_dependency_audio(target_dir.parent, codename)
+        if dependency_audio and dependency_audio.exists():
+            media.audio_path = dependency_audio
+            logger.info(
+                "Using installed base-map audio dependency for variant '%s' (readjust): %s",
+                codename,
+                dependency_audio,
+            )
+
     if update_video:
         trk_path = target_dir / "Audio" / f"{codename}.trk"
         _update_trk_video_start_time(trk_path, v_override)
@@ -767,8 +886,14 @@ def reprocess_audio_readjust(
         return
 
     if not media.audio_path or not media.audio_path.exists():
+        dependency_base = _guess_variant_base_codename(codename)
+        dependency_hint = ""
+        if dependency_base:
+            dependency_hint = (
+                f" Detected variant map dependency. Install base map '{dependency_base}' first, then retry '{codename}'."
+            )
         raise RuntimeError(
-            f"Audio source missing for '{codename}'. Cannot apply readjust audio offset."
+            f"Audio source missing for '{codename}'. Cannot apply readjust audio offset.{dependency_hint}"
         )
 
     convert_audio(media.audio_path, codename, target_dir, a_offset, config)

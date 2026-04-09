@@ -1,8 +1,9 @@
 import struct
 from pathlib import Path
+from unittest.mock import patch
 
 from jd2021_installer.core.models import BeatsTape
-from jd2021_installer.installers.tape_converter import auto_convert_tapes
+from jd2021_installer.installers.tape_converter import auto_convert_tapes, convert_tape_file
 from jd2021_installer.parsers.binary_ckd import parse_binary_ckd
 
 
@@ -105,3 +106,21 @@ def test_auto_convert_tapes_converts_btape(tmp_path: Path):
     text = output.read_text(encoding="utf-8")
     assert 'NAME = "BeatClip"' in text
     assert "MapName = \"Koi\"" in text
+
+
+def test_convert_tape_file_accepts_dict_parse_results(tmp_path: Path):
+    source = tmp_path / "legacy_autodance.tpl.ckd"
+    source.write_bytes(b"\x00\x01\x02")
+    output = tmp_path / "legacy_autodance.tpl"
+
+    with patch(
+        "jd2021_installer.installers.tape_converter.parse_binary_ckd",
+        return_value={"type": "autodance", "map_name": "legacy_autodance"},
+    ):
+        ok = convert_tape_file(source, output)
+
+    assert ok is True
+    assert output.exists()
+    text = output.read_text(encoding="utf-8")
+    assert "KEY = \"type\"" in text
+    assert "VAL = \"autodance\"" in text

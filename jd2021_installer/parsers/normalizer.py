@@ -12,6 +12,7 @@ import json
 import logging
 import os
 import re
+import wave
 from pathlib import Path
 from typing import Dict, List, Optional
 
@@ -258,11 +259,41 @@ def _extract_music_track(
     """Find and parse a musictrack CKD → MusicTrackStructure."""
     ckd_paths = _find_ckd_files(directory, "*musictrack*.tpl.ckd", codename)
     if not ckd_paths:
+        # Some legacy console maps (including certain Kids variants) store the
+        # beat structure in an audio sequence template rather than musictrack.
+        sequence_candidates = _find_ckd_files(directory, "*sequence*.tpl.ckd", codename)
+        if sequence_candidates:
+            sequence_candidates.sort(
+                key=lambda p: (
+                    0 if "audio" in Path(p).parts else 1,
+                    len(Path(p).parts),
+                    p.lower(),
+                )
+            )
+            ckd_paths = sequence_candidates
+
+    if not ckd_paths:
         # V1 Parity: In Readjust mode, we might not have the original CKD, 
         # but we can still work with the .trk in normalization.
         return None
 
-    data = load_ckd(ckd_paths[0])
+    data = None
+    last_exc: Optional[Exception] = None
+    for candidate in ckd_paths:
+        try:
+            data = load_ckd(candidate)
+            break
+        except Exception as exc:  # pragma: no cover - defensive against malformed legacy CKDs
+            last_exc = exc
+            logger.debug("Skipping unreadable musictrack candidate '%s': %s", candidate, exc)
+
+    if data is None:
+        if last_exc is not None:
+            logger.debug(
+                "All musictrack candidates failed to parse for '%s'; will use downstream fallback.",
+                codename or "unknown",
+            )
+        return None
 
     if isinstance(data, MusicTrackStructure):
         res = data
@@ -315,6 +346,93 @@ def _extract_music_track(
             logger.debug("Synthesized video_start_time from markers: %.3f s", vst)
             res.video_start_time = vst
     return res
+
+
+def _read_audio_duration_ms(audio_path: Optional[Path]) -> Optional[float]:
+    """Best-effort duration read for decoded WAV files in milliseconds."""
+    if audio_path is None or not audio_path.exists():
+        return None
+
+    if audio_path.suffix.lower() != ".wav":
+        return None
+
+    try:
+        with wave.open(str(audio_path), "rb") as wav_file:
+            sample_rate = wav_file.getframerate()
+            frame_count = wav_file.getnframes()
+    except (wave.Error, OSError):
+        return None
+
+    if sample_rate <= 0:
+        return None
+
+    return (frame_count / float(sample_rate)) * 1000.0
+
+
+def _estimate_total_beats_from_tapes(
+    dance_tape: Optional[DanceTape],
+    karaoke_tape: Optional[KaraokeTape],
+) -> Optional[int]:
+    """Estimate beat count from legacy tape timing units.
+
+    Legacy timeline clip timings are commonly stored in 1/24-beat units.
+    """
+    max_end_units = 0
+
+    if dance_tape:
+        for clip in dance_tape.clips:
+            max_end_units = max(max_end_units, int(clip.start_time) + int(clip.duration))
+
+    if karaoke_tape:
+        for clip in karaoke_tape.clips:
+            max_end_units = max(max_end_units, int(clip.start_time) + int(clip.duration))
+
+    if max_end_units <= 0:
+        return None
+
+    # Most parsed tapes use 24 timeline units per beat.
+    estimated = int(round(max_end_units / 24.0))
+    if estimated <= 0:
+        estimated = int(max_end_units)
+
+    return max(estimated, 1)
+
+
+def _synthesize_musictrack_from_tapes(
+    codename: str,
+    media: MapMedia,
+    dance_tape: Optional[DanceTape],
+    karaoke_tape: Optional[KaraokeTape],
+) -> Optional[MusicTrackStructure]:
+    """Create a fallback MusicTrack for legacy maps missing musictrack CKD."""
+    total_beats = _estimate_total_beats_from_tapes(dance_tape, karaoke_tape)
+    if not total_beats:
+        return None
+
+    beat_ms = 500.0
+    duration_ms = _read_audio_duration_ms(media.audio_path)
+    if duration_ms and duration_ms > 0:
+        beat_ms = duration_ms / float(total_beats)
+        # Keep generated marker spacing in a plausible musical range.
+        beat_ms = max(220.0, min(1500.0, beat_ms))
+
+    marker_count = total_beats + 1
+    markers = [int(round(i * beat_ms * 48.0)) for i in range(marker_count)]
+
+    logger.warning(
+        "Synthesizing fallback MusicTrack for '%s' from tape timing: beats=%d, beat_ms=%.3f, markers=%d",
+        codename,
+        total_beats,
+        beat_ms,
+        len(markers),
+    )
+
+    return MusicTrackStructure(
+        markers=markers,
+        start_beat=0,
+        end_beat=total_beats,
+        video_start_time=0.0,
+    )
 
 
 def _find_source_trk_path(source_dir: Path, codename: str) -> Optional[Path]:
@@ -1545,6 +1663,14 @@ def normalize(
     # Determine default sync values like V1
     # Ported from V1 map_installer.py Step 06
     is_html_source = any(source_dir.glob("*.html")) or any(source_dir.glob("**/assets.html"))
+
+    if music_track is None:
+        music_track = _synthesize_musictrack_from_tapes(
+            effective_codename,
+            media,
+            dance_tape,
+            karaoke_tape,
+        )
 
     source_trk_path = _find_source_trk_path(source_dir, effective_codename)
     _merge_preview_fields_from_trk(music_track, source_trk_path)

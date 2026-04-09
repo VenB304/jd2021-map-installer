@@ -116,6 +116,27 @@ def test_ipk_media_validation_requires_audio(tmp_path: Path) -> None:
     assert any("No audio file found after IPK extraction" in w for w in warnings)
 
 
+def test_ipk_media_validation_adds_dependency_hint_for_kids_variant(tmp_path: Path) -> None:
+    extract_root = tmp_path / "extracted"
+    (extract_root / "world" / "maps" / "wakawakakids" / "autodance").mkdir(parents=True)
+    (extract_root / "world" / "maps" / "wakawakakids" / "autodance" / "wakawakakids.ogg").write_bytes(b"ogg")
+    (extract_root / "wakawakakids_HIGH.webm").write_bytes(b"webm")
+
+    warnings = _validate_ipk_media_presence(extract_root, "wakawakakids", None)
+
+    assert not any("No audio file found after IPK extraction" in w for w in warnings)
+
+
+def test_ipk_media_validation_adds_dependency_hint_for_alt_variant(tmp_path: Path) -> None:
+    extract_root = tmp_path / "extracted"
+    extract_root.mkdir(parents=True)
+    (extract_root / "wakawakaalt_LOW.webm").write_bytes(b"webm")
+
+    warnings = _validate_ipk_media_presence(extract_root, "wakawakaalt", None)
+
+    assert not any("No audio file found after IPK extraction" in w for w in warnings)
+
+
 def test_ipk_media_validation_requires_video(tmp_path: Path) -> None:
     extract_root = tmp_path / "extracted"
     extract_root.mkdir(parents=True)
@@ -150,6 +171,19 @@ def test_pick_ipk_audio_prefers_codename_wav_ckd_for_x360_tree(tmp_path: Path) -
     picked = _pick_ipk_audio([source_root], "MapA")
 
     assert picked == wav_ckd
+
+
+def test_pick_ipk_audio_does_not_use_autodance_when_main_audio_missing(tmp_path: Path) -> None:
+    source_root = tmp_path / "temp_extraction"
+    autodance_dir = source_root / "world" / "maps" / "wakawakakids" / "autodance"
+    autodance_dir.mkdir(parents=True, exist_ok=True)
+
+    autodance_audio = autodance_dir / "wakawakakids.ogg"
+    autodance_audio.write_bytes(b"ogg")
+
+    picked = _pick_ipk_audio([source_root], "wakawakakids")
+
+    assert picked is None
 
 
 def test_archive_worker_uses_extraction_root_for_normalize_search_root(
@@ -249,6 +283,66 @@ def test_reprocess_audio_recovers_missing_ipk_audio_from_source_tree(
     assert map_data.media.audio_path == recovered_audio
     assert called["audio"] == recovered_audio
     assert not called_intro, "Intro generation should be skipped for IPK to preserve native AMB intro assets"
+
+
+def test_reprocess_audio_uses_installed_base_audio_for_variant(
+    tmp_path: Path,
+    sample_normalized_data,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    map_data = sample_normalized_data
+    map_data.codename = "wakawakaalt"
+    map_data.source_dir = tmp_path / "temp_extraction"
+    map_data.source_dir.mkdir(parents=True, exist_ok=True)
+    map_data.media.audio_path = None
+
+    base_audio = tmp_path / "maps" / "wakawaka" / "audio" / "wakawaka.wav"
+    base_audio.parent.mkdir(parents=True, exist_ok=True)
+    base_audio.write_bytes(b"base")
+
+    called: dict[str, Path] = {}
+
+    monkeypatch.setattr(
+        "jd2021_installer.ui.workers.pipeline_workers.write_game_files",
+        lambda *_args, **_kwargs: None,
+    )
+    monkeypatch.setattr(
+        "jd2021_installer.installers.media_processor.convert_audio",
+        lambda audio_path, *_args, **_kwargs: called.setdefault("audio", Path(audio_path)),
+    )
+    monkeypatch.setattr(
+        "jd2021_installer.installers.media_processor.generate_intro_amb",
+        lambda *_args, **_kwargs: None,
+    )
+    monkeypatch.setattr(
+        "jd2021_installer.installers.media_processor.extract_amb_clips",
+        lambda *_args, **_kwargs: 0,
+    )
+
+    reprocess_audio(map_data, tmp_path / "maps" / "wakawakaalt", a_offset=0.0, config=None)
+
+    assert map_data.media.audio_path == base_audio
+    assert called["audio"] == base_audio
+
+
+def test_reprocess_audio_variant_without_base_audio_raises_dependency_hint(
+    tmp_path: Path,
+    sample_normalized_data,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    map_data = sample_normalized_data
+    map_data.codename = "wakawakaalt"
+    map_data.source_dir = tmp_path / "temp_extraction"
+    map_data.source_dir.mkdir(parents=True, exist_ok=True)
+    map_data.media.audio_path = None
+
+    monkeypatch.setattr(
+        "jd2021_installer.ui.workers.pipeline_workers.write_game_files",
+        lambda *_args, **_kwargs: None,
+    )
+
+    with pytest.raises(RuntimeError, match=r"Install base map 'wakawaka' first"):
+        reprocess_audio(map_data, tmp_path / "maps" / "wakawakaalt", a_offset=0.0, config=None)
 
 
 def test_reprocess_audio_jdnext_generates_intro_when_audio_present(

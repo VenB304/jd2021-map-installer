@@ -8,8 +8,9 @@ HTML-downloaded directory or an extracted IPK archive.
 from __future__ import annotations
 
 from pathlib import Path
+import wave
 
-from jd2021_installer.core.models import NormalizedMapData
+from jd2021_installer.core.models import DanceTape, MapMedia, MotionClip, NormalizedMapData, SongDescription
 from jd2021_installer.parsers.normalizer import _discover_media, load_ckd, normalize
 
 
@@ -85,6 +86,70 @@ class TestNormalizerEdgeCases:
         with pytest.raises(NormalizationError, match="musictrack"):
             normalize(tmp_path)
 
+    def test_synthesizes_musictrack_from_tapes_when_ckd_missing(self, tmp_path: Path, monkeypatch) -> None:
+        """Legacy maps without parseable musictrack CKD should still normalize using tape timing."""
+        codename = "LegacyKids"
+        audio_path = tmp_path / f"{codename}.wav"
+
+        with wave.open(str(audio_path), "wb") as wav_file:
+            wav_file.setnchannels(1)
+            wav_file.setsampwidth(2)
+            wav_file.setframerate(48000)
+            # 10 seconds of silence
+            wav_file.writeframes(b"\x00\x00" * (48000 * 10))
+
+        dance_tape = DanceTape(
+            clips=[
+                MotionClip(
+                    id=1,
+                    track_id=1,
+                    is_active=1,
+                    start_time=24,
+                    duration=240,
+                    classifier_path="world/maps/legacykids/timeline/moves/legacy.gesture",
+                    gold_move=0,
+                    coach_id=0,
+                    move_type=0,
+                )
+            ],
+            map_name=codename,
+        )
+
+        monkeypatch.setattr(
+            "jd2021_installer.parsers.normalizer._extract_music_track",
+            lambda *_args, **_kwargs: None,
+        )
+        monkeypatch.setattr(
+            "jd2021_installer.parsers.normalizer._extract_song_desc",
+            lambda *_args, **_kwargs: SongDescription(
+                map_name=codename,
+                title="Legacy Kids",
+                artist="Test Artist",
+            ),
+        )
+        monkeypatch.setattr(
+            "jd2021_installer.parsers.normalizer._extract_dance_tape",
+            lambda *_args, **_kwargs: dance_tape,
+        )
+        monkeypatch.setattr(
+            "jd2021_installer.parsers.normalizer._extract_karaoke_tape",
+            lambda *_args, **_kwargs: None,
+        )
+        monkeypatch.setattr(
+            "jd2021_installer.parsers.normalizer._extract_cinematic_tape",
+            lambda *_args, **_kwargs: None,
+        )
+        monkeypatch.setattr(
+            "jd2021_installer.parsers.normalizer._discover_media",
+            lambda *_args, **_kwargs: MapMedia(audio_path=audio_path),
+        )
+
+        result = normalize(tmp_path, codename=codename)
+
+        assert result.music_track is not None
+        assert len(result.music_track.markers) >= 2
+        assert result.music_track.end_beat > 0
+
     def test_audio_discovery_uses_search_root_for_ipk_sidecar(self, tmp_path: Path) -> None:
         """V1 parity: audio beside the IPK source folder must be discoverable."""
         extracted_dir = tmp_path / "temp_extraction"
@@ -115,6 +180,16 @@ class TestNormalizerEdgeCases:
         media = _discover_media(str(tmp_path), codename="sweetbutpsycho")
 
         assert media.audio_path == ckd_audio
+
+    def test_audio_discovery_does_not_use_autodance_audio(self, tmp_path: Path) -> None:
+        """Autodance audio should not be treated as primary map audio."""
+        ad_audio = tmp_path / "world" / "maps" / "wakawakakids" / "autodance" / "wakawakakids.ogg"
+        ad_audio.parent.mkdir(parents=True, exist_ok=True)
+        ad_audio.write_bytes(b"ogg")
+
+        media = _discover_media(str(tmp_path), codename="wakawakakids")
+
+        assert media.audio_path is None
 
     def test_autodance_stub_files_do_not_enable_autodance(self, tmp_path: Path) -> None:
         import json
