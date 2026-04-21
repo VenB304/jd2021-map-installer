@@ -55,6 +55,7 @@ PRESERVE_PATHS: set[str] = {
     ".browser-profile",
     ".git",
     ".venv",
+    "tools",          # portable git, python, AssetStudio, vgmstream — never wipe
     "__pycache__",
     ".pytest_cache",
     ".cursor",
@@ -148,6 +149,65 @@ class Updater:
     def is_git_repo(self) -> bool:
         """Return True if the project root contains a ``.git`` directory."""
         return (self.project_root / ".git").is_dir()
+
+    def detect_user_paths_inside_root(self) -> list[Path]:
+        """Return any user-configured paths that live *inside* the project root.
+
+        Reads ``installer_settings.json`` using the stdlib only (no package
+        imports) and resolves every string value that looks like an absolute
+        path.  Any that are children of ``self.project_root`` are returned so
+        callers can either warn the user or auto-preserve them during an update.
+
+        Returns an empty list when the settings file cannot be read or contains
+        no insider paths.
+        """
+        settings_file = self.project_root / "installer_settings.json"
+        if not settings_file.exists():
+            return []
+
+        try:
+            raw: dict = json.loads(settings_file.read_text(encoding="utf-8"))
+        except Exception as exc:
+            logger.debug("detect_user_paths_inside_root: could not parse settings: %s", exc)
+            return []
+
+        # Fields in AppConfig that carry filesystem paths.
+        PATH_KEYS = {
+            "game_directory",
+            "download_root",
+            "cache_directory",
+            "temp_directory",
+            "third_party_tools_root",
+            "browser_profile_dir",
+            "assetstudio_cli_path",
+            "vgmstream_path",
+        }
+
+        found: list[Path] = []
+        root_resolved = self.project_root.resolve()
+
+        for key, value in raw.items():
+            if key not in PATH_KEYS:
+                continue
+            if not value or not isinstance(value, str):
+                continue
+            try:
+                candidate = Path(value).expanduser()
+                # Relative paths are resolved against the project root.
+                if not candidate.is_absolute():
+                    candidate = (self.project_root / candidate).resolve()
+                else:
+                    candidate = candidate.resolve()
+
+                # Is it inside the project root?
+                candidate.relative_to(root_resolved)  # raises ValueError if not
+                found.append(candidate)
+            except ValueError:
+                pass  # not inside project root — safe to ignore
+            except Exception as exc:
+                logger.debug("detect_user_paths_inside_root: skipping %r: %s", value, exc)
+
+        return found
 
     def _run_git(self, *args: str) -> Optional[str]:
         """Run a git command and return stdout, or None on failure."""
@@ -290,7 +350,20 @@ class Updater:
         )
 
     def _count_commits_behind(self, local_sha: str, remote_sha: str) -> int:
-        """Use the compare API to determine how many commits behind we are."""
+        """Use the compare API to determine how many commits behind we are.
+
+        Returns -1 if the comparison cannot be made (unknown SHAs, network
+        error, or the GitHub compare endpoint returns an error).
+        """
+        # Guard: never call the API with placeholder / empty values.
+        if not local_sha or local_sha == "unknown" or not remote_sha:
+            logger.debug(
+                "_count_commits_behind: skipping API call — invalid SHAs "
+                "(local=%r, remote=%r)",
+                local_sha,
+                remote_sha,
+            )
+            return -1
         try:
             data = self._api_get(
                 f"compare/{quote(local_sha, safe='')}...{quote(remote_sha, safe='')}"
@@ -436,7 +509,28 @@ class Updater:
                 )
 
             source_root = extracted_dirs[0]
-            self._merge_zip_contents(source_root)
+
+            # Dynamically expand the preserve set with any user-configured
+            # paths (e.g. game_directory) that happen to live inside the
+            # project root.  We only need the top-level directory name
+            # because _merge_zip_contents matches against the first component.
+            extra_preserve: set[str] = set()
+            root_resolved = self.project_root.resolve()
+            for insider in self.detect_user_paths_inside_root():
+                try:
+                    rel = insider.relative_to(root_resolved)
+                    top = rel.parts[0].lower()
+                    if top:
+                        extra_preserve.add(top)
+                        logger.info(
+                            "Zip update: auto-preserving user path '%s' (top-level: '%s')",
+                            insider,
+                            top,
+                        )
+                except Exception:
+                    pass
+
+            self._merge_zip_contents(source_root, extra_preserve=extra_preserve)
 
         except Exception as exc:
             return UpdateResult(
@@ -472,28 +566,85 @@ class Updater:
             new_commit=new_commit,
         )
 
-    def _merge_zip_contents(self, source_root: Path) -> None:
-        """Replace project files with extracted zip contents, preserving user data."""
+    def _merge_zip_contents(
+        self,
+        source_root: Path,
+        *,
+        extra_preserve: set[str] | None = None,
+    ) -> None:
+        """Replace project files with extracted zip contents, preserving user data.
+
+        Parameters
+        ----------
+        source_root:
+            The extracted archive directory whose contents replace the project.
+        extra_preserve:
+            Additional lowercase top-level names to protect on top of the
+            static ``PRESERVE_PATHS`` set.  Used to shield user-configured
+            directories (e.g. a game install inside the project root) that
+            were discovered at runtime from ``installer_settings.json``.
+
+        Uses an atomic move-then-restore strategy:
+
+        1. Move all non-preserved items out of the project root into a
+           temporary backup directory.
+        2. Copy new files from the extracted archive into the project root.
+        3. If step 2 raises, restore from the backup so the install is never
+           left in a half-applied state.
+        4. On success, discard the backup.
+        """
         preserve_lower = {p.lower() for p in PRESERVE_PATHS}
+        if extra_preserve:
+            preserve_lower |= {p.lower() for p in extra_preserve}
 
-        # Phase 1: Remove old files that are NOT in the preserve list
-        for child in list(self.project_root.iterdir()):
-            if child.name.lower() in preserve_lower:
-                continue
-            if child.is_dir():
-                shutil.rmtree(child, ignore_errors=True)
-            else:
+        backup_dir = Path(tempfile.mkdtemp(prefix="jd2021_update_backup_"))
+        # Tracks (project_root child path, backup copy path) for rollback.
+        backed_up: list[tuple[Path, Path]] = []
+
+        try:
+            # --- Phase 1: Move old items to backup --------------------------
+            for child in list(self.project_root.iterdir()):
+                if child.name.lower() in preserve_lower:
+                    continue
+                backup_dest = backup_dir / child.name
                 try:
-                    child.unlink()
-                except OSError:
-                    pass
+                    shutil.move(str(child), str(backup_dest))
+                    backed_up.append((child, backup_dest))
+                except OSError as exc:
+                    # Non-fatal: log and continue — the copy phase will
+                    # overwrite the file anyway.
+                    logger.warning("Could not move %s to backup: %s", child, exc)
 
-        # Phase 2: Copy new files from the extracted archive
-        for child in source_root.iterdir():
-            if child.name.lower() in preserve_lower:
-                continue
-            dest = self.project_root / child.name
-            if child.is_dir():
-                shutil.copytree(child, dest, dirs_exist_ok=True)
-            else:
-                shutil.copy2(child, dest)
+            # --- Phase 2: Copy new files from archive -----------------------
+            for child in source_root.iterdir():
+                if child.name.lower() in preserve_lower:
+                    continue
+                dest = self.project_root / child.name
+                if child.is_dir():
+                    shutil.copytree(child, dest, dirs_exist_ok=True)
+                else:
+                    shutil.copy2(child, dest)
+
+        except Exception:
+            # Rollback: restore every item that was successfully moved out.
+            logger.warning(
+                "Zip merge failed — rolling back %d item(s) to previous state",
+                len(backed_up),
+            )
+            for original_path, backup_path in backed_up:
+                try:
+                    if backup_path.is_dir():
+                        if original_path.exists():
+                            shutil.rmtree(original_path, ignore_errors=True)
+                        shutil.copytree(backup_path, original_path)
+                    else:
+                        shutil.copy2(backup_path, original_path)
+                except Exception as restore_exc:
+                    logger.error(
+                        "Rollback failed for %s: %s", original_path, restore_exc
+                    )
+            raise
+
+        finally:
+            # Always discard the backup directory whether we succeeded or rolled back.
+            shutil.rmtree(backup_dir, ignore_errors=True)

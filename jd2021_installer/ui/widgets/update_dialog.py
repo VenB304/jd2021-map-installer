@@ -66,6 +66,7 @@ class UpdateResultDialog(QDialog):
         self._updater = updater
         self._update_thread: Optional[QThread] = None
         self._update_worker: Optional[_UpdateWorker] = None
+        self._insider_paths: list = []  # populated by _build_update_available_view
 
         self.setWindowTitle("Update Check")
         self.setMinimumWidth(440)
@@ -131,11 +132,19 @@ class UpdateResultDialog(QDialog):
         icon_label.setStyleSheet("font-size: 15px; font-weight: bold;")
         layout.addWidget(icon_label)
 
-        behind_text = (
-            f"{r.commits_behind} commit{'s' if r.commits_behind != 1 else ''} behind"
-            if r.commits_behind > 0
-            else "behind remote"
-        )
+        # Describe how far behind we are, or clearly explain why we can't tell.
+        local_is_unknown = r.local_commit in ("", "unknown")
+        if local_is_unknown:
+            behind_text = "No local baseline — cannot count commits"
+        elif r.commits_behind > 0:
+            behind_text = (
+                f"{r.commits_behind} commit{'s' if r.commits_behind != 1 else ''} behind"
+            )
+        elif r.commits_behind == -1:
+            behind_text = "Behind remote (commit count unavailable)"
+        else:
+            behind_text = "behind remote"
+
         info = QLabel(
             f"Branch: {r.branch}\n"
             f"Current: {r.local_commit}\n"
@@ -143,6 +152,16 @@ class UpdateResultDialog(QDialog):
             f"Status: {behind_text}"
         )
         layout.addWidget(info)
+
+        if local_is_unknown:
+            note = QLabel(
+                "⚠️  No local commit SHA is recorded in updater_state.json.\n"
+                "An update is assumed because the baseline is unknown.\n"
+                "If this is a fresh zip install, updating is recommended."
+            )
+            note.setWordWrap(True)
+            note.setStyleSheet("color: #c8922a; font-size: 11px;")
+            layout.addWidget(note)
 
         if r.remote_commit_message:
             msg_label = QLabel(f"Latest commit:\n\"{r.remote_commit_message}\"")
@@ -154,6 +173,35 @@ class UpdateResultDialog(QDialog):
         method_label = QLabel(f"Update method: {method}")
         method_label.setStyleSheet("color: #888; font-size: 11px;")
         layout.addWidget(method_label)
+
+        # --- Insider-path warning (zip-mode only) ----------------------------
+        # Detect user-configured paths that live inside the project root.
+        # These would be swept by a naive zip update.  We auto-preserve them,
+        # but we must still warn the user clearly so they aren't surprised.
+        self._insider_paths: list = []
+        if not r.is_git_repo:
+            try:
+                self._insider_paths = self._updater.detect_user_paths_inside_root()
+            except Exception:
+                pass  # fail silently — warning is best-effort
+
+        if self._insider_paths:
+            insider_names = "\n".join(f"  • {p}" for p in self._insider_paths)
+            risk_label = QLabel(
+                "🚨  WARNING — Paths inside the installer folder\n\n"
+                "The following user-configured locations are inside the installer\n"
+                "directory and would normally be deleted by a zip update:\n\n"
+                f"{insider_names}\n\n"
+                "The updater will auto-preserve these paths this time, but\n"
+                "it is strongly recommended to move your game installation\n"
+                "outside the installer folder to avoid future accidents."
+            )
+            risk_label.setWordWrap(True)
+            risk_label.setStyleSheet(
+                "color: #cc2222; font-size: 11px; font-weight: bold;"
+                "border: 1px solid #cc2222; padding: 8px; border-radius: 4px;"
+            )
+            layout.addWidget(risk_label)
 
         layout.addStretch()
 
@@ -185,6 +233,28 @@ class UpdateResultDialog(QDialog):
         """Start the update process in a background thread."""
         if self._update_thread is not None and self._update_thread.isRunning():
             return
+
+        # If user-configured paths live inside the installer root, require an
+        # explicit second confirmation before proceeding with the update.
+        insider_paths = getattr(self, "_insider_paths", [])
+        if insider_paths:
+            path_list = "\n".join(f"  • {p}" for p in insider_paths)
+            reply = QMessageBox.warning(
+                self,
+                "Confirm Update With Insider Paths",
+                "⚠️  Your settings point to paths inside the installer folder:\n\n"
+                f"{path_list}\n\n"
+                "The updater will preserve these paths automatically.\n"
+                "However, any sub-paths NOT listed in your settings will NOT\n"
+                "be protected.\n\n"
+                "It is strongly recommended to move your game installation\n"
+                "outside the installer folder.\n\n"
+                "Proceed with the update anyway?",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                QMessageBox.StandardButton.No,
+            )
+            if reply != QMessageBox.StandardButton.Yes:
+                return
 
         progress = QProgressDialog("Downloading update...", "", 0, 0, self)
         progress.setWindowTitle("Updating")
