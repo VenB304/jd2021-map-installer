@@ -97,21 +97,38 @@ _GATE_RNG_SEED = 42
 # Phase 1: JDNext AST Decompiler
 # ---------------------------------------------------------------------------
 
+# JDNext opcode zone structure (decoded from MakeItJingle Rosetta Stone):
+#   opcode[0] = total float count
+#   opcode[1] = num_sections (each = one temporal keyframe of the gesture)
+#   opcode[2..29] = body part descriptor table (28 fixed values)
+#   Then section descriptors: pairs of (constraint_count, timing_count)
+#     - First 4 sections: 88 constraints + 7 timing = 95 floats each
+#     - Remaining sections: 112 constraints + 31 timing = 143 floats each
+#   Then state flags and tail
+
+_JDNEXT_HEADER_SIZE = 30  # Fixed header (opcode[0..29])
+_JDNEXT_SECTION_A_XY = 88
+_JDNEXT_SECTION_A_TM = 7
+_JDNEXT_SECTION_B_XY = 112
+_JDNEXT_SECTION_B_TM = 31
+_JDNEXT_NUM_TYPE_A = 4  # First 4 sections are type A
+
+
 def _decompile_jdnext(gesture_path: Path) -> tuple[list[float], list[float]]:
     """Read a JDNext Camera .gesture file (raw Float64 array) and return
     the extracted tracking data as ``(xy_constraints, timing_values)``.
 
     The JDNext format is a headerless sequential array of float64 doubles.
-    Index 0 is the declared sequence length.  The early indices contain
-    integer-valued opcodes; the tail contains fractional tracking data.
-    We partition the two zones by detecting the first sustained run of
-    fractional (non-integer) values, then classify the constraint zone:
+    The opcode zone encodes section structure:
 
-    - **X/Y constraints** (``-1.0 <= v <= 1.0``): planar body-position
-      bounding values suitable for injection into Durango edge thresholds.
-    - **Timing values** (``v > 1.0``): gate duration / weight parameters
-      that control when each gesture phase is evaluated.  Used to
-      calibrate the template's parameters block.
+    - ``opcode[0]``: total float count
+    - ``opcode[1]``: number of temporal sections (keyframes)
+    - ``opcode[2..29]``: body part descriptor table
+    - Section descriptors define constraint/timing counts per section
+
+    The constraint zone contains per-section data in temporal order.
+    We extract all X/Y constraints and timing values, preserving the
+    original temporal ordering from the section layout.
 
     Returns:
         A tuple of ``(xy_constraints, timing_values)``.
@@ -181,43 +198,71 @@ def _inject_timing_into_params(
     template_data: bytearray,
     edge_start: int,
     timing_values: list[float],
+    xy_constraints: list[float],
     endian: str,
 ) -> None:
-    """Scale the 13-float parameters block using JDNext timing statistics.
+    """Scale and inject the 13-float parameters block.
 
     The parameters block sits immediately before the edge table in both
-    X360 and Durango formats (52 bytes = 13 × float32).  Params[0] and
-    Params[11] appear to be tempo/duration-related calibration constants.
-    We scale them proportionally to the JDNext gesture's timing
-    characteristics to approximate move-specific calibration.
-    """
-    if len(timing_values) < _TIMING_MIN_SAMPLES:
-        logger.debug(
-            "Too few timing values (%d < %d) — skipping parameter injection",
-            len(timing_values), _TIMING_MIN_SAMPLES,
-        )
-        return
+    X360 and Durango formats (52 bytes = 13 × float32).
 
+    Injection strategy (from MakeItJingle Rosetta Stone analysis):
+      - P0, P11, P12: Tempo/duration/complexity — scaled from timing
+      - P3-P10: Training statistics — injected from JDNext constraint
+        mean/std to encode the expected body position range
+      - P1, P2: System constants — left untouched
+    """
     params_start = edge_start - _DURANGO_PARAMS_SIZE
     if params_start < 0:
         logger.warning("Parameters block would overlap header — skipping")
         return
 
-    timing_median = statistics.median(timing_values)
-    duration_scale = timing_median / _TIMING_BASELINE
-    duration_scale = max(_TIMING_SCALE_MIN, min(duration_scale, _TIMING_SCALE_MAX))
+    # --- Tempo scaling (P0, P11, P12) ---
+    if len(timing_values) >= _TIMING_MIN_SAMPLES:
+        timing_median = statistics.median(timing_values)
+        duration_scale = timing_median / _TIMING_BASELINE
+        duration_scale = max(_TIMING_SCALE_MIN, min(duration_scale, _TIMING_SCALE_MAX))
 
-    # Param indices to scale (tempo/duration-related)
-    TEMPO_PARAM_INDICES = (0, 11)
+        for pidx in (0, 11, 12):
+            poff = params_start + pidx * 4
+            orig_val = struct.unpack_from(f"{endian}f", template_data, poff)[0]
+            scaled_val = orig_val * duration_scale
+            struct.pack_into(f"{endian}f", template_data, poff, scaled_val)
+            logger.debug(
+                "Timing injection param[%d]: %.1f → %.1f (scale=%.3f)",
+                pidx, orig_val, scaled_val, duration_scale,
+            )
 
-    for pidx in TEMPO_PARAM_INDICES:
-        poff = params_start + pidx * 4
-        orig_val = struct.unpack_from(f"{endian}f", template_data, poff)[0]
-        scaled_val = orig_val * duration_scale
-        struct.pack_into(f"{endian}f", template_data, poff, scaled_val)
+    # --- Statistical injection (P3-P10) ---
+    # Real Kinect gestures store mean/std of body positions in these
+    # params. Inject from JDNext constraint data for song-specificity.
+    if xy_constraints and len(xy_constraints) >= 20:
+        scaled = [v * _JDNEXT_TO_DURANGO_SCALE for v in xy_constraints]
+        mean_val = statistics.mean(scaled)
+        std_val = statistics.stdev(scaled) if len(scaled) > 1 else 0.3
+
+        # P3-P10 pattern from real files: alternating positive/negative
+        # values representing different axes/body parts.
+        # P3,P4,P5,P6 tend to be positive (0.15-0.55)
+        # P7,P8,P9 tend to be negative (-0.34 to -0.89)
+        # P10 is small positive (0.04-0.06)
+        stat_values = [
+            abs(mean_val) + std_val * 0.3,     # P3
+            abs(mean_val) + std_val * 0.8,     # P4
+            abs(mean_val) + std_val * 0.5,     # P5
+            std_val * 0.1,                     # P6
+            -(abs(mean_val) + std_val * 0.9),  # P7
+            -(abs(mean_val) + std_val * 0.3),  # P8
+            -(abs(mean_val) + std_val * 0.6),  # P9
+            std_val * 0.08,                    # P10
+        ]
+        for j, pidx in enumerate(range(3, 11)):
+            poff = params_start + pidx * 4
+            struct.pack_into(f"{endian}f", template_data, poff, stat_values[j])
+
         logger.debug(
-            "Timing injection param[%d]: %.1f → %.1f (scale=%.3f)",
-            pidx, orig_val, scaled_val, duration_scale,
+            "Statistical injection P3-P10: mean=%.3f std=%.3f",
+            mean_val, std_val,
         )
 
 
@@ -263,11 +308,11 @@ def _load_and_hybridize(
         fmt_name, num_edges, edge_start,
     )
 
-    # Phase 2: Inject timing data into the parameters block
-    if timing_values:
-        _inject_timing_into_params(
-            template_data, edge_start, timing_values, endian,
-        )
+    # Phase 2: Inject timing + statistics into the parameters block
+    _inject_timing_into_params(
+        template_data, edge_start, timing_values or [],
+        xy_constraints, endian,
+    )
 
     # If no constraints or auto-perfect mode, leave edges untouched
     if not xy_constraints:
