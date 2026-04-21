@@ -2166,9 +2166,10 @@ def install_map_to_game(
                     status_callback(f"Compiling {len(gesture_sources)} hybrid gesture(s)...")
                 from jd2021_installer.installers.gesture_compiler import compile_hybrid_gesture
                 compiled = 0
+                strictness = getattr(cfg, "gesture_scoring_strictness", 0.7)
                 for gsrc in gesture_sources:
                     out_path = pc_moves_out / gsrc.name
-                    if compile_hybrid_gesture(gsrc, template_path, out_path):
+                    if compile_hybrid_gesture(gsrc, template_path, out_path, strictness=strictness):
                         compiled += 1
                 logger.info(
                     "Gesture compiler: %d/%d hybrid gestures compiled for '%s'",

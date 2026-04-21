@@ -46,6 +46,10 @@ class AppConfig(BaseModel):
     style_debug_mode: bool = False
     window_size_overlay_timeout_ms: int = 1100
     convert_jdnext_gestures: bool = True
+    # Scoring strictness for hybrid gestures: 0.0 = auto-perfect (effectively
+    # discorope passthrough), 1.0 = strict real scoring from JDNext data.
+    # Values in between blend proportionally.
+    gesture_scoring_strictness: float = Field(default=0.7, ge=0.0, le=1.0)
 
     # Download settings
     download_timeout_s: int = 600
