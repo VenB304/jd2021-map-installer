@@ -567,8 +567,8 @@ def compile_gesture_from_scratch(
             num_sections, len(xy_constraints),
         )
 
-        # Phase 3: Build parameters from JDNext data
-        params = _build_params_from_jdnext(xy_constraints, timing_values)
+        # Phase 3: Build parameters from JDNext section data
+        params = _build_params_from_jdnext(xy_constraints, num_sections)
 
         # Phase 4: Build edge table with JDNext constraint injection
         edges = _build_edge_table(
@@ -619,20 +619,27 @@ def _count_jdnext_sections(gesture_path: Path) -> int:
 
 def _build_params_from_jdnext(
     xy_constraints: list[float],
-    timing_values: list[float],
+    num_sections: int,
 ) -> list[float]:
     """Build the 13-float parameters block from JDNext data.
 
-    P0, P11, P12:  Tempo/duration/complexity from timing values.
+    P0, P11, P12:  Tempo/duration/complexity derived from Section A/B descriptors.
     P1:            System constant (0.049).
     P2:            Reserved (0.0).
     P3-P10:        Statistical body position encoding from constraints.
     """
-    # Compute timing-derived values
-    if len(timing_values) >= _TIMING_MIN_SAMPLES:
-        timing_median = statistics.median(timing_values)
-    else:
-        timing_median = _TIMING_BASELINE
+    # Map JDNext "Section A/B" timing descriptors (7/31 counts) 
+    # to the actual duration/weight parameters.
+    type_a_count = min(4, num_sections)
+    type_b_count = max(0, num_sections - 4)
+    
+    # 7 timing counts for intro poses, 31 for full body poses
+    total_timing_weight = (type_a_count * 7) + (type_b_count * 31)
+
+    # Convert to Durango scaling ratios (based on Durango baseline regression)
+    p0_tempo = total_timing_weight * 0.42
+    p11_complexity = total_timing_weight * 0.065
+    p12_duration = total_timing_weight * 0.038
 
     # Compute constraint statistics
     scaled = [v * _JDNEXT_TO_DURANGO_SCALE for v in xy_constraints]
@@ -640,7 +647,7 @@ def _build_params_from_jdnext(
     std_val = statistics.stdev(scaled) if len(scaled) > 1 else 0.3
 
     return [
-        timing_median * 32.0,                    # P0: tempo
+        p0_tempo,                                # P0: tempo
         0.049,                                   # P1: system constant
         0.0,                                     # P2: reserved
         abs(mean_val) + std_val * 0.3,           # P3: +
@@ -651,8 +658,8 @@ def _build_params_from_jdnext(
         -(abs(mean_val) + std_val * 0.3),        # P8: -
         -(abs(mean_val) + std_val * 0.6),        # P9: -
         std_val * 0.08,                          # P10: +
-        timing_median * 7.8,                     # P11: complexity
-        timing_median * 3.2,                     # P12: duration
+        p11_complexity,                          # P11: complexity
+        p12_duration,                            # P12: duration
     ]
 
 
