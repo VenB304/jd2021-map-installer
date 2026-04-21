@@ -31,8 +31,6 @@ Edge Field Semantics (from reverse-engineering 894 real Kinect files):
 from __future__ import annotations
 
 import logging
-import math
-import random
 import shutil
 import statistics
 import struct
@@ -74,19 +72,10 @@ _X360_ENDIAN = ">"
 
 _JDNEXT_TO_DURANGO_SCALE = 3.0  # Scale JDNext [-1,+1] to Durango [-3,+3]
 
-# Gate value distribution for threshold_a (empirically derived from real files).
-# Values are (weight_value, probability) tuples.
-_GATE_SMALL = [0.0, 0.1, -0.1, 0.2, -0.2, 0.4, -0.4, 0.5, -0.5,
-               0.8, -0.8, 1.0, -1.0, 1.03, -1.03]
-_GATE_LARGE = [30, 48, 50, 56, 68, 74, 86, 88, 96, 120, 124, 142, 156,
-               -20, -30, -50, -60, -90, -110, -120, -180, -230, -250, -270]
-_GATE_MEDIUM = [2.0, -2.0, 3.0, -3.0, 4.0, -4.0, 4.5, -4.5, 5.0, -5.0,
-                6.0, -6.0, 8.0, -8.0, 10.0, -10.0]
-
-# Probability distribution: 72% small, 8% medium, 20% large gating
-_GATE_SMALL_PCT = 0.72
-_GATE_MEDIUM_PCT = 0.08
-# _GATE_LARGE_PCT = 0.20   (remainder)
+# Gating threshold: edges with |threshold_a| above this value in the
+# template are treated as HMM structural gates and preserved as-is.
+# Edges below this threshold are scoring edges and get JDNext data.
+_GATING_THRESHOLD = 10.0
 
 # Center-exclusion dead zone: controls which constraints are used.
 # JDNext data contains many near-zero constraints (often padding/null).
@@ -232,57 +221,6 @@ def _inject_timing_into_params(
         )
 
 
-def _generate_gate_values(num_edges: int, seed: int = _GATE_RNG_SEED) -> list[float]:
-    """Generate threshold_a (gate/weight) values matching the real Durango
-    distribution observed in 894 Kinect gesture files.
-
-    Distribution:
-        ~72% small: {0.0, ±0.1, ±0.2, ±0.5, ±1.0, ...}
-        ~8%  medium: {±2.0, ±4.0, ±5.0, ±10.0, ...}
-        ~20% large gating: {50, 74, 120, -180, ...}
-    """
-    rng = random.Random(seed)
-    gates = []
-    for _ in range(num_edges):
-        r = rng.random()
-        if r < _GATE_SMALL_PCT:
-            gates.append(rng.choice(_GATE_SMALL))
-        elif r < _GATE_SMALL_PCT + _GATE_MEDIUM_PCT:
-            gates.append(rng.choice(_GATE_MEDIUM))
-        else:
-            gates.append(rng.choice(_GATE_LARGE))
-    return gates
-
-
-def _map_constraints_to_thresholds(
-    xy_constraints: list[float],
-    num_edges: int,
-) -> list[float]:
-    """Map JDNext X/Y constraints to threshold_b values for edge injection.
-
-    Samples ``num_edges`` values from the constraint list, scaled by the
-    JDNext→Durango factor (0.63×) to match the real P5-P95 range of
-    [-0.42, +0.45].
-
-    The constraints are distributed evenly across the edge table to
-    provide broad positional coverage.
-    """
-    if not xy_constraints:
-        return [0.0] * num_edges
-
-    n = len(xy_constraints)
-    thresholds = []
-
-    for edge_idx in range(num_edges):
-        # Map edge index proportionally into the constraints list
-        ci = int(edge_idx * n / num_edges) % n
-        raw_value = xy_constraints[ci]
-        # Scale to match real Durango threshold_b range
-        thresholds.append(raw_value * _JDNEXT_TO_DURANGO_SCALE)
-
-    return thresholds
-
-
 def _load_and_hybridize(
     template_data: bytearray,
     xy_constraints: list[float],
@@ -364,26 +302,62 @@ def _load_and_hybridize(
         len(filtered) / max(len(xy_constraints), 1) * 100,
     )
 
-    # Phase 3: Generate edge values matching real Durango distribution
-    gate_values = _generate_gate_values(num_edges)
-    position_thresholds = _map_constraints_to_thresholds(filtered, num_edges)
+    # Phase 3: Inject JDNext constraints into edge thresholds.
+    #
+    # Strategy based on Rosetta Stone analysis of real Kinect files:
+    #   - ~75% of edges have BOTH threshold_a and threshold_b as body
+    #     position values (|a| <= ~1, |b| <= ~1 in normalized space).
+    #   - ~19% of edges have threshold_a as a joint/feature index (|a| > 10),
+    #     with threshold_b as the expected position for that joint.
+    #   - ~6% boundary (1 < |a| <= 10).
+    #
+    # We PRESERVE the template's gating edges (|a| > 10) since they define
+    # valid HMM structure (which transitions are possible). For all other
+    # edges, we inject JDNext constraints into BOTH fields — this forces
+    # the engine to match two body positions simultaneously per edge,
+    # making random movement nearly impossible to trigger a match.
 
-    # Inject into every edge
+    # Sort constraints to pair nearby body positions (same choreographic pose)
+    sorted_constraints = sorted(filtered)
+    n = len(sorted_constraints)
+
+    # Count template gating edges to preserve
+    gating_count = 0
+    scoring_indices = []
     for edge_idx in range(num_edges):
         eoff = edge_start + edge_idx * _DURANGO_EDGE_SIZE
+        orig_a = struct.unpack_from(f"{endian}f", template_data, eoff)[0]
+        if abs(orig_a) > _GATING_THRESHOLD:
+            gating_count += 1
+        else:
+            scoring_indices.append(edge_idx)
 
-        threshold_a = gate_values[edge_idx]
-        threshold_b = position_thresholds[edge_idx]
+    num_scoring = len(scoring_indices)
 
-        # Write threshold_a and threshold_b, preserve state_id
-        struct.pack_into(f"{endian}f", template_data, eoff, threshold_a)
-        struct.pack_into(f"{endian}f", template_data, eoff + 4, threshold_b)
+    # Generate paired constraint values for scoring edges.
+    # Use adjacent pairs from sorted constraints: edge[i] gets
+    # (sorted[2i], sorted[2i+1]) so both values come from similar
+    # body position ranges. This matches real Kinect files where
+    # threshold_a and threshold_b are from the same pose (r=0.24).
+    for i, edge_idx in enumerate(scoring_indices):
+        eoff = edge_start + edge_idx * _DURANGO_EDGE_SIZE
+
+        # Index into constraints: use pairs for a and b
+        ci_a = (2 * i) % n
+        ci_b = (2 * i + 1) % n
+
+        val_a = sorted_constraints[ci_a] * _JDNEXT_TO_DURANGO_SCALE
+        val_b = sorted_constraints[ci_b] * _JDNEXT_TO_DURANGO_SCALE
+
+        struct.pack_into(f"{endian}f", template_data, eoff, val_a)
+        struct.pack_into(f"{endian}f", template_data, eoff + 4, val_b)
         # eoff + 8 (state_id) is LEFT UNTOUCHED — preserving HMM topology
 
     logger.debug(
-        "Injected %d edges (dead_zone=%.3f, strictness=%.2f, "
-        "scale=%.2f, format=%s)",
-        num_edges, dead_zone, strictness, _JDNEXT_TO_DURANGO_SCALE, fmt_name,
+        "Injected %d/%d scoring edges (preserved %d gating edges, "
+        "dead_zone=%.3f, strictness=%.2f, scale=%.2f, format=%s)",
+        num_scoring, num_edges, gating_count,
+        dead_zone, strictness, _JDNEXT_TO_DURANGO_SCALE, fmt_name,
     )
     return template_data
 
