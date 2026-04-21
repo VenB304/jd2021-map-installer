@@ -60,13 +60,12 @@ TYPES_16B = set(TYPE_SIZE_MAP.keys()) - TYPES_24B - TYPES_20B
 # Zone B type distribution ratios (averaged from 8 real files)
 # Maps type → approximate fraction of total Zone B records
 ZONE_B_TYPE_RATIOS = {
-    3: 0.17,   # ~17% — always the first type
-    4: 0.06, 5: 0.03, 6: 0.03, 7: 0.02, 8: 0.03,
-    9: 0.05, 10: 0.05,
-    12: 0.04, 13: 0.02, 14: 0.06, 15: 0.01, 16: 0.05, 17: 0.02,
-    18: 0.12, 19: 0.08, 20: 0.10,
-    21: 0.01, 22: 0.02, 23: 0.01, 24: 0.01, 25: 0.02,
-    26: 0.01, 27: 0.01,
+    3: 0.18,
+    4: 0.05, 5: 0.02, 6: 0.02, 7: 0.02, 8: 0.02,
+    9: 0.04, 10: 0.04,
+    12: 0.02, 13: 0.02, 14: 0.04, 16: 0.03, 17: 0.02,
+    18: 0.11, 19: 0.08, 20: 0.07,
+    22: 0.01, 25: 0.02,
     29: 0.03,  # Always the last type
 }
 
@@ -94,8 +93,7 @@ def _compute_state_counts(
         (zone_a_count, zone_b_count, num_states)
     """
     # Baseline: scale with constraint count, clamped to real range
-    # Real files: ~8-12 constraints per state
-    raw_total = max(500, min(700, num_jdnext_constraints // 8 + 350))
+    raw_total = max(500, min(680, num_jdnext_constraints // 8 + 350))
 
     zone_a_count = int(raw_total * ZONE_A_FRACTION)
     # Ensure zone_a is divisible to allow clean group distribution
@@ -349,7 +347,7 @@ def build_gesture_binary(
     header.extend(struct.pack('<i', 0))             # pad1
     header.extend(struct.pack('<i', 0))             # pad2
     header.extend(struct.pack('<i', 0))             # pad3
-    header.extend(struct.pack('<i', num_joints))    # num_joints
+    header.extend(struct.pack('<i', 9))             # num_joints
     header.extend(struct.pack('<i', 0))             # pad4
     header.extend(struct.pack('<i', 0))             # pad5
 

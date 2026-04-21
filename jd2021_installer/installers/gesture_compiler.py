@@ -31,6 +31,7 @@ Edge Field Semantics (from reverse-engineering 894 real Kinect files):
 from __future__ import annotations
 
 import logging
+import math
 import shutil
 import statistics
 import struct
@@ -551,6 +552,18 @@ def compile_gesture_from_scratch(
             logger.warning("JDNext gesture not found: %s", jdnext_src_path)
             return False
 
+        # Pre-flight check: Is this already a compiled binary gesture?
+        # If the map author already included valid Durango/X360 gestures,
+        # we must not parse them as float64 JDNext bytecode.
+        with open(jdnext_src_path, 'rb') as f:
+            magic_check = f.read(20)
+        
+        if magic_check.startswith(b"GestureDetector"):
+            logger.info("Source gesture '%s' is already compiled. Copying directly.", jdnext_src_path.name)
+            output_path.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(jdnext_src_path, output_path)
+            return True
+
         # Phase 1: Decompile JDNext AST
         xy_constraints, timing_values = _decompile_jdnext(jdnext_src_path)
         num_sections = _count_jdnext_sections(jdnext_src_path)
@@ -697,8 +710,8 @@ def _build_edge_table(
                      114, 120, 126, 132, 138, 144]
 
     for i in range(num_edges):
-        # State ID: distribute across all states (1..num_states-1)
-        state_id = (i % (num_states - 1)) + 1
+        # State ID: distribute across all states
+        state_id = i % num_states
 
         if i < target_gating:
             # Gating edge: joint index in threshold_a
