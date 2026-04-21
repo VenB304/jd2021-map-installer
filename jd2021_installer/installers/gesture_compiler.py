@@ -357,7 +357,7 @@ def _load_and_hybridize(
     #   - ~6% boundary (1 < |a| <= 10).
     #
     # We PRESERVE the template's gating edges (|a| > 10) since they define
-    # valid HMM structure (which transitions are possible). For all other
+     # valid HMM structure (which transitions are possible). For all other
     # edges, we inject JDNext constraints into BOTH fields — this forces
     # the engine to match two body positions simultaneously per edge,
     # making random movement nearly impossible to trigger a match.
@@ -366,30 +366,68 @@ def _load_and_hybridize(
     sorted_constraints = sorted(filtered)
     n = len(sorted_constraints)
 
-    # Count template gating edges to preserve
-    gating_count = 0
+    # Identify template gating vs scoring edges
+    gating_indices = []
     scoring_indices = []
     for edge_idx in range(num_edges):
         eoff = edge_start + edge_idx * _DURANGO_EDGE_SIZE
         orig_a = struct.unpack_from(f"{endian}f", template_data, eoff)[0]
         if abs(orig_a) > _GATING_THRESHOLD:
-            gating_count += 1
+            gating_indices.append(edge_idx)
         else:
             scoring_indices.append(edge_idx)
 
-    num_scoring = len(scoring_indices)
+    # --- Gating ratio matching ---
+    # Real Kinect gestures have ~20% gating edges (range 17-28%).
+    # Our template may have less. Promote scoring edges at the extreme
+    # ends of the constraint distribution to gating edges, using
+    # real Kinect joint indices (even-stepping values 12-148).
+    _TARGET_GATING_PCT = 0.20
+    _JOINT_INDICES = [12, 14, 16, 20, 22, 24, 26, 28, 30, 32, 34, 36,
+                      38, 40, 48, 56, 64, 72, 80, 90, 96, 102, 108,
+                      114, 120, 126, 132, 138, 144]
 
-    # Generate paired constraint values for scoring edges.
-    # Use adjacent pairs from sorted constraints: edge[i] gets
-    # (sorted[2i], sorted[2i+1]) so both values come from similar
-    # body position ranges. This matches real Kinect files where
-    # threshold_a and threshold_b are from the same pose (r=0.24).
+    target_gating = int(num_edges * _TARGET_GATING_PCT)
+    promote_count = max(0, target_gating - len(gating_indices))
+
+    if promote_count > 0 and len(scoring_indices) > promote_count:
+        # Promote scoring edges from the extreme ends
+        # (first and last in the sorted scoring list by edge index)
+        promoted = scoring_indices[:promote_count]
+        scoring_indices = scoring_indices[promote_count:]
+
+        for j, edge_idx in enumerate(promoted):
+            eoff = edge_start + edge_idx * _DURANGO_EDGE_SIZE
+            joint_idx = _JOINT_INDICES[j % len(_JOINT_INDICES)]
+            # threshold_a = joint index, threshold_b = extreme position
+            extreme_val = sorted_constraints[j % n] * _JDNEXT_TO_DURANGO_SCALE * 1.5
+            struct.pack_into(f"{endian}f", template_data, eoff, float(joint_idx))
+            struct.pack_into(f"{endian}f", template_data, eoff + 4, extreme_val)
+
+        gating_indices.extend(promoted)
+
+    # --- Song-specific gating threshold_b ---
+    # Update existing gating edges' threshold_b with extreme JDNext
+    # positions so even structural gates reflect the song's movement.
+    if n > 0:
+        for j, edge_idx in enumerate(gating_indices):
+            eoff = edge_start + edge_idx * _DURANGO_EDGE_SIZE
+            # Keep threshold_a (joint index) — only update threshold_b
+            extreme_idx = int(j * n / max(len(gating_indices), 1)) % n
+            extreme_val = sorted_constraints[extreme_idx] * _JDNEXT_TO_DURANGO_SCALE
+            struct.pack_into(f"{endian}f", template_data, eoff + 4, extreme_val)
+
+    # --- Scoring edge injection ---
+    num_scoring = len(scoring_indices)
+    stride_b = n // 3 if n > 3 else 1  # ~33% offset for decorrelation
+
     for i, edge_idx in enumerate(scoring_indices):
         eoff = edge_start + edge_idx * _DURANGO_EDGE_SIZE
 
-        # Index into constraints: use pairs for a and b
-        ci_a = (2 * i) % n
-        ci_b = (2 * i + 1) % n
+        # threshold_a: sequential walk through sorted constraints
+        ci_a = int(i * n / max(num_scoring, 1)) % n
+        # threshold_b: offset walk (decorrelated but full range)
+        ci_b = (ci_a + stride_b) % n
 
         val_a = sorted_constraints[ci_a] * _JDNEXT_TO_DURANGO_SCALE
         val_b = sorted_constraints[ci_b] * _JDNEXT_TO_DURANGO_SCALE
@@ -398,10 +436,13 @@ def _load_and_hybridize(
         struct.pack_into(f"{endian}f", template_data, eoff + 4, val_b)
         # eoff + 8 (state_id) is LEFT UNTOUCHED — preserving HMM topology
 
+    total_gating = len(gating_indices)
     logger.debug(
-        "Injected %d/%d scoring edges (preserved %d gating edges, "
-        "dead_zone=%.3f, strictness=%.2f, scale=%.2f, format=%s)",
-        num_scoring, num_edges, gating_count,
+        "Injected %d scoring + %d gating edges (%d promoted, "
+        "gating=%.0f%%, dead_zone=%.3f, strictness=%.2f, "
+        "scale=%.2f, format=%s)",
+        num_scoring, total_gating, promote_count,
+        total_gating / num_edges * 100,
         dead_zone, strictness, _JDNEXT_TO_DURANGO_SCALE, fmt_name,
     )
     return template_data
