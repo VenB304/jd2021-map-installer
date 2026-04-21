@@ -2147,6 +2147,46 @@ def install_map_to_game(
         from jd2021_installer.installers.media_processor import copy_moves
         copy_moves(media.moves_dir, map_target, skip_gestures=_is_jdnext_source_map())
 
+    # 5a. JDNext gesture compilation / surrogate fallback
+    #     copy_moves() above skips .gesture files for JDNext sources because
+    #     raw JDNext Float64 bytecode is incompatible with the X360 engine.
+    #     Here we either hybrid-compile them using real X/Y tracking data,
+    #     or duplicate the generic auto-perfect surrogate for each move.
+    if source_is_jdnext and media.moves_dir and media.moves_dir.exists():
+        gesture_sources = list(media.moves_dir.rglob("*.gesture"))
+        if gesture_sources:
+            pc_moves_out = map_target / "timeline" / "moves" / "pc"
+            pc_moves_out.mkdir(parents=True, exist_ok=True)
+
+            cfg = config or AppConfig()
+            template_path = Path(cfg.gesture_template_path)
+
+            if getattr(cfg, "convert_jdnext_gestures", True) and template_path.exists():
+                if status_callback:
+                    status_callback(f"Compiling {len(gesture_sources)} hybrid gesture(s)...")
+                from jd2021_installer.installers.gesture_compiler import compile_hybrid_gesture
+                compiled = 0
+                for gsrc in gesture_sources:
+                    out_path = pc_moves_out / gsrc.name
+                    if compile_hybrid_gesture(gsrc, template_path, out_path):
+                        compiled += 1
+                logger.info(
+                    "Gesture compiler: %d/%d hybrid gestures compiled for '%s'",
+                    compiled, len(gesture_sources), codename,
+                )
+            else:
+                # Fallback: copy the raw surrogate (auto-perfect, classic modding behavior)
+                if status_callback:
+                    status_callback(f"Copying {len(gesture_sources)} surrogate gesture(s)...")
+                from jd2021_installer.installers.gesture_compiler import copy_surrogate_as_fallback
+                for gsrc in gesture_sources:
+                    out_path = pc_moves_out / gsrc.name
+                    copy_surrogate_as_fallback(template_path, out_path)
+                logger.info(
+                    "Gesture fallback: %d surrogate gestures copied for '%s'",
+                    len(gesture_sources), codename,
+                )
+
     # 5b. Autodance + stape payloads (V1 step_11 parity)
     if map_data.has_autodance and map_data.source_dir and map_data.source_dir.exists():
         if status_callback: status_callback("Extracting moves and autodance...")

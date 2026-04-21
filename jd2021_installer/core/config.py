@@ -20,6 +20,7 @@ class AppConfig(BaseModel):
     cache_directory: Path = Path("./cache")
     temp_directory: Path = Path("./temp")
     app_icon_path: Path = Path("./assets/app_icon.jpg")
+    gesture_template_path: Path = Path("./assets/gesture_templates/discorope.gesture")
 
     # Video quality preference (descending fallback)
     video_quality: str = Field(
@@ -44,6 +45,7 @@ class AppConfig(BaseModel):
     show_window_size_overlay: bool = False
     style_debug_mode: bool = False
     window_size_overlay_timeout_ms: int = 1100
+    convert_jdnext_gestures: bool = True
 
     # Download settings
     download_timeout_s: int = 600
