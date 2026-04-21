@@ -372,6 +372,15 @@ class SettingsDialog(QDialog):
         )
         general_layout.addWidget(self.cb_quickstart)
 
+        # convert_jdnext_gestures
+        self.cb_convert_jdnext_gestures = QCheckBox("Automatically convert JDNext 2D Gestures to legacy format")
+        self.cb_convert_jdnext_gestures.setChecked(getattr(self._config, "convert_jdnext_gestures", True))
+        self.cb_convert_jdnext_gestures.setToolTip(
+            "During pipeline conversion, translates Next-gen camera motion tracking\n"
+            "into X360 volumetric depth data format for legacy compatibility."
+        )
+        general_layout.addWidget(self.cb_convert_jdnext_gestures)
+
         self.combo_log_detail = QComboBox()
         self.combo_log_detail.addItem("Quiet (warnings and errors only)", "quiet")
         self.combo_log_detail.addItem("Normal (recommended)", "user")
@@ -933,6 +942,7 @@ class SettingsDialog(QDialog):
         self._config.show_preflight_success_popup = self.cb_preflight_popup.isChecked()
         self._config.show_install_summary_popup = self.cb_install_summary.isChecked()
         self._config.show_quickstart_on_launch = self.cb_quickstart.isChecked()
+        self._config.convert_jdnext_gestures = self.cb_convert_jdnext_gestures.isChecked()
         self._config.log_detail_level = self._combo_value(self.combo_log_detail)
         self._config.theme = self._combo_value(self.combo_theme)
         self._config.enforce_min_window_size = self.cb_enforce_min_size.isChecked()
