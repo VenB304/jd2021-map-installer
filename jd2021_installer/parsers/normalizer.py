@@ -750,6 +750,32 @@ def _apply_jdnext_metadata_songdesc_overrides(
         song_desc.num_coach = coach_count
 
 
+def _parse_jdnext_lyrics_color(hex_str: str) -> Optional[List[float]]:
+    """Parse a JDNext ``#RRGGBBAA`` or ``#RRGGBB`` lyrics color into ``[R, G, B, A]`` floats.
+
+    Returns ``None`` if the string is unparseable.
+    """
+    s = hex_str.strip().lstrip("#")
+    if len(s) == 8:
+        try:
+            r = int(s[0:2], 16) / 255.0
+            g = int(s[2:4], 16) / 255.0
+            b = int(s[4:6], 16) / 255.0
+            a = int(s[6:8], 16) / 255.0
+            return [r, g, b, a]
+        except ValueError:
+            return None
+    elif len(s) == 6:
+        try:
+            r = int(s[0:2], 16) / 255.0
+            g = int(s[2:4], 16) / 255.0
+            b = int(s[4:6], 16) / 255.0
+            return [r, g, b, 1.0]
+        except ValueError:
+            return None
+    return None
+
+
 def _apply_jdnext_songdb_cache_overrides(
     codename: str,
     song_desc: SongDescription,
@@ -864,6 +890,17 @@ def _apply_jdnext_songdb_cache_overrides(
     if original_ver is not None and song_desc.original_jd_version in (0, -1, 2021):
         song_desc.original_jd_version = original_ver
         applied_fields.append("original_jd_version")
+
+    # --- Lyrics color from songdb (JDNext maps lack DefaultColors in map.json) ---
+    lyrics_color_hex = str(entry.get("lyrics_color", "") or "").strip()
+    if lyrics_color_hex:
+        parsed_lyrics = _parse_jdnext_lyrics_color(lyrics_color_hex)
+        if parsed_lyrics is not None:
+            # Only override when the current value is the dataclass default
+            dc_default = DefaultColors()
+            if song_desc.default_colors.lyrics == dc_default.lyrics:
+                song_desc.default_colors.lyrics = parsed_lyrics
+                applied_fields.append("lyrics_color")
 
     if not music_track:
         return
