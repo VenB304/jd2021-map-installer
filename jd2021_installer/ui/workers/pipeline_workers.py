@@ -2155,6 +2155,10 @@ def install_map_to_game(
     if source_is_jdnext and media.moves_dir and media.moves_dir.exists():
         gesture_sources = list(media.moves_dir.rglob("*.gesture"))
         if gesture_sources:
+            # Output to 'durango' subfolder (matching real Kinect map structure)
+            # and also 'pc' for broader engine compatibility
+            durango_moves_out = map_target / "timeline" / "moves" / "durango"
+            durango_moves_out.mkdir(parents=True, exist_ok=True)
             pc_moves_out = map_target / "timeline" / "moves" / "pc"
             pc_moves_out.mkdir(parents=True, exist_ok=True)
 
@@ -2168,9 +2172,12 @@ def install_map_to_game(
                 compiled = 0
                 strictness = getattr(cfg, "gesture_scoring_strictness", 0.7)
                 for gsrc in gesture_sources:
-                    out_path = pc_moves_out / gsrc.name
-                    if compile_hybrid_gesture(gsrc, template_path, out_path, strictness=strictness):
+                    durango_out = durango_moves_out / gsrc.name
+                    pc_out = pc_moves_out / gsrc.name
+                    if compile_hybrid_gesture(gsrc, template_path, durango_out, strictness=strictness):
                         compiled += 1
+                        # Also copy the compiled gesture to pc/ for compatibility
+                        pc_out.write_bytes(durango_out.read_bytes())
                 logger.info(
                     "Gesture compiler: %d/%d hybrid gestures compiled for '%s'",
                     compiled, len(gesture_sources), codename,
@@ -2181,8 +2188,10 @@ def install_map_to_game(
                     status_callback(f"Copying {len(gesture_sources)} surrogate gesture(s)...")
                 from jd2021_installer.installers.gesture_compiler import copy_surrogate_as_fallback
                 for gsrc in gesture_sources:
-                    out_path = pc_moves_out / gsrc.name
-                    copy_surrogate_as_fallback(template_path, out_path)
+                    durango_out = durango_moves_out / gsrc.name
+                    pc_out = pc_moves_out / gsrc.name
+                    copy_surrogate_as_fallback(template_path, durango_out)
+                    pc_out.write_bytes(durango_out.read_bytes())
                 logger.info(
                     "Gesture fallback: %d surrogate gestures copied for '%s'",
                     len(gesture_sources), codename,

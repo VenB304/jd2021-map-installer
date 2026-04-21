@@ -1305,6 +1305,7 @@ def copy_moves(
     if expected_names:
         def _pick_template_gesture() -> Optional[Path]:
             bundled_candidates = [
+                Path(__file__).resolve().parents[2] / "assets" / "gesture_templates" / "durango_template.gesture",
                 Path(__file__).resolve().parents[2] / "assets" / "gesture_templates" / "discorope.gesture",
             ]
             for candidate in bundled_candidates:

@@ -20,7 +20,7 @@ class AppConfig(BaseModel):
     cache_directory: Path = Path("./cache")
     temp_directory: Path = Path("./temp")
     app_icon_path: Path = Path("./assets/app_icon.jpg")
-    gesture_template_path: Path = Path("./assets/gesture_templates/discorope.gesture")
+    gesture_template_path: Path = Path("./assets/gesture_templates/durango_template.gesture")
 
     # Video quality preference (descending fallback)
     video_quality: str = Field(
