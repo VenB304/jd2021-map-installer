@@ -48,13 +48,20 @@ _Z_BLIND_HIGH = 100.0
 
 # Tolerance range: tight for constraint-dense gestures, loose for sparse ones.
 # "Density" = number of extracted X/Y constraints divided by number of edges.
-_XY_TOLERANCE_MIN = 0.05   # Very precise moves (density >= 3.0)
-_XY_TOLERANCE_MAX = 0.20   # Simple/sparse moves (density <= 0.5)
-_XY_TOLERANCE_DEFAULT = 0.10
+# In-game testing showed the engine needs tolerance >= ~0.16 to find valid
+# HMM paths.  Below that threshold, ALL moves score as misses.
+_XY_TOLERANCE_MIN = 0.16   # Very precise moves (density >= 3.0)
+_XY_TOLERANCE_MAX = 0.35   # Simple/sparse moves (density <= 0.5)
+_XY_TOLERANCE_DEFAULT = 0.22
 
 # Density thresholds for the linear interpolation ramp.
 _DENSITY_HIGH = 3.0   # At or above this, use _XY_TOLERANCE_MIN
 _DENSITY_LOW = 0.5    # At or below this, use _XY_TOLERANCE_MAX
+
+# Strictness scaling: how much (1 - strictness) widens the tolerance.
+# tolerance_final = base_tolerance × (1 + STRICTNESS_SCALE × (1 - strictness))
+# This keeps the tolerance within the playable range at all strictness values.
+_STRICTNESS_SCALE = 1.5
 
 # Timing injection: empirical baseline for discorope's timing characteristics.
 # Used as a divisor when scaling the parameters block.
@@ -414,22 +421,17 @@ def _load_and_hybridize(
 
     # Strictness controls how tight the threshold windows are.
     # At strictness=1.0, use the base (tight) tolerance.
-    # At lower strictness, widen the tolerance proportionally, making
-    # scoring more lenient — but ALL edges are always constrained,
-    # so there are no auto-pass gaps in the HMM graph.
+    # At lower strictness, widen it linearly.  This keeps tolerance
+    # within the empirically validated playable range (~0.16 to ~0.53)
+    # instead of the exponential 1/s scaling that created a cliff
+    # between "all perfects" and "all misses".
     #
-    # The scaling is exponential to give finer control at the high end:
-    # strictness=1.0 → tolerance × 1.0 (raw, tightest)
-    # strictness=0.8 → tolerance × 2.0
-    # strictness=0.5 → tolerance × 5.0
-    # strictness=0.3 → tolerance × 10.0
-    # strictness=0.1 → tolerance × 50.0
-    if strictness >= 1.0:
-        tolerance = base_tolerance
-    else:
-        # Maps (0, 1] → [50×, 1×] via 1/strictness scaling
-        scale = 1.0 / max(strictness, 0.02)
-        tolerance = base_tolerance * scale
+    # Dense gesture (base=0.16):
+    #   s=1.0 → tol=0.16  (tightest real scoring)
+    #   s=0.7 → tol=0.23  (moderate)
+    #   s=0.5 → tol=0.28  (forgiving)
+    #   s=0.3 → tol=0.33  (very forgiving)
+    tolerance = base_tolerance * (1.0 + _STRICTNESS_SCALE * (1.0 - strictness))
 
     # Build band-clustered pairs with Z-depth synthesis
     pairs = _build_sorted_window_pairs(xy_constraints, num_edges, tolerance)
