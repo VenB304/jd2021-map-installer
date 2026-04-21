@@ -36,6 +36,11 @@ import statistics
 import struct
 from pathlib import Path
 
+from jd2021_installer.installers.hmm_generator import (
+    generate_state_table,
+    build_gesture_binary,
+)
+
 logger = logging.getLogger("jd2021.installers.gesture_compiler")
 
 # ---------------------------------------------------------------------------
@@ -516,6 +521,194 @@ def compile_hybrid_gesture(
             jdnext_src_path.name,
         )
         return False
+
+
+def compile_gesture_from_scratch(
+    jdnext_src_path: Path,
+    output_path: Path,
+    strictness: float = 1.0,
+) -> bool:
+    """Compile a JDNext gesture into a Durango binary WITHOUT a template.
+
+    Uses the dynamic HMM generator to build the entire state table from
+    scratch based on the JDNext section structure, then injects the
+    extracted X/Y constraints into a freshly generated edge table.
+
+    This eliminates the template dependency entirely — every generated
+    gesture has a unique, song-specific HMM topology.
+
+    Args:
+        jdnext_src_path: Path to the JDNext Camera ``.gesture`` file.
+        output_path:     Destination path for the compiled gesture file.
+        strictness:      Scoring strictness (0.0 = auto-perfect,
+                         1.0 = full JDNext scoring).  Default 1.0.
+
+    Returns:
+        ``True`` if compiled successfully, ``False`` otherwise.
+    """
+    try:
+        if not jdnext_src_path.exists():
+            logger.warning("JDNext gesture not found: %s", jdnext_src_path)
+            return False
+
+        # Phase 1: Decompile JDNext AST
+        xy_constraints, timing_values = _decompile_jdnext(jdnext_src_path)
+        num_sections = _count_jdnext_sections(jdnext_src_path)
+
+        if not xy_constraints:
+            logger.warning(
+                "No constraints extracted from '%s'; cannot generate",
+                jdnext_src_path.name,
+            )
+            return False
+
+        # Phase 2: Generate dynamic HMM state table
+        state_table, num_states = generate_state_table(
+            num_sections, len(xy_constraints),
+        )
+
+        # Phase 3: Build parameters from JDNext data
+        params = _build_params_from_jdnext(xy_constraints, timing_values)
+
+        # Phase 4: Build edge table with JDNext constraint injection
+        edges = _build_edge_table(
+            xy_constraints, num_states, strictness,
+        )
+
+        # Phase 5: Assemble complete binary
+        gesture_data = build_gesture_binary(
+            state_table, num_states, params, edges, num_joints=9,
+        )
+
+        # Write output
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        output_path.write_bytes(gesture_data)
+
+        logger.info(
+            "Compiled gesture from scratch: %s "
+            "(%d X/Y, %d sections, %d states, strictness=%.2f)",
+            jdnext_src_path.name,
+            len(xy_constraints),
+            num_sections,
+            num_states,
+            strictness,
+        )
+        return True
+
+    except Exception:
+        logger.exception(
+            "Failed to compile gesture from scratch for '%s'",
+            jdnext_src_path.name,
+        )
+        return False
+
+
+def _count_jdnext_sections(gesture_path: Path) -> int:
+    """Extract the section count from a JDNext gesture file.
+
+    The section count is at opcode[1] (the second float64 value,
+    interpreted as an integer).
+    """
+    data = gesture_path.read_bytes()
+    if len(data) < 16:
+        return 27  # Fallback default
+    raw = struct.unpack_from('<2d', data, 0)
+    num_sections = int(raw[1])
+    return max(4, min(num_sections, 200))  # Clamp to sane range
+
+
+def _build_params_from_jdnext(
+    xy_constraints: list[float],
+    timing_values: list[float],
+) -> list[float]:
+    """Build the 13-float parameters block from JDNext data.
+
+    P0, P11, P12:  Tempo/duration/complexity from timing values.
+    P1:            System constant (0.049).
+    P2:            Reserved (0.0).
+    P3-P10:        Statistical body position encoding from constraints.
+    """
+    # Compute timing-derived values
+    if len(timing_values) >= _TIMING_MIN_SAMPLES:
+        timing_median = statistics.median(timing_values)
+    else:
+        timing_median = _TIMING_BASELINE
+
+    # Compute constraint statistics
+    scaled = [v * _JDNEXT_TO_DURANGO_SCALE for v in xy_constraints]
+    mean_val = statistics.mean(scaled) if scaled else 0.0
+    std_val = statistics.stdev(scaled) if len(scaled) > 1 else 0.3
+
+    return [
+        timing_median * 32.0,                    # P0: tempo
+        0.049,                                   # P1: system constant
+        0.0,                                     # P2: reserved
+        abs(mean_val) + std_val * 0.3,           # P3: +
+        abs(mean_val) + std_val * 0.8,           # P4: +
+        abs(mean_val) + std_val * 0.5,           # P5: +
+        std_val * 0.1,                           # P6: +
+        -(abs(mean_val) + std_val * 0.9),        # P7: -
+        -(abs(mean_val) + std_val * 0.3),        # P8: -
+        -(abs(mean_val) + std_val * 0.6),        # P9: -
+        std_val * 0.08,                          # P10: +
+        timing_median * 7.8,                     # P11: complexity
+        timing_median * 3.2,                     # P12: duration
+    ]
+
+
+def _build_edge_table(
+    xy_constraints: list[float],
+    num_states: int,
+    strictness: float,
+) -> list[tuple[float, float, int]]:
+    """Build a 1000-edge table with JDNext constraint injection.
+
+    Edge distribution mirrors real Kinect files:
+      ~80% scoring edges (dual threshold_a + threshold_b injection)
+      ~20% gating edges (joint index in threshold_a)
+
+    State IDs are distributed across the generated state space.
+    """
+    num_edges = 1000
+    edges: list[tuple[float, float, int]] = []
+
+    # Filter constraints by dead zone
+    dead_zone = _DEAD_ZONE_MAX * strictness
+    filtered = [v for v in xy_constraints if abs(v) > dead_zone]
+
+    if len(filtered) < 10:
+        filtered = xy_constraints if xy_constraints else [0.0]
+
+    sorted_constraints = sorted(filtered)
+    n = len(sorted_constraints)
+    stride_b = n // 3 if n > 3 else 1
+
+    # Gating parameters
+    target_gating = int(num_edges * 0.20)
+    joint_indices = [12, 14, 16, 20, 22, 24, 26, 28, 30, 32, 34, 36,
+                     38, 40, 48, 56, 64, 72, 80, 90, 96, 102, 108,
+                     114, 120, 126, 132, 138, 144]
+
+    for i in range(num_edges):
+        # State ID: distribute across all states (1..num_states-1)
+        state_id = (i % (num_states - 1)) + 1
+
+        if i < target_gating:
+            # Gating edge: joint index in threshold_a
+            joint_idx = joint_indices[i % len(joint_indices)]
+            extreme_val = sorted_constraints[i % n] * _JDNEXT_TO_DURANGO_SCALE * 1.5
+            edges.append((float(joint_idx), extreme_val, state_id))
+        else:
+            # Scoring edge: dual position thresholds
+            ci_a = int((i - target_gating) * n
+                       / max(num_edges - target_gating, 1)) % n
+            ci_b = (ci_a + stride_b) % n
+
+            val_a = sorted_constraints[ci_a] * _JDNEXT_TO_DURANGO_SCALE
+            val_b = sorted_constraints[ci_b] * _JDNEXT_TO_DURANGO_SCALE
+            edges.append((val_a, val_b, state_id))
+
+    return edges
 
 
 def copy_surrogate_as_fallback(
