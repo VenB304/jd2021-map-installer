@@ -48,9 +48,9 @@ _Z_BLIND_HIGH = 100.0
 
 # Tolerance range: tight for constraint-dense gestures, loose for sparse ones.
 # "Density" = number of extracted X/Y constraints divided by number of edges.
-_XY_TOLERANCE_MIN = 0.15   # Very precise moves (density >= 3.0)
-_XY_TOLERANCE_MAX = 0.55   # Simple/sparse moves (density <= 0.5)
-_XY_TOLERANCE_DEFAULT = 0.35
+_XY_TOLERANCE_MIN = 0.05   # Very precise moves (density >= 3.0)
+_XY_TOLERANCE_MAX = 0.20   # Simple/sparse moves (density <= 0.5)
+_XY_TOLERANCE_DEFAULT = 0.10
 
 # Density thresholds for the linear interpolation ramp.
 _DENSITY_HIGH = 3.0   # At or above this, use _XY_TOLERANCE_MIN
@@ -410,7 +410,26 @@ def _load_and_hybridize(
         return template_data
 
     # Compute dynamic tolerance based on constraint density
-    tolerance = _compute_tolerance(len(xy_constraints), num_edges)
+    base_tolerance = _compute_tolerance(len(xy_constraints), num_edges)
+
+    # Strictness controls how tight the threshold windows are.
+    # At strictness=1.0, use the base (tight) tolerance.
+    # At lower strictness, widen the tolerance proportionally, making
+    # scoring more lenient — but ALL edges are always constrained,
+    # so there are no auto-pass gaps in the HMM graph.
+    #
+    # The scaling is exponential to give finer control at the high end:
+    # strictness=1.0 → tolerance × 1.0 (raw, tightest)
+    # strictness=0.8 → tolerance × 2.0
+    # strictness=0.5 → tolerance × 5.0
+    # strictness=0.3 → tolerance × 10.0
+    # strictness=0.1 → tolerance × 50.0
+    if strictness >= 1.0:
+        tolerance = base_tolerance
+    else:
+        # Maps (0, 1] → [50×, 1×] via 1/strictness scaling
+        scale = 1.0 / max(strictness, 0.02)
+        tolerance = base_tolerance * scale
 
     # Build band-clustered pairs with Z-depth synthesis
     pairs = _build_sorted_window_pairs(xy_constraints, num_edges, tolerance)
@@ -418,27 +437,20 @@ def _load_and_hybridize(
     if not pairs:
         return template_data
 
-    # Distribute pairs directly to edges (1:1 — pairs are pre-sized)
+    # Inject ALL edges with real thresholds (no Z-blinded auto-pass gaps).
+    # Every edge gets a constrained range so the HMM graph enforces
+    # position-specific scoring at every transition.
     for edge_idx in range(num_edges):
-        raw_lo, raw_hi = pairs[edge_idx]
-
-        if strictness >= 1.0:
-            # Full scoring: use raw JDNext-derived thresholds
-            threshold_a = raw_lo
-            threshold_b = raw_hi
-        else:
-            # Blend between Z-blinded (auto-perfect) and real thresholds
-            threshold_a = _Z_BLIND_LOW + strictness * (raw_lo - _Z_BLIND_LOW)
-            threshold_b = _Z_BLIND_HIGH + strictness * (raw_hi - _Z_BLIND_HIGH)
+        threshold_a, threshold_b = pairs[edge_idx]
 
         eoff = edge_start + edge_idx * _X360_EDGE_SIZE
         struct.pack_into(">f", template_data, eoff, threshold_a)
         struct.pack_into(">f", template_data, eoff + 4, threshold_b)
 
     logger.debug(
-        "Injected %d band-clustered pairs across %d edges "
-        "(tolerance=%.3f, strictness=%.2f, z_synth=enabled)",
-        len(pairs), num_edges, tolerance, strictness,
+        "Injected %d constrained edges "
+        "(tolerance=%.3f [base=%.3f], strictness=%.2f, z_synth=enabled)",
+        num_edges, tolerance, base_tolerance, strictness,
     )
     return template_data
 
