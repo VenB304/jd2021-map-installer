@@ -2165,21 +2165,21 @@ def install_map_to_game(
             cfg = config or AppConfig()
             template_path = Path(cfg.gesture_template_path)
 
-            if getattr(cfg, "convert_jdnext_gestures", True) and template_path.exists():
+            if getattr(cfg, "convert_jdnext_gestures", True):
                 if status_callback:
-                    status_callback(f"Compiling {len(gesture_sources)} hybrid gesture(s)...")
-                from jd2021_installer.installers.gesture_compiler import compile_hybrid_gesture
+                    status_callback(f"Compiling {len(gesture_sources)} hybrid gesture(s) from scratch...")
+                from jd2021_installer.installers.gesture_compiler import compile_gesture_from_scratch
                 compiled = 0
                 strictness = getattr(cfg, "gesture_scoring_strictness", 0.7)
                 for gsrc in gesture_sources:
                     durango_out = durango_moves_out / gsrc.name
                     pc_out = pc_moves_out / gsrc.name
-                    if compile_hybrid_gesture(gsrc, template_path, durango_out, strictness=strictness):
+                    if compile_gesture_from_scratch(gsrc, durango_out, strictness=strictness):
                         compiled += 1
                         # Also copy the compiled gesture to pc/ for compatibility
                         pc_out.write_bytes(durango_out.read_bytes())
                 logger.info(
-                    "Gesture compiler: %d/%d hybrid gestures compiled for '%s'",
+                    "Gesture compiler: %d/%d gestures dynamically compiled for '%s'",
                     compiled, len(gesture_sources), codename,
                 )
             else:
