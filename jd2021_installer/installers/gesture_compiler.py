@@ -663,14 +663,14 @@ def _build_params_from_jdnext(
         p0_tempo,                                # P0: tempo
         0.049,                                   # P1: system constant
         0.0,                                     # P2: reserved
-        abs(mean_val) + std_val * 0.3,           # P3: +
-        abs(mean_val) + std_val * 0.8,           # P4: +
-        abs(mean_val) + std_val * 0.5,           # P5: +
-        std_val * 0.1,                           # P6: +
-        -(abs(mean_val) + std_val * 0.9),        # P7: -
-        -(abs(mean_val) + std_val * 0.3),        # P8: -
-        -(abs(mean_val) + std_val * 0.6),        # P9: -
-        std_val * 0.08,                          # P10: +
+        0.2131,                                  # P3: discorope lenient bound
+        0.4287,                                  # P4: discorope lenient bound
+        0.3053,                                  # P5: discorope lenient bound
+        0.0486,                                  # P6: discorope lenient bound
+        -0.5173,                                 # P7: discorope lenient bound
+        -0.2123,                                 # P8: discorope lenient bound
+        -0.2928,                                 # P9: discorope lenient bound
+        0.0461,                                  # P10: discorope lenient bound
         p11_complexity,                          # P11: complexity
         p12_duration,                            # P12: duration
     ]
