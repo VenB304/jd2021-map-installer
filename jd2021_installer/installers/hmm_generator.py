@@ -60,13 +60,7 @@ TYPES_16B = set(TYPE_SIZE_MAP.keys()) - TYPES_24B - TYPES_20B
 # Zone B type distribution ratios (averaged from 8 real files)
 # Maps type → approximate fraction of total Zone B records
 ZONE_B_TYPE_RATIOS = {
-    3: 0.18,
-    4: 0.05, 5: 0.02, 6: 0.02, 7: 0.02, 8: 0.02,
-    9: 0.04, 10: 0.04,
-    12: 0.02, 13: 0.02, 14: 0.04, 16: 0.03, 17: 0.02,
-    18: 0.11, 19: 0.08, 20: 0.07,
-    22: 0.01, 25: 0.02,
-    29: 0.03,  # Always the last type
+    3: 1.0,  # discorope uses exclusively Type 3 (basic position, spoofing Z-depth)
 }
 
 # Target zone split: ~60% Zone A, ~40% Zone B (from analysis)
@@ -246,29 +240,21 @@ def _allocate_types(zone_b_count: int) -> list[tuple[int, int]]:
 
     for t in types_ordered:
         raw = int(zone_b_count * ZONE_B_TYPE_RATIOS[t])
-        allocation[t] = max(1 if t in (3, 29) else 0, raw)
-        total_allocated += allocation[t]
+        allocation[t] = raw
+        total_allocated += raw
 
-    # Distribute remainder to type 3 (most common) and type 18
+    # Distribute remainder to the first type
     remainder = zone_b_count - total_allocated
-    if remainder > 0:
-        allocation[3] += remainder // 2
-        allocation[18] = allocation.get(18, 0) + remainder - remainder // 2
-    elif remainder < 0:
-        # Over-allocated: trim from the middle types
+    if remainder > 0 and types_ordered:
+        allocation[types_ordered[0]] += remainder
+    elif remainder < 0 and types_ordered:
+        # Over-allocated: trim from the last types
         for t in reversed(types_ordered):
-            if t in (3, 29):
-                continue
             trim = min(allocation[t], -remainder)
             allocation[t] -= trim
             remainder += trim
             if remainder >= 0:
                 break
-
-    # Ensure type 3 is first and type 29 is last
-    # (they always have at least 1 record)
-    allocation[3] = max(1, allocation.get(3, 1))
-    allocation[29] = max(1, allocation.get(29, 1))
 
     result = [(t, c) for t, c in sorted(allocation.items()) if c > 0]
     return result

@@ -725,14 +725,7 @@ def _build_edge_table(
             ci_b = (ci_a + stride_b) % n
 
             val_a = sorted_constraints[ci_a] * _JDNEXT_TO_DURANGO_SCALE
-            
-            # JDNext lacks Z-depth. By setting the variance (val_b) to a massive
-            # outward boundary (e.g. 3.5 meters), we spoof Z-depth leniency.
-            # This ensures X/Y must still be reasonably hit (val_a), but Z-depth
-            # mismatch won't trigger a Miss.
-            variance = 3.5
-            val_b = val_a + (variance if val_a >= 0 else -variance)
-            
+            val_b = sorted_constraints[ci_b] * _JDNEXT_TO_DURANGO_SCALE
             edges.append((val_a, val_b, state_id))
 
     return edges
