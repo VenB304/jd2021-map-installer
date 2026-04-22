@@ -1,8 +1,12 @@
 from __future__ import annotations
 
 import json
+import subprocess
 from pathlib import Path
+from typing import Any
+from unittest.mock import MagicMock, patch
 
+from jd2021_installer.core.config import AppConfig
 from jd2021_installer.extractors import jdnext_bundle_strategy as strategy_mod
 
 
@@ -127,7 +131,7 @@ def test_strategy_uses_assetstudio_first(tmp_path: Path, monkeypatch):
 
     calls: list[str] = []
 
-    def fake_assetstudio(bundle_path: Path, output_dir: Path, unity_version: str):
+    def fake_assetstudio(bundle_path: Path, output_dir: Path, unity_version: str, **kwargs: Any):
         calls.append("assetstudio")
         (output_dir / "MonoBehaviour").mkdir(parents=True, exist_ok=True)
         (output_dir / "MonoBehaviour" / "TestMap.json").write_text("{}", encoding="utf-8")
@@ -135,7 +139,7 @@ def test_strategy_uses_assetstudio_first(tmp_path: Path, monkeypatch):
         (output_dir / "TextAsset").mkdir(parents=True, exist_ok=True)
         return output_dir
 
-    def fake_unitypy(bundle_path: Path, output_dir: Path):
+    def fake_unitypy(bundle_path: Path, output_dir: Path, **kwargs: Any):
         calls.append("unitypy")
         raise AssertionError("UnityPy should not run when AssetStudio succeeds first")
 
@@ -155,7 +159,7 @@ def test_strategy_falls_back_to_assetstudio_when_unitypy_fails(tmp_path: Path, m
 
     calls: list[str] = []
 
-    def fake_assetstudio(bundle_path: Path, output_dir: Path, unity_version: str):
+    def fake_assetstudio(bundle_path: Path, output_dir: Path, unity_version: str, **kwargs: Any):
         calls.append("assetstudio")
         (output_dir / "MonoBehaviour").mkdir(parents=True, exist_ok=True)
         (output_dir / "MonoBehaviour" / "RecoveredMap.json").write_text("{}", encoding="utf-8")
@@ -163,7 +167,7 @@ def test_strategy_falls_back_to_assetstudio_when_unitypy_fails(tmp_path: Path, m
         (output_dir / "TextAsset").mkdir(parents=True, exist_ok=True)
         return output_dir
 
-    def fake_unitypy(bundle_path: Path, output_dir: Path):
+    def fake_unitypy(bundle_path: Path, output_dir: Path, **kwargs: Any):
         calls.append("unitypy")
         raise RuntimeError("encrypted")
 
@@ -222,3 +226,104 @@ def test_synthesize_tape_normalizes_prefixed_or_suffixed_move_names(tmp_path: Pa
     assert "world/maps/judas/timeline/moves/judas_intro_judas_2.msm" in classifier_paths
     assert all(".gesture.gesture" not in p for p in classifier_paths)
     assert all(".msm.msm" not in p for p in classifier_paths)
+
+
+# ---------------------------------------------------------------------------
+# Cross-platform AssetStudioModCLI execution tests
+# ---------------------------------------------------------------------------
+
+
+def _make_exists_replacement(
+    positive_fragments: set[str],
+) -> Any:
+    """Return an unbound-method replacement for ``Path.exists``.
+
+    Returns ``True`` when the path string contains any of the given
+    *positive_fragments*; ``False`` otherwise.
+
+    Used with ``patch.object(Path, 'exists', new=...)`` so the
+    replacement receives ``self`` (the ``Path`` instance) as the first
+    positional argument.
+    """
+
+    def _replacement(path_self: Path) -> bool:
+        path_str = str(path_self)
+        return any(frag in path_str for frag in positive_fragments)
+
+    return _replacement
+
+
+@patch(
+    "jd2021_installer.extractors.jdnext_bundle_strategy.platform.system",
+    return_value="Windows",
+)
+@patch(
+    "jd2021_installer.extractors.jdnext_bundle_strategy.subprocess.run",
+)
+def test_assetstudio_execution_path_windows(
+    mock_subprocess_run: MagicMock,
+    mock_system: MagicMock,
+    tmp_path: Path,
+) -> None:
+    """On Windows the subprocess command must invoke the ``.exe`` binary."""
+    mock_subprocess_run.return_value = MagicMock(returncode=0, stdout="", stderr="")
+
+    bundle: Path = tmp_path / "test.bundle"
+    bundle.write_bytes(b"fake")
+    output_dir: Path = tmp_path / "out"
+
+    with patch.object(
+        Path, "exists", new=_make_exists_replacement({"AssetStudioModCLI"}),
+    ):
+        strategy_mod._run_assetstudio_export(
+            bundle,
+            output_dir,
+            unity_version="2021.3.9f1",
+            config=AppConfig(),
+        )
+
+    mock_subprocess_run.assert_called_once()
+    cmd: list[str] = mock_subprocess_run.call_args[0][0]
+    assert cmd[0].endswith("AssetStudioModCLI.exe"), (
+        f"Expected Windows .exe binary, got: {cmd[0]}"
+    )
+
+
+@patch(
+    "jd2021_installer.extractors.jdnext_bundle_strategy.platform.system",
+    return_value="Linux",
+)
+@patch(
+    "jd2021_installer.extractors.jdnext_bundle_strategy.subprocess.run",
+)
+def test_assetstudio_execution_path_linux(
+    mock_subprocess_run: MagicMock,
+    mock_system: MagicMock,
+    tmp_path: Path,
+) -> None:
+    """On Linux the subprocess command must invoke the extension-less binary."""
+    mock_subprocess_run.return_value = MagicMock(returncode=0, stdout="", stderr="")
+
+    bundle: Path = tmp_path / "test.bundle"
+    bundle.write_bytes(b"fake")
+    output_dir: Path = tmp_path / "out"
+
+    with patch.object(
+        Path, "exists", new=_make_exists_replacement({"AssetStudioModCLI"}),
+    ):
+        strategy_mod._run_assetstudio_export(
+            bundle,
+            output_dir,
+            unity_version="2021.3.9f1",
+            config=AppConfig(),
+        )
+
+    mock_subprocess_run.assert_called_once()
+    cmd: list[str] = mock_subprocess_run.call_args[0][0]
+    assert cmd[0].endswith("AssetStudioModCLI"), (
+        f"Expected Linux binary without .exe, got: {cmd[0]}"
+    )
+    assert not cmd[0].endswith(".exe"), (
+        f"Linux binary must NOT have .exe extension, got: {cmd[0]}"
+    )
+

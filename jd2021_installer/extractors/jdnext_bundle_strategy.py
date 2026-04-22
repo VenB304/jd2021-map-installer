@@ -7,6 +7,7 @@ we learn real-world mapPackage behaviors.
 from __future__ import annotations
 
 import json
+import platform
 import logging
 import shutil
 import subprocess
@@ -85,6 +86,8 @@ def _run_assetstudio_export(
         third_party_roots.append(Path(configured_root).expanduser())
     third_party_roots.append(repo_root / "tools")
 
+    exe_name = "AssetStudioModCLI.exe" if platform.system().lower() == "windows" else "AssetStudioModCLI"
+
     seen: set[str] = set()
     for root in third_party_roots:
         key = str(root).lower()
@@ -93,15 +96,13 @@ def _run_assetstudio_export(
         seen.add(key)
         candidates.extend(
             [
-                root / "Unity2UbiArt" / "bin" / "AssetStudioModCLI" / "AssetStudioModCLI.exe",
-                root / "AssetStudioModCLI" / "AssetStudioModCLI.exe",
-                root / "AssetStudio" / "AssetStudioModCLI.exe",
+                root / "AssetStudioModCLI" / exe_name,
             ]
         )
 
     cli_path = next((p for p in candidates if p.exists()), None)
     if cli_path is None:
-        raise ExtractionError("AssetStudioModCLI.exe not found under tools")
+        raise ExtractionError(f"{exe_name} not found under tools/AssetStudioModCLI")
 
     output_dir.mkdir(parents=True, exist_ok=True)
 

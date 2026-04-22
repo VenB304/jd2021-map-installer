@@ -5,8 +5,9 @@ Handles paths, quality preferences, and runtime settings.
 
 from __future__ import annotations
 
+import platform
 from pathlib import Path
-from typing import Optional
+from typing import Any, Optional
 
 from pydantic import BaseModel, Field
 
@@ -91,6 +92,27 @@ class AppConfig(BaseModel):
     class Config:
         env_prefix = "JD2021_"
         env_file = ".env"
+
+    def model_post_init(self, __context: Any) -> None:
+        """Resolve local FFmpeg/FFprobe binaries on Windows if defaults are active."""
+        super().model_post_init(__context)
+
+        if platform.system() != "Windows":
+            return
+
+        tools_root = self.third_party_tools_root
+        if tools_root is None:
+            return
+
+        ffmpeg_bin = (tools_root / "ffmpeg" / "bin" / "ffmpeg.exe").resolve()
+        ffprobe_bin = (tools_root / "ffmpeg" / "bin" / "ffprobe.exe").resolve()
+
+        # Only inject local paths when the field still holds the default value.
+        if self.ffmpeg_path == "ffmpeg" and ffmpeg_bin.is_file():
+            self.ffmpeg_path = str(ffmpeg_bin)
+
+        if self.ffprobe_path == "ffprobe" and ffprobe_bin.is_file():
+            self.ffprobe_path = str(ffprobe_bin)
 
 
 # Quality tiers and their filename suffix patterns
