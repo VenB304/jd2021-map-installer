@@ -2149,8 +2149,15 @@ def install_map_to_game(
     if source_is_jdnext and media.moves_dir and media.moves_dir.exists():
         gesture_sources = list(media.moves_dir.rglob("*.gesture"))
         if gesture_sources:
-            # Output to 'durango' subfolder (matching real Kinect map structure)
+            # Output to BOTH 'pc' and 'durango' subfolders.
+            # The game resolves ClassifierPath (which has no platform subdir)
+            # by searching platform-specific subdirectories.  Empirical testing
+            # shows the engine loads from 'pc/' — but copy_moves' recovery path
+            # already placed raw template copies there.  We must overwrite those
+            # with our compiled output in BOTH locations for reliability.
+            pc_moves_out = map_target / "timeline" / "moves" / "pc"
             durango_moves_out = map_target / "timeline" / "moves" / "durango"
+            pc_moves_out.mkdir(parents=True, exist_ok=True)
             durango_moves_out.mkdir(parents=True, exist_ok=True)
 
             cfg = config or AppConfig()
@@ -2166,6 +2173,9 @@ def install_map_to_game(
                     durango_out = durango_moves_out / gsrc.name
                     if compile_gesture_from_scratch(gsrc, durango_out, strictness=strictness):
                         compiled += 1
+                        # Mirror to pc/ so the engine finds our compiled gesture
+                        pc_out = pc_moves_out / gsrc.name
+                        shutil.copy2(durango_out, pc_out)
                 logger.info(
                     "Gesture compiler: %d/%d gestures dynamically compiled for '%s'",
                     compiled, len(gesture_sources), codename,
@@ -2178,6 +2188,9 @@ def install_map_to_game(
                 for gsrc in gesture_sources:
                     durango_out = durango_moves_out / gsrc.name
                     copy_surrogate_as_fallback(template_path, durango_out)
+                    # Mirror to pc/
+                    pc_out = pc_moves_out / gsrc.name
+                    shutil.copy2(durango_out, pc_out)
                 logger.info(
                     "Gesture fallback: %d surrogate gestures copied for '%s'",
                     len(gesture_sources), codename,
