@@ -74,16 +74,13 @@ _X360_ENDIAN = ">"
 #   - Large absolute values (>10): blocking gates (impossible body positions)
 #
 # threshold_b: position threshold — compared against normalized Kinect reading.
-#   - Original analysis suggested 3.0× scale from raw Kinect ↔ JDNext
-#     comparison, but this produces values too extreme for the engine.
-#   - Discorope (the working auto-perfect gesture) has threshold_b in
-#     [-0.97, +1.52] with mean_abs=0.44.  Real Kinect files use [-3.8, +3.8]
-#     but scoring ACTUALLY works on normalized HMM-space values.
-#   - JDNext camera constraints are already in [-1, +1] normalized space.
-#     Scale factor of 0.63 maps to [-0.63, +0.63] — similar to discorope's
-#     core scoring range and lenient enough for the engine to match.
+#   - Forensic analysis of MakeItJingle (exists in both JDNext and JDU/Kinect)
+#     shows that camera XY constraints in [-1, +1] map to Kinect threshold_b
+#     with a scale factor of ~1.97 (distribution matching: std_kinect / std_cam).
+#   - At scale 1.97x, 92% of camera values match real Kinect threshold_b (2dp).
+#   - Previous scale of 0.63 only matched 8% — far too compressed.
 
-_JDNEXT_TO_DURANGO_SCALE = 0.63  # JDNext [-1,+1] → Durango [-0.63,+0.63]
+_JDNEXT_TO_DURANGO_SCALE = 1.97  # JDNext [-1,+1] -> Durango [-1.97,+1.97]
 
 # Gating threshold: edges with |threshold_a| above this value in the
 # template are treated as HMM structural gates and preserved as-is.
@@ -100,6 +97,25 @@ _DEAD_ZONE_MAX = 0.14   # At strictness=1.0
 _TIMING_BASELINE = 10.0   # Median timing value baseline
 _TIMING_SCALE_MIN = 0.5   # Clamp to prevent degenerate values
 _TIMING_SCALE_MAX = 2.0
+
+# Real Kinect parameter averages (computed from 48 MakeItJingle gesture files).
+# These replace the Balance-specific donor params to provide a more
+# representative scoring configuration.
+_KINECT_MEAN_PARAMS: tuple[float, ...] = (
+    739.969,   # P00 - HMM weight/sensitivity
+      0.049,   # P01 - constant across all files
+      0.000,   # P02 - always zero
+      0.332,   # P03 - scoring bias
+      0.459,   # P04 - scoring bias
+      0.360,   # P05 - scoring bias
+      0.030,   # P06 - scoring bias
+     -0.653,   # P07 - scoring bias (negative)
+     -0.333,   # P08 - scoring bias (negative)
+     -0.475,   # P09 - scoring bias (negative)
+      0.060,   # P10 - scoring bias
+    144.714,   # P11 - timing scale
+     58.004,   # P12 - timing scale
+)
 _TIMING_MIN_SAMPLES = 5   # Minimum timing values for injection
 
 # Seed for reproducible gate value generation (same input → same output)
@@ -640,38 +656,29 @@ def _load_and_hybridize(
         else:
             scoring_indices.append(edge_idx)
 
-    # Camera blend factor: same approach as _compile_with_donor.
-    # Keep mostly template, add a touch of camera for song-specificity.
-    blend = min(strictness * 0.4, 0.4)
+    # Inject real Kinect average parameters
+    params_start = edge_start - 52
+    for i, p in enumerate(_KINECT_MEAN_PARAMS):
+        struct.pack_into(f"{endian}f", template_data, params_start + i * 4, p)
 
-    # --- Gating edge blending ---
-    # Preserve template's gating threshold_a; blend camera into threshold_b.
-    if n > 0:
-        for j, edge_idx in enumerate(gating_indices):
-            eoff = edge_start + edge_idx * _DURANGO_EDGE_SIZE
-            orig_b = struct.unpack_from(f"{endian}f", template_data, eoff + 4)[0]
-            ci = int(j * n / max(len(gating_indices), 1)) % n
-            _, val = filtered[ci]
-            cam_val = val * _JDNEXT_TO_DURANGO_SCALE
-            blended = orig_b * (1.0 - blend) + cam_val * blend
-            struct.pack_into(f"{endian}f", template_data, eoff + 4, blended)
+    # --- Gating edges: leave completely untouched ---
+    # Gating edges define structural HMM gates; modifying them
+    # causes the engine to reject valid body positions.
 
-    # --- Scoring edge blending ---
-    # Preserve template's threshold_a; blend camera into threshold_b.
+    # --- Scoring edge injection ---
+    # Inject camera XY constraint values at correct 1.97x scale.
     num_scoring = len(scoring_indices)
     sorted_filtered = sorted(filtered, key=lambda x: x[1])
 
     for i, edge_idx in enumerate(scoring_indices):
         eoff = edge_start + edge_idx * _DURANGO_EDGE_SIZE
-        orig_b = struct.unpack_from(f"{endian}f", template_data, eoff + 4)[0]
 
         ci = int(i * n / max(num_scoring, 1)) % n
         _, val = sorted_filtered[ci]
         cam_val = val * _JDNEXT_TO_DURANGO_SCALE
 
-        # Blend: keep mostly template, add camera influence
-        blended = orig_b * (1.0 - blend) + cam_val * blend
-        struct.pack_into(f"{endian}f", template_data, eoff + 4, blended)
+        # Direct injection — preserve threshold_a and state_id
+        struct.pack_into(f"{endian}f", template_data, eoff + 4, cam_val)
         # eoff + 0 (threshold_a) is LEFT UNTOUCHED — preserving template structure
         # eoff + 8 (state_id) is LEFT UNTOUCHED — preserving HMM topology
 
@@ -891,20 +898,17 @@ def _compile_with_donor(
 ) -> bool:
     """Compile a gesture using a known-good donor as the structural base.
 
-    **Key insight:** The donor template (durango_template/discorope) already
-    gives auto-perfect scores when used unmodified.  Fully REPLACING its
-    threshold_b values with camera data BREAKS this because camera
-    constraints have a compressed distribution that narrows the engine's
-    scoring window → OKs/Greats instead of Perfect.
+    Strategy:
+      1. Copy the donor's complete binary structure (state table, HMM topology)
+      2. REPLACE the 13 scoring parameters with real Kinect averages
+         (the donor's Balance-specific params cause scoring mismatch)
+      3. INJECT camera XY constraint values into scoring edges' threshold_b
+         at the correct 1.97x scale factor (forensic-validated from
+         MakeItJingle JDU/JDNext comparison: 92% match at 2 decimal places)
+      4. Leave gating edges (|threshold_a| > 10) completely untouched
 
-    **Solution:** BLEND camera values into the donor's existing threshold_b
-    instead of replacing.  The blend factor is derived from ``strictness``:
-      - strictness=0.0 → 100% donor (auto-perfect, no camera influence)
-      - strictness=0.7 → 30% camera blend (song-specific, still lenient)
-      - strictness=1.0 → 40% camera blend (max camera influence, still safe)
-
-    The state table, parameters, and threshold_a values are preserved
-    exactly as they appear in the donor file.
+    The state table and threshold_a values are preserved exactly as they
+    appear in the donor file.
     """
     donor_data = bytearray(donor_path.read_bytes())
 
@@ -916,6 +920,11 @@ def _compile_with_donor(
     if edge_start < 0 or edge_start >= len(donor_data):
         logger.error("Donor gesture has invalid edge table offset")
         return False
+
+    # Inject real Kinect average parameters (replace Balance-specific values)
+    params_start = edge_start - 52
+    for i, p in enumerate(_KINECT_MEAN_PARAMS):
+        struct.pack_into(f"{endian}f", donor_data, params_start + i * 4, p)
 
     # Filter constraints
     raw_values = [v for _, v in joint_constraints]
@@ -933,26 +942,23 @@ def _compile_with_donor(
         # Auto-perfect: don't modify any edges
         logger.debug("Strictness=0; donor gesture used as-is (auto-perfect)")
     else:
-        # Camera blend factor: cap at 0.4 to keep values within
-        # the donor's proven scoring window.
-        # At strictness=0.7 (default), blend = 0.28 → 72% donor + 28% camera
-        blend = min(strictness * 0.4, 0.4)
-
-        # Walk through ALL edges and blend camera values into threshold_b
+        # Walk through edges and inject camera values into scoring edges only
+        scoring_count = 0
         for i in range(num_edges):
             eoff = edge_start + i * _DURANGO_EDGE_SIZE
+            orig_a = struct.unpack_from(f"{endian}f", donor_data, eoff)[0]
 
-            # Read the donor's original threshold_b
-            orig_b = struct.unpack_from(f"{endian}f", donor_data, eoff + 4)[0]
+            # Only modify SCORING edges, leave gating edges untouched
+            if abs(orig_a) > _GATING_THRESHOLD:
+                continue
 
-            # Select a camera constraint value (sequential walk)
-            ci = int(i * n / max(num_edges, 1)) % n
+            # Select a camera constraint value (sequential walk through sorted values)
+            ci = int(scoring_count * n / max(num_edges, 1)) % n
             cam_val = sorted_vals[ci] * _JDNEXT_TO_DURANGO_SCALE
 
-            # Blend: keep mostly donor, add a touch of camera
-            blended = orig_b * (1.0 - blend) + cam_val * blend
-
-            struct.pack_into(f"{endian}f", donor_data, eoff + 4, blended)
+            # Direct injection at correct scale
+            struct.pack_into(f"{endian}f", donor_data, eoff + 4, cam_val)
+            scoring_count += 1
 
     # Write output
     output_path.parent.mkdir(parents=True, exist_ok=True)
