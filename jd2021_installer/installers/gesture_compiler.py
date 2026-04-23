@@ -603,15 +603,26 @@ def _load_and_hybridize(
 
     # Phase 3: Inject JDNext constraints into edge thresholds.
     #
-    # NEW STRATEGY (post-Controller App decompilation):
-    #   threshold_a = Durango Kinect Joint ID (mapped from JDNext enum)
-    #   threshold_b = Scaled body position constraint for that joint
+    # REAL KINECT PATTERN (from forensic analysis of 10 MakeItJingle files):
+    #   ~76% scoring edges: threshold_a = body position [-1, +1] quantized to 0.1
+    #   ~20% gating edges: threshold_a = joint pair index (11-164)
+    #   ~4%  boundary edges: threshold_a = values [1, 10]
     #
-    # We PRESERVE the template's gating edges (|a| > 10) since they
-    # define valid HMM structure. For scoring edges, we inject proper
-    # joint IDs and position values.
+    # We PRESERVE the template's gating edges (|a| > 10) and inject
+    # quantized position values into scoring edges.
 
     n = len(filtered)
+
+    # Build quantized threshold_a pool matching real bell-curve distribution
+    _QUANT_WEIGHTS = {
+        0.0: 16, 0.1: 10, -0.1: 9, 0.2: 8, -0.2: 8,
+        0.3: 5, -0.3: 5, 0.4: 5, -0.4: 5, 0.5: 4, -0.5: 5,
+        0.6: 3, -0.6: 5, 0.7: 2, -0.7: 1, 0.8: 1, -0.8: 2,
+        -1.0: 2, 1.0: 2, -0.9: 1, 0.9: 1,
+    }
+    quant_pool: list[float] = []
+    for val, weight in _QUANT_WEIGHTS.items():
+        quant_pool.extend([val] * weight)
 
     # Identify template gating vs scoring edges
     gating_indices = []
@@ -625,7 +636,8 @@ def _load_and_hybridize(
             scoring_indices.append(edge_idx)
 
     # --- Song-specific gating threshold_b ---
-    # Update gating edges' threshold_b with JDNext position data
+    # Preserve template's gating threshold_a; update threshold_b with
+    # camera position data so structural gates reflect the song.
     if n > 0:
         for j, edge_idx in enumerate(gating_indices):
             eoff = edge_start + edge_idx * _DURANGO_EDGE_SIZE
@@ -636,18 +648,21 @@ def _load_and_hybridize(
                 val * _JDNEXT_TO_DURANGO_SCALE,
             )
 
-    # --- Scoring edge injection with proper joint IDs ---
+    # --- Scoring edge injection with quantized threshold_a ---
     num_scoring = len(scoring_indices)
+    sorted_filtered = sorted(filtered, key=lambda x: x[1])
 
     for i, edge_idx in enumerate(scoring_indices):
         eoff = edge_start + edge_idx * _DURANGO_EDGE_SIZE
+
+        # threshold_a: quantized body position (bell-curve, matching real files)
+        quant_a = quant_pool[i % len(quant_pool)]
+
+        # threshold_b: real camera constraint scaled to Durango range
         ci = int(i * n / max(num_scoring, 1)) % n
-        jid, val = filtered[ci]
+        _, val = sorted_filtered[ci]
 
-        # Map JDNext joint ID → Durango Kinect V2 joint ID
-        durango_jid = _JDNEXT_TO_DURANGO_JOINT_MAP.get(jid, jid)
-
-        struct.pack_into(f"{endian}f", template_data, eoff, float(durango_jid))
+        struct.pack_into(f"{endian}f", template_data, eoff, quant_a)
         struct.pack_into(
             f"{endian}f", template_data, eoff + 4,
             val * _JDNEXT_TO_DURANGO_SCALE,
@@ -849,7 +864,15 @@ def _build_params_from_jdnext(
     P0, P11, P12:  Tempo/duration/complexity derived from Section A/B descriptors.
     P1:            System constant (0.049).
     P2:            Reserved (0.0).
-    P3-P10:        Statistical body position encoding from constraints.
+    P3-P10:        Song-specific body position statistics computed from the
+                   actual per-joint constraint means and standard deviations.
+
+    Real Kinect parameter ranges (from 10 MakeItJingle files):
+        P0:  [336, 1489]   P1: 0.049  P2: 0.0
+        P3:  [0.158, 0.579]  P4:  [0.231, 0.712]  P5:  [0.175, 0.611]
+        P6:  [0.015, 0.047]  P7: [-0.890,-0.373]  P8: [-0.579,-0.160]
+        P9: [-0.738,-0.258]  P10: [0.041, 0.061]
+        P11: [120, 264]    P12: [34, 108]
     """
     # Map JDNext "Section A/B" timing descriptors (7/31 counts) 
     # to the actual duration/weight parameters.
@@ -859,31 +882,59 @@ def _build_params_from_jdnext(
     # 7 timing counts for intro poses, 31 for full body poses
     total_timing_weight = (type_a_count * 7) + (type_b_count * 31)
 
-    # Convert to Durango scaling ratios (based on Durango baseline regression)
-    p0_tempo = total_timing_weight * 0.42
-    p11_complexity = total_timing_weight * 0.065
-    p12_duration = total_timing_weight * 0.038
+    # Change 4: Fix P0/P11/P12 scaling to match real ranges
+    # Real P0 range [336, 1489], mean ~740 for ~741 total_timing_weight
+    p0_tempo = total_timing_weight * 1.0
+    # Real P11 range [120, 264], mean ~166
+    p11_complexity = total_timing_weight * 0.225
+    # Real P12 range [34, 108], mean ~67
+    p12_duration = total_timing_weight * 0.090
 
-    # Compute constraint statistics from raw values
-    raw_values = [v for _, v in joint_constraints]
-    scaled = [v * _JDNEXT_TO_DURANGO_SCALE for v in raw_values]
-    mean_val = statistics.mean(scaled) if scaled else 0.0
-    std_val = statistics.stdev(scaled) if len(scaled) > 1 else 0.3
+    # Change 2: Compute song-specific P3-P10 from per-joint statistics
+    # Group constraints by joint and compute per-joint means
+    from collections import defaultdict
+    joint_vals: dict[int, list[float]] = defaultdict(list)
+    for jid, val in joint_constraints:
+        joint_vals[jid].append(val * _JDNEXT_TO_DURANGO_SCALE)
+
+    if joint_vals:
+        per_joint_means = [statistics.mean(vs) for vs in joint_vals.values()]
+        per_joint_stds = [
+            statistics.stdev(vs) if len(vs) > 1 else 0.3
+            for vs in joint_vals.values()
+        ]
+        abs_mean = statistics.mean([abs(m) for m in per_joint_means])
+        mean_std = statistics.mean(per_joint_stds)
+    else:
+        abs_mean = 0.3
+        mean_std = 0.4
+
+    # P3-P6: positive body position bounds (real range ~0.02-0.71)
+    # P7-P9: negative body position bounds (real range ~-0.89 to -0.16)
+    # P10:   small positive stabilizer (real range ~0.04-0.06)
+    p3 = max(0.15, min(abs_mean + mean_std * 0.2, 0.58))
+    p4 = max(0.23, min(abs_mean + mean_std * 0.5, 0.72))
+    p5 = max(0.17, min(abs_mean + mean_std * 0.3, 0.62))
+    p6 = max(0.015, min(mean_std * 0.03, 0.047))
+    p7 = -max(0.37, min(abs_mean + mean_std * 0.6, 0.89))
+    p8 = -max(0.16, min(abs_mean + mean_std * 0.2, 0.58))
+    p9 = -max(0.26, min(abs_mean + mean_std * 0.4, 0.74))
+    p10 = max(0.041, min(mean_std * 0.04, 0.061))
 
     return [
-        p0_tempo,                                # P0: tempo
-        0.049,                                   # P1: system constant
-        0.0,                                     # P2: reserved
-        0.2131,                                  # P3: discorope lenient bound
-        0.4287,                                  # P4: discorope lenient bound
-        0.3053,                                  # P5: discorope lenient bound
-        0.0486,                                  # P6: discorope lenient bound
-        -0.5173,                                 # P7: discorope lenient bound
-        -0.2123,                                 # P8: discorope lenient bound
-        -0.2928,                                 # P9: discorope lenient bound
-        0.0461,                                  # P10: discorope lenient bound
-        p11_complexity,                          # P11: complexity
-        p12_duration,                            # P12: duration
+        p0_tempo,       # P0: tempo
+        0.049,          # P1: system constant
+        0.0,            # P2: reserved
+        p3,             # P3: song-specific body stat
+        p4,             # P4: song-specific body stat
+        p5,             # P5: song-specific body stat
+        p6,             # P6: song-specific body stat
+        p7,             # P7: song-specific body stat (negative)
+        p8,             # P8: song-specific body stat (negative)
+        p9,             # P9: song-specific body stat (negative)
+        p10,            # P10: stabilizer
+        p11_complexity, # P11: complexity
+        p12_duration,   # P12: duration
     ]
 
 
@@ -892,11 +943,18 @@ def _build_edge_table(
     num_states: int,
     strictness: float,
 ) -> list[tuple[float, float, int]]:
-    """Build a 1000-edge table with proper joint-ID edge injection.
+    """Build a 1000-edge table matching real Kinect edge distribution.
 
-    Edge structure (post-Controller App decompilation):
-      threshold_a = Durango Kinect Joint ID (mapped from JDNext enum)
-      threshold_b = Scaled body position constraint for that joint
+    Real Kinect edge table structure (from forensic analysis):
+      ~76% scoring edges:
+        threshold_a = body position value [-1.0, +1.0] quantized to 0.1
+        threshold_b = body position value (Durango scale)
+      ~4%  boundary edges:
+        threshold_a = values [1.0, 10.0]
+        threshold_b = body position value
+      ~20% gating edges:
+        threshold_a = joint pair index (11-164)
+        threshold_b = extreme position value
 
     State IDs are distributed across the generated state space.
     """
@@ -912,19 +970,65 @@ def _build_edge_table(
 
     n = len(filtered)
 
+    # --- Edge distribution targets (from real file analysis) ---
+    target_gating = int(num_edges * 0.20)   # ~200 gating edges
+    target_scoring = num_edges - target_gating  # ~800 scoring edges
+
+    # Real gating edge joint pair indices (from MakeItJingle analysis)
+    # These are even-stepped values used by Kinect V2 for joint pair encoding
+    _GATING_JOINT_PAIRS = [
+        12, 14, 16, 18, 20, 22, 30, 32, 34, 36, 38, 40, 42, 44, 46,
+        48, 50, 52, 56, 58, 60, 72, 74, 76, 78, 80, 82, 84, 86, 88,
+        90, 92, 94, 96, 98, 100, 102, 104, 106, 108, 110, 114, 116,
+        118, 120, 124, 126, 128, 130, 132, 134, 136, 138, 140, 142,
+        144, 146, 148, 150, 152, 154, 156, 158, 160, 162, 164,
+    ]
+
+    # Change 3: Quantized threshold_a bell-curve distribution for scoring edges.
+    # Real distribution (from makeitjingle_cut_1.gesture):
+    #   0.00: 16%, ±0.10: 19%, ±0.20: 16%, ±0.30: 10%, ±0.40: 10%,
+    #   ±0.50: 9%, ±0.60: 8%, ±0.70: 3%, ±0.80: 3%, ±0.90: 1%, ±1.00: 3%
+    _QUANTIZED_POOL: list[float] = []
+    _QUANT_WEIGHTS = {
+        0.0: 16, 0.1: 10, -0.1: 9, 0.2: 8, -0.2: 8,
+        0.3: 5, -0.3: 5, 0.4: 5, -0.4: 5, 0.5: 4, -0.5: 5,
+        0.6: 3, -0.6: 5, 0.7: 2, -0.7: 1, 0.8: 1, -0.8: 2,
+        -1.0: 2, 1.0: 2, -0.9: 1, 0.9: 1,
+    }
+    for val, weight in _QUANT_WEIGHTS.items():
+        _QUANTIZED_POOL.extend([val] * weight)
+
+    # Sort constraints by value for structured pairing
+    sorted_filtered = sorted(filtered, key=lambda x: x[1])
+    stride_b = n // 3 if n > 3 else 1  # ~33% offset for decorrelation
+
     for i in range(num_edges):
-        # State ID: distribute across all states
         state_id = i % num_states
 
-        # Select a constraint using sequential walk
-        ci = int(i * n / max(num_edges, 1)) % n
-        jid, val = filtered[ci]
+        if i < target_scoring:
+            # --- Scoring edge: dual body position thresholds ---
+            # threshold_a: quantized position value (bell-curve distribution)
+            quant_a = _QUANTIZED_POOL[i % len(_QUANTIZED_POOL)]
 
-        # Map JDNext joint ID → Durango Kinect V2 joint ID
-        durango_jid = float(_JDNEXT_TO_DURANGO_JOINT_MAP.get(jid, jid))
-        scaled_val = val * _JDNEXT_TO_DURANGO_SCALE
+            # threshold_b: real camera constraint scaled to Durango range
+            ci_b = int(i * n / max(target_scoring, 1)) % n
+            _, val_b = sorted_filtered[ci_b]
+            scaled_b = val_b * _JDNEXT_TO_DURANGO_SCALE
 
-        edges.append((durango_jid, scaled_val, state_id))
+            edges.append((quant_a, scaled_b, state_id))
+        else:
+            # --- Gating edge: joint pair index + extreme position ---
+            gating_idx = i - target_scoring
+            joint_pair = float(
+                _GATING_JOINT_PAIRS[gating_idx % len(_GATING_JOINT_PAIRS)]
+            )
+
+            # threshold_b: extreme position from camera data
+            ci = int(gating_idx * n / max(target_gating, 1)) % n
+            _, val = sorted_filtered[ci]
+            extreme_val = val * _JDNEXT_TO_DURANGO_SCALE
+
+            edges.append((joint_pair, extreme_val, state_id))
 
     return edges
 
