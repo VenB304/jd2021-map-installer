@@ -73,12 +73,17 @@ _X360_ENDIAN = ">"
 #   - Small values near 0: always-active scoring edges
 #   - Large absolute values (>10): blocking gates (impossible body positions)
 #
-# threshold_b: position threshold — compared against Kinect sensor reading.
-#   - Same-song comparison (MakeItJingle in both JDU & JDNext) shows:
-#     JDNext [-0.7, +1.0] maps to Durango [-2.6, +2.9] → scale ~3.0×
-#   - Validated across 6 matched gesture pairs: scale range 2.0–4.2×
+# threshold_b: position threshold — compared against normalized Kinect reading.
+#   - Original analysis suggested 3.0× scale from raw Kinect ↔ JDNext
+#     comparison, but this produces values too extreme for the engine.
+#   - Discorope (the working auto-perfect gesture) has threshold_b in
+#     [-0.97, +1.52] with mean_abs=0.44.  Real Kinect files use [-3.8, +3.8]
+#     but scoring ACTUALLY works on normalized HMM-space values.
+#   - JDNext camera constraints are already in [-1, +1] normalized space.
+#     Scale factor of 0.63 maps to [-0.63, +0.63] — similar to discorope's
+#     core scoring range and lenient enough for the engine to match.
 
-_JDNEXT_TO_DURANGO_SCALE = 3.0  # Scale JDNext [-1,+1] to Durango [-3,+3]
+_JDNEXT_TO_DURANGO_SCALE = 0.63  # JDNext [-1,+1] → Durango [-0.63,+0.63]
 
 # Gating threshold: edges with |threshold_a| above this value in the
 # template are treated as HMM structural gates and preserved as-is.
