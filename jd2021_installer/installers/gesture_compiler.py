@@ -665,47 +665,62 @@ def _load_and_hybridize(
 
     # --- Gating edges: leave completely untouched ---
 
-    # --- Structured scoring edge injection ---
-    # Map state groups to camera sections proportionally
+    # Parse Zone A to get edge group per state
+    zone_a_end = 0
+    for rec_i in range((edge_start - 52 - 35) // 20):
+        v = struct.unpack_from(f"{endian}5i", template_data, 35 + rec_i * 20)
+        if v[0] not in (0, 1, 2) and rec_i > 10:
+            zone_a_end = rec_i
+            break
+
+    state_egroup: dict[int, tuple[int, int]] = {}
+    for rec_i in range(zone_a_end):
+        v = struct.unpack_from(f"{endian}5i", template_data, 35 + rec_i * 20)
+        state_egroup[v[1]] = (v[3], v[2])
+
+    # Real Kinect edge-group statistics
+    _EG_STATS: dict[tuple[int, int], tuple[float, float]] = {
+        (5, 0): (-0.066, 0.343), (5, 1): (+0.373, 0.435),
+        (6, 0): (-0.002, 0.508), (6, 1): (+0.354, 0.397),
+        (9, 0): (+0.182, 0.531), (9, 1): (+0.471, 0.465),
+        (10, 0): (-0.009, 0.402), (10, 1): (+0.389, 0.426),
+        (13, 0): (-0.356, 0.265), (13, 1): (-0.069, 0.263),
+        (14, 0): (-0.145, 0.440), (14, 1): (+0.110, 0.383),
+        (17, 0): (-0.055, 0.392), (17, 1): (+0.186, 0.341),
+        (18, 0): (+0.068, 0.548), (18, 1): (+0.376, 0.356),
+    }
+    _DEF = (0.0, 0.5)
+
+    # Seeded RNG for reproducibility
+    import hashlib, random as _random
+    seed_hash = hashlib.md5(b"hybridize_" + str(n).encode()).digest()
+    rng = _random.Random(int.from_bytes(seed_hash[:4], 'little'))
+
     sorted_states = sorted(scoring_by_state.keys())
-    num_state_groups = len(sorted_states)
-
-    # Split filtered constraints into section pools
-    sorted_filtered = sorted(filtered, key=lambda x: x[1])
-    num_cam_sections = max(1, n // 80) if n > 80 else 1
-    chunk_size = max(1, n // num_cam_sections)
-    section_pools: list[list[float]] = []
-    for s in range(num_cam_sections):
-        start = s * chunk_size
-        end = start + chunk_size if s < num_cam_sections - 1 else n
-        pool = [v for _, v in sorted_filtered[start:end] if -1.0 <= v <= 1.0]
-        if not pool:
-            pool = [v for _, v in sorted_filtered[start:end]]
-        if pool:
-            section_pools.append(pool)
-    if not section_pools:
-        section_pools = [[v for _, v in sorted_filtered]]
-
-    num_sections = len(section_pools)
     num_scoring = sum(len(v) for v in scoring_by_state.values())
 
-    for group_idx, sid in enumerate(sorted_states):
-        edge_indices = scoring_by_state[sid]
-        sec_idx = min(int(group_idx * num_sections / max(num_state_groups, 1)),
-                      num_sections - 1)
-        sec_pool = section_pools[sec_idx]
+    for sid in sorted_states:
+        eg_key = state_egroup.get(sid, None)
+        mean, std = _EG_STATS.get(eg_key, _DEF) if eg_key else _DEF
 
-        for local_idx, edge_i in enumerate(edge_indices):
+        for edge_i in scoring_by_state[sid]:
             eoff = edge_start + edge_i * _DURANGO_EDGE_SIZE
-            ci = local_idx % len(sec_pool)
-            cam_val = sec_pool[ci] * _JDNEXT_TO_DURANGO_SCALE
-            struct.pack_into(f"{endian}f", template_data, eoff + 4, cam_val)
+            effective_std = std * 2.0
+            tb_val = rng.gauss(mean, effective_std)
+
+            _MIN_ABS = 0.3
+            if abs(tb_val) < _MIN_ABS:
+                sign = 1.0 if mean >= 0 else -1.0
+                tb_val = sign * (_MIN_ABS + abs(tb_val))
+
+            tb_val = max(-3.8, min(3.8, tb_val))
+            struct.pack_into(f"{endian}f", template_data, eoff + 4, tb_val)
 
     logger.debug(
         "Injected %d scoring + %d gating edges "
-        "(dead_zone=%.3f, strictness=%.2f, scale=%.2f, format=%s)",
+        "(dead_zone=%.3f, strictness=%.2f, format=%s)",
         num_scoring, gating_count,
-        dead_zone, strictness, _JDNEXT_TO_DURANGO_SCALE, fmt_name,
+        dead_zone, strictness, fmt_name,
     )
     return template_data
 
@@ -919,13 +934,15 @@ def _compile_with_donor(
     Strategy:
       1. Copy the donor's complete binary structure (state table, HMM topology)
       2. REPLACE the 13 scoring parameters with real Kinect averages
-      3. STRUCTURED INJECTION: Map each donor state group to a specific camera
-         section (proportionally by position), then inject that section's XY
-         values as threshold_b at 1.97x scale.
+      3. SYNTHESIZE body-part-specific threshold_b values based on real Kinect
+         edge group distributions (mean/std from 48 MakeItJingle files),
+         modulated by camera constraint magnitude for temporal variation.
       4. Leave gating edges (|threshold_a| > 10) completely untouched
 
-    This structured approach ensures each state evaluates the body position
-    expected at that point in the choreography, rather than random values.
+    Camera constraints are uniformly distributed (~0.16 mean) across all body
+    parts, so they CANNOT be used directly as threshold_b. Instead, we use
+    the camera data only for temporal intensity (which sections are "active"),
+    and generate body-part-specific values from Kinect statistics.
     """
     donor_data = bytearray(donor_path.read_bytes())
 
@@ -944,10 +961,41 @@ def _compile_with_donor(
         struct.pack_into(f"{endian}f", donor_data, params_start + i * 4, p)
 
     if strictness <= 0.0:
-        # Auto-perfect: don't modify any edges
         logger.debug("Strictness=0; donor gesture used as-is (auto-perfect)")
     else:
-        # Group scoring edges by state_id to preserve temporal structure
+        # Parse Zone A to get edge group assignment per state
+        # Zone A records: [stateID, flag, joint, edgeGroup, field4] (20 bytes)
+        zone_a_end = 0
+        for rec_i in range((edge_start - 52 - 35) // 20):
+            v = struct.unpack_from(f"{endian}5i", donor_data, 35 + rec_i * 20)
+            if v[0] not in (0, 1, 2) and rec_i > 10:
+                zone_a_end = rec_i
+                break
+
+        state_egroup: dict[int, tuple[int, int]] = {}
+        for rec_i in range(zone_a_end):
+            v = struct.unpack_from(f"{endian}5i", donor_data, 35 + rec_i * 20)
+            flag = v[1]  # state index
+            joint_axis = v[2]  # 0=X, 1=Y
+            egroup = v[3]  # body part group
+            state_egroup[flag] = (egroup, joint_axis)
+
+        # Real Kinect edge-group statistics (from 48 MakeItJingle files)
+        # {(edgeGroup, joint): (mean, std)}
+        _KINECT_EGROUP_STATS: dict[tuple[int, int], tuple[float, float]] = {
+            (5, 0): (-0.066, 0.343), (5, 1): (+0.373, 0.435),
+            (6, 0): (-0.002, 0.508), (6, 1): (+0.354, 0.397),
+            (9, 0): (+0.182, 0.531), (9, 1): (+0.471, 0.465),
+            (10, 0): (-0.009, 0.402), (10, 1): (+0.389, 0.426),
+            (13, 0): (-0.356, 0.265), (13, 1): (-0.069, 0.263),
+            (14, 0): (-0.145, 0.440), (14, 1): (+0.110, 0.383),
+            (17, 0): (-0.055, 0.392), (17, 1): (+0.186, 0.341),
+            (18, 0): (+0.068, 0.548), (18, 1): (+0.376, 0.356),
+        }
+        # Default for unknown edge groups
+        _DEFAULT_STAT = (0.0, 0.5)
+
+        # Group scoring edges by state_id
         from collections import defaultdict
         scoring_by_state: dict[int, list[int]] = defaultdict(list)
         for i in range(num_edges):
@@ -957,66 +1005,78 @@ def _compile_with_donor(
                 sid = struct.unpack_from(f"{endian}i", donor_data, eoff + 8)[0]
                 scoring_by_state[sid].append(i)
 
-        # Sort states by state_id (temporal order in the song)
         sorted_states = sorted(scoring_by_state.keys())
         num_state_groups = len(sorted_states)
 
-        # Organize camera constraints by section (preserving temporal structure)
-        # Re-extract section-level data from the joint_constraints list
-        # The constraints come in section order from _decompile_jdnext
-        # Group them back into sections based on section boundaries
-        # We estimate section boundaries from the data distribution
-        section_values: list[list[float]] = []
-        dead_zone = _DEAD_ZONE_MAX * strictness
-
-        # Build per-section constraint pools from the flat joint_constraints
-        # Since the decompiler processes sections sequentially, the constraints
-        # arrive in section order. We split them into roughly equal chunks
-        # corresponding to camera gesture sections.
-        all_usable = [(j, v) for j, v in joint_constraints if abs(v) > dead_zone]
-        if len(all_usable) < 10:
-            all_usable = joint_constraints if joint_constraints else [(0, 0.0)]
-
-        # Estimate number of camera sections from the timing structure
-        num_cam_sections = max(1, len(timing_values) // 3) if timing_values else 1
-        if num_cam_sections < 2:
-            num_cam_sections = max(1, len(all_usable) // 80)
-
-        # Split constraints into per-section pools (preserving order)
-        chunk_size = max(1, len(all_usable) // num_cam_sections)
+        # Compute per-section intensity from camera data for temporal variation
+        raw_values = [abs(v) for _, v in joint_constraints if -1.0 <= v <= 1.0]
+        if not raw_values:
+            raw_values = [0.5]
+        # Normalize intensity to [0.5, 1.5] range
+        import statistics as _stats
+        global_mean = _stats.mean(raw_values) if raw_values else 0.5
+        num_cam_sections = max(1, len(raw_values) // 80)
+        chunk = max(1, len(raw_values) // num_cam_sections)
+        section_intensity: list[float] = []
         for s in range(num_cam_sections):
-            start = s * chunk_size
-            end = start + chunk_size if s < num_cam_sections - 1 else len(all_usable)
-            sec_vals = [v for _, v in all_usable[start:end] if -1.0 <= v <= 1.0]
-            if not sec_vals:
-                # Fallback: use all values in this chunk
-                sec_vals = [v for _, v in all_usable[start:end]]
-            if sec_vals:
-                section_values.append(sec_vals)
+            start = s * chunk
+            end = start + chunk if s < num_cam_sections - 1 else len(raw_values)
+            sec_vals = raw_values[start:end]
+            sec_mean = _stats.mean(sec_vals) if sec_vals else global_mean
+            # Normalize: higher camera values = more extreme body positions
+            intensity = sec_mean / max(global_mean, 0.01)
+            intensity = max(0.5, min(1.5, intensity))
+            section_intensity.append(intensity)
 
-        if not section_values:
-            section_values = [[v for _, v in all_usable]]
+        if not section_intensity:
+            section_intensity = [1.0]
 
-        num_sections = len(section_values)
+        # Use a seeded RNG for reproducibility (same input = same output)
+        import hashlib
+        seed_hash = hashlib.md5(src_name.encode()).digest()
+        seed_val = int.from_bytes(seed_hash[:4], 'little')
+        import random
+        rng = random.Random(seed_val)
 
-        # Map each state group → camera section (proportional temporal mapping)
+        # Generate body-part-specific threshold_b for each state
         for group_idx, sid in enumerate(sorted_states):
             edge_indices = scoring_by_state[sid]
 
             # Which camera section does this state correspond to?
-            sec_idx = int(group_idx * num_sections / max(num_state_groups, 1))
-            sec_idx = min(sec_idx, num_sections - 1)
-            sec_pool = section_values[sec_idx]
+            sec_idx = int(group_idx * len(section_intensity) / max(num_state_groups, 1))
+            sec_idx = min(sec_idx, len(section_intensity) - 1)
+            intensity = section_intensity[sec_idx]
 
-            # Inject camera values from this section into this state's edges
+            # What body part does this state evaluate?
+            eg_key = state_egroup.get(sid, None)
+
             for local_idx, edge_i in enumerate(edge_indices):
                 eoff = edge_start + edge_i * _DURANGO_EDGE_SIZE
 
-                # Pick a constraint from this section's pool
-                ci = local_idx % len(sec_pool)
-                cam_val = sec_pool[ci] * _JDNEXT_TO_DURANGO_SCALE
+                if eg_key is not None:
+                    mean, std = _KINECT_EGROUP_STATS.get(eg_key, _DEFAULT_STAT)
+                else:
+                    mean, std = _DEFAULT_STAT
 
-                struct.pack_into(f"{endian}f", donor_data, eoff + 4, cam_val)
+                # Generate a value from this body part's distribution.
+                # Use 2x std because per-file distributions are wider than
+                # the cross-file average std (the average smooths out
+                # individual file variation).
+                effective_std = std * 2.0 * intensity
+                tb_val = rng.gauss(mean, effective_std)
+
+                # Enforce dead zone: real Kinect has 0% of tb values
+                # within [-0.3, +0.3]. Push small values outward to
+                # ensure the engine requires specific body positioning.
+                _MIN_ABS = 0.3
+                if abs(tb_val) < _MIN_ABS:
+                    sign = 1.0 if mean >= 0 else -1.0
+                    tb_val = sign * (_MIN_ABS + abs(tb_val))
+
+                # Clamp to reasonable Kinect range
+                tb_val = max(-3.8, min(3.8, tb_val))
+
+                struct.pack_into(f"{endian}f", donor_data, eoff + 4, tb_val)
 
     # Write output
     output_path.parent.mkdir(parents=True, exist_ok=True)
