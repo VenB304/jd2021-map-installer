@@ -640,38 +640,39 @@ def _load_and_hybridize(
         else:
             scoring_indices.append(edge_idx)
 
-    # --- Song-specific gating threshold_b ---
-    # Preserve template's gating threshold_a; update threshold_b with
-    # camera position data so structural gates reflect the song.
+    # Camera blend factor: same approach as _compile_with_donor.
+    # Keep mostly template, add a touch of camera for song-specificity.
+    blend = min(strictness * 0.4, 0.4)
+
+    # --- Gating edge blending ---
+    # Preserve template's gating threshold_a; blend camera into threshold_b.
     if n > 0:
         for j, edge_idx in enumerate(gating_indices):
             eoff = edge_start + edge_idx * _DURANGO_EDGE_SIZE
+            orig_b = struct.unpack_from(f"{endian}f", template_data, eoff + 4)[0]
             ci = int(j * n / max(len(gating_indices), 1)) % n
             _, val = filtered[ci]
-            struct.pack_into(
-                f"{endian}f", template_data, eoff + 4,
-                val * _JDNEXT_TO_DURANGO_SCALE,
-            )
+            cam_val = val * _JDNEXT_TO_DURANGO_SCALE
+            blended = orig_b * (1.0 - blend) + cam_val * blend
+            struct.pack_into(f"{endian}f", template_data, eoff + 4, blended)
 
-    # --- Scoring edge injection with quantized threshold_a ---
+    # --- Scoring edge blending ---
+    # Preserve template's threshold_a; blend camera into threshold_b.
     num_scoring = len(scoring_indices)
     sorted_filtered = sorted(filtered, key=lambda x: x[1])
 
     for i, edge_idx in enumerate(scoring_indices):
         eoff = edge_start + edge_idx * _DURANGO_EDGE_SIZE
+        orig_b = struct.unpack_from(f"{endian}f", template_data, eoff + 4)[0]
 
-        # threshold_a: quantized body position (bell-curve, matching real files)
-        quant_a = quant_pool[i % len(quant_pool)]
-
-        # threshold_b: real camera constraint scaled to Durango range
         ci = int(i * n / max(num_scoring, 1)) % n
         _, val = sorted_filtered[ci]
+        cam_val = val * _JDNEXT_TO_DURANGO_SCALE
 
-        struct.pack_into(f"{endian}f", template_data, eoff, quant_a)
-        struct.pack_into(
-            f"{endian}f", template_data, eoff + 4,
-            val * _JDNEXT_TO_DURANGO_SCALE,
-        )
+        # Blend: keep mostly template, add camera influence
+        blended = orig_b * (1.0 - blend) + cam_val * blend
+        struct.pack_into(f"{endian}f", template_data, eoff + 4, blended)
+        # eoff + 0 (threshold_a) is LEFT UNTOUCHED — preserving template structure
         # eoff + 8 (state_id) is LEFT UNTOUCHED — preserving HMM topology
 
     total_gating = len(gating_indices)
@@ -890,12 +891,17 @@ def _compile_with_donor(
 ) -> bool:
     """Compile a gesture using a known-good donor as the structural base.
 
-    Copies the donor's entire binary structure, then ONLY injects
-    JDNext camera constraint values into the scoring edges' threshold_b.
+    **Key insight:** The donor template (durango_template/discorope) already
+    gives auto-perfect scores when used unmodified.  Fully REPLACING its
+    threshold_b values with camera data BREAKS this because camera
+    constraints have a compressed distribution that narrows the engine's
+    scoring window → OKs/Greats instead of Perfect.
 
-    Modification targets (everything else is left untouched):
-      - Scoring edges (|threshold_a| <= 1.0): threshold_b ← camera value
-      - Gating edges (|threshold_a| > 10): threshold_b ← camera value
+    **Solution:** BLEND camera values into the donor's existing threshold_b
+    instead of replacing.  The blend factor is derived from ``strictness``:
+      - strictness=0.0 → 100% donor (auto-perfect, no camera influence)
+      - strictness=0.7 → 30% camera blend (song-specific, still lenient)
+      - strictness=1.0 → 40% camera blend (max camera influence, still safe)
 
     The state table, parameters, and threshold_a values are preserved
     exactly as they appear in the donor file.
@@ -927,17 +933,26 @@ def _compile_with_donor(
         # Auto-perfect: don't modify any edges
         logger.debug("Strictness=0; donor gesture used as-is (auto-perfect)")
     else:
-        # Walk through ALL edges in the donor and inject camera threshold_b
+        # Camera blend factor: cap at 0.4 to keep values within
+        # the donor's proven scoring window.
+        # At strictness=0.7 (default), blend = 0.28 → 72% donor + 28% camera
+        blend = min(strictness * 0.4, 0.4)
+
+        # Walk through ALL edges and blend camera values into threshold_b
         for i in range(num_edges):
             eoff = edge_start + i * _DURANGO_EDGE_SIZE
-            orig_a = struct.unpack_from(f"{endian}f", donor_data, eoff)[0]
+
+            # Read the donor's original threshold_b
+            orig_b = struct.unpack_from(f"{endian}f", donor_data, eoff + 4)[0]
 
             # Select a camera constraint value (sequential walk)
             ci = int(i * n / max(num_edges, 1)) % n
             cam_val = sorted_vals[ci] * _JDNEXT_TO_DURANGO_SCALE
 
-            # Inject into threshold_b only — preserve threshold_a and state_id
-            struct.pack_into(f"{endian}f", donor_data, eoff + 4, cam_val)
+            # Blend: keep mostly donor, add a touch of camera
+            blended = orig_b * (1.0 - blend) + cam_val * blend
+
+            struct.pack_into(f"{endian}f", donor_data, eoff + 4, blended)
 
     # Write output
     output_path.parent.mkdir(parents=True, exist_ok=True)
