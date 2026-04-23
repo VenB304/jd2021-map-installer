@@ -645,16 +645,18 @@ def _load_and_hybridize(
     for val, weight in _QUANT_WEIGHTS.items():
         quant_pool.extend([val] * weight)
 
-    # Identify template gating vs scoring edges
-    gating_indices = []
-    scoring_indices = []
+    # Identify template gating vs scoring edges, grouped by state_id
+    from collections import defaultdict as _defaultdict
+    scoring_by_state: dict[int, list[int]] = _defaultdict(list)
+    gating_count = 0
     for edge_idx in range(num_edges):
         eoff = edge_start + edge_idx * _DURANGO_EDGE_SIZE
         orig_a = struct.unpack_from(f"{endian}f", template_data, eoff)[0]
         if abs(orig_a) > _GATING_THRESHOLD:
-            gating_indices.append(edge_idx)
+            gating_count += 1
         else:
-            scoring_indices.append(edge_idx)
+            sid = struct.unpack_from(f"{endian}i", template_data, eoff + 8)[0]
+            scoring_by_state[sid].append(edge_idx)
 
     # Inject real Kinect average parameters
     params_start = edge_start - 52
@@ -662,31 +664,47 @@ def _load_and_hybridize(
         struct.pack_into(f"{endian}f", template_data, params_start + i * 4, p)
 
     # --- Gating edges: leave completely untouched ---
-    # Gating edges define structural HMM gates; modifying them
-    # causes the engine to reject valid body positions.
 
-    # --- Scoring edge injection ---
-    # Inject camera XY constraint values at correct 1.97x scale.
-    num_scoring = len(scoring_indices)
+    # --- Structured scoring edge injection ---
+    # Map state groups to camera sections proportionally
+    sorted_states = sorted(scoring_by_state.keys())
+    num_state_groups = len(sorted_states)
+
+    # Split filtered constraints into section pools
     sorted_filtered = sorted(filtered, key=lambda x: x[1])
+    num_cam_sections = max(1, n // 80) if n > 80 else 1
+    chunk_size = max(1, n // num_cam_sections)
+    section_pools: list[list[float]] = []
+    for s in range(num_cam_sections):
+        start = s * chunk_size
+        end = start + chunk_size if s < num_cam_sections - 1 else n
+        pool = [v for _, v in sorted_filtered[start:end] if -1.0 <= v <= 1.0]
+        if not pool:
+            pool = [v for _, v in sorted_filtered[start:end]]
+        if pool:
+            section_pools.append(pool)
+    if not section_pools:
+        section_pools = [[v for _, v in sorted_filtered]]
 
-    for i, edge_idx in enumerate(scoring_indices):
-        eoff = edge_start + edge_idx * _DURANGO_EDGE_SIZE
+    num_sections = len(section_pools)
+    num_scoring = sum(len(v) for v in scoring_by_state.values())
 
-        ci = int(i * n / max(num_scoring, 1)) % n
-        _, val = sorted_filtered[ci]
-        cam_val = val * _JDNEXT_TO_DURANGO_SCALE
+    for group_idx, sid in enumerate(sorted_states):
+        edge_indices = scoring_by_state[sid]
+        sec_idx = min(int(group_idx * num_sections / max(num_state_groups, 1)),
+                      num_sections - 1)
+        sec_pool = section_pools[sec_idx]
 
-        # Direct injection — preserve threshold_a and state_id
-        struct.pack_into(f"{endian}f", template_data, eoff + 4, cam_val)
-        # eoff + 0 (threshold_a) is LEFT UNTOUCHED — preserving template structure
-        # eoff + 8 (state_id) is LEFT UNTOUCHED — preserving HMM topology
+        for local_idx, edge_i in enumerate(edge_indices):
+            eoff = edge_start + edge_i * _DURANGO_EDGE_SIZE
+            ci = local_idx % len(sec_pool)
+            cam_val = sec_pool[ci] * _JDNEXT_TO_DURANGO_SCALE
+            struct.pack_into(f"{endian}f", template_data, eoff + 4, cam_val)
 
-    total_gating = len(gating_indices)
     logger.debug(
         "Injected %d scoring + %d gating edges "
         "(dead_zone=%.3f, strictness=%.2f, scale=%.2f, format=%s)",
-        num_scoring, total_gating,
+        num_scoring, gating_count,
         dead_zone, strictness, _JDNEXT_TO_DURANGO_SCALE, fmt_name,
     )
     return template_data
@@ -901,14 +919,13 @@ def _compile_with_donor(
     Strategy:
       1. Copy the donor's complete binary structure (state table, HMM topology)
       2. REPLACE the 13 scoring parameters with real Kinect averages
-         (the donor's Balance-specific params cause scoring mismatch)
-      3. INJECT camera XY constraint values into scoring edges' threshold_b
-         at the correct 1.97x scale factor (forensic-validated from
-         MakeItJingle JDU/JDNext comparison: 92% match at 2 decimal places)
+      3. STRUCTURED INJECTION: Map each donor state group to a specific camera
+         section (proportionally by position), then inject that section's XY
+         values as threshold_b at 1.97x scale.
       4. Leave gating edges (|threshold_a| > 10) completely untouched
 
-    The state table and threshold_a values are preserved exactly as they
-    appear in the donor file.
+    This structured approach ensures each state evaluates the body position
+    expected at that point in the choreography, rather than random values.
     """
     donor_data = bytearray(donor_path.read_bytes())
 
@@ -926,39 +943,80 @@ def _compile_with_donor(
     for i, p in enumerate(_KINECT_MEAN_PARAMS):
         struct.pack_into(f"{endian}f", donor_data, params_start + i * 4, p)
 
-    # Filter constraints
-    raw_values = [v for _, v in joint_constraints]
-    dead_zone = _DEAD_ZONE_MAX * strictness
-    filtered = [v for v in raw_values if abs(v) > dead_zone]
-
-    if len(filtered) < 10:
-        filtered = raw_values if raw_values else [0.0]
-
-    # Sort for structured distribution
-    sorted_vals = sorted(filtered)
-    n = len(sorted_vals)
-
     if strictness <= 0.0:
         # Auto-perfect: don't modify any edges
         logger.debug("Strictness=0; donor gesture used as-is (auto-perfect)")
     else:
-        # Walk through edges and inject camera values into scoring edges only
-        scoring_count = 0
+        # Group scoring edges by state_id to preserve temporal structure
+        from collections import defaultdict
+        scoring_by_state: dict[int, list[int]] = defaultdict(list)
         for i in range(num_edges):
             eoff = edge_start + i * _DURANGO_EDGE_SIZE
             orig_a = struct.unpack_from(f"{endian}f", donor_data, eoff)[0]
+            if abs(orig_a) <= _GATING_THRESHOLD:
+                sid = struct.unpack_from(f"{endian}i", donor_data, eoff + 8)[0]
+                scoring_by_state[sid].append(i)
 
-            # Only modify SCORING edges, leave gating edges untouched
-            if abs(orig_a) > _GATING_THRESHOLD:
-                continue
+        # Sort states by state_id (temporal order in the song)
+        sorted_states = sorted(scoring_by_state.keys())
+        num_state_groups = len(sorted_states)
 
-            # Select a camera constraint value (sequential walk through sorted values)
-            ci = int(scoring_count * n / max(num_edges, 1)) % n
-            cam_val = sorted_vals[ci] * _JDNEXT_TO_DURANGO_SCALE
+        # Organize camera constraints by section (preserving temporal structure)
+        # Re-extract section-level data from the joint_constraints list
+        # The constraints come in section order from _decompile_jdnext
+        # Group them back into sections based on section boundaries
+        # We estimate section boundaries from the data distribution
+        section_values: list[list[float]] = []
+        dead_zone = _DEAD_ZONE_MAX * strictness
 
-            # Direct injection at correct scale
-            struct.pack_into(f"{endian}f", donor_data, eoff + 4, cam_val)
-            scoring_count += 1
+        # Build per-section constraint pools from the flat joint_constraints
+        # Since the decompiler processes sections sequentially, the constraints
+        # arrive in section order. We split them into roughly equal chunks
+        # corresponding to camera gesture sections.
+        all_usable = [(j, v) for j, v in joint_constraints if abs(v) > dead_zone]
+        if len(all_usable) < 10:
+            all_usable = joint_constraints if joint_constraints else [(0, 0.0)]
+
+        # Estimate number of camera sections from the timing structure
+        num_cam_sections = max(1, len(timing_values) // 3) if timing_values else 1
+        if num_cam_sections < 2:
+            num_cam_sections = max(1, len(all_usable) // 80)
+
+        # Split constraints into per-section pools (preserving order)
+        chunk_size = max(1, len(all_usable) // num_cam_sections)
+        for s in range(num_cam_sections):
+            start = s * chunk_size
+            end = start + chunk_size if s < num_cam_sections - 1 else len(all_usable)
+            sec_vals = [v for _, v in all_usable[start:end] if -1.0 <= v <= 1.0]
+            if not sec_vals:
+                # Fallback: use all values in this chunk
+                sec_vals = [v for _, v in all_usable[start:end]]
+            if sec_vals:
+                section_values.append(sec_vals)
+
+        if not section_values:
+            section_values = [[v for _, v in all_usable]]
+
+        num_sections = len(section_values)
+
+        # Map each state group → camera section (proportional temporal mapping)
+        for group_idx, sid in enumerate(sorted_states):
+            edge_indices = scoring_by_state[sid]
+
+            # Which camera section does this state correspond to?
+            sec_idx = int(group_idx * num_sections / max(num_state_groups, 1))
+            sec_idx = min(sec_idx, num_sections - 1)
+            sec_pool = section_values[sec_idx]
+
+            # Inject camera values from this section into this state's edges
+            for local_idx, edge_i in enumerate(edge_indices):
+                eoff = edge_start + edge_i * _DURANGO_EDGE_SIZE
+
+                # Pick a constraint from this section's pool
+                ci = local_idx % len(sec_pool)
+                cam_val = sec_pool[ci] * _JDNEXT_TO_DURANGO_SCALE
+
+                struct.pack_into(f"{endian}f", donor_data, eoff + 4, cam_val)
 
     # Write output
     output_path.parent.mkdir(parents=True, exist_ok=True)
