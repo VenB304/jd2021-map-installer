@@ -7,8 +7,37 @@ if errorlevel 1 (
 	exit /b 1
 )
 
+if not exist tools mkdir tools
+
+:: Set local context for portable tools
+set "PATH=%~dp0tools\python\tools;%~dp0tools\python\tools\Scripts;%~dp0tools\git\cmd;%PATH%"
+
+:: Ensure Portable Git is available
+git --version >nul 2>&1
+if errorlevel 1 (
+	echo [INFO] Git is missing. Setting up Portable Git...
+	powershell -NoProfile -ExecutionPolicy Bypass -Command "$ErrorActionPreference='Stop'; $api='https://api.github.com/repos/git-for-windows/git/releases/latest'; $headers=@{'User-Agent'='jd2021-map-installer-setup'}; $release=Invoke-RestMethod -Headers $headers -Uri $api; $asset=$release.assets | Where-Object { $_.name -match '^MinGit-.*-64-bit\.zip$' } | Select-Object -First 1; if (-not $asset) { throw 'Could not find MinGit release.' }; $tmpZip='tools\mingit.zip'; Invoke-WebRequest -Headers $headers -Uri $asset.browser_download_url -OutFile $tmpZip; Expand-Archive -Path $tmpZip -DestinationPath 'tools\git' -Force; Remove-Item -Force $tmpZip"
+	if errorlevel 1 (
+		echo [ERROR] Failed to install Portable Git.
+		popd
+		exit /b 1
+	)
+)
+
+:: Ensure Portable Python is available
+python -c "import sys" >nul 2>&1
+if errorlevel 1 (
+	echo [INFO] Python is missing. Setting up Portable Python...
+	powershell -NoProfile -ExecutionPolicy Bypass -Command "$ErrorActionPreference='Stop'; $tmpZip='tools\python.zip'; Invoke-WebRequest -Uri 'https://www.nuget.org/api/v2/package/python/3.11.9' -OutFile $tmpZip; Expand-Archive -Path $tmpZip -DestinationPath 'tools\python' -Force; Remove-Item -Force $tmpZip"
+	if errorlevel 1 (
+		echo [ERROR] Failed to install Portable Python.
+		popd
+		exit /b 1
+	)
+)
+
 echo [1/7] Installing Python dependencies...
-pip install -r requirements.txt
+python -m pip install -r requirements.txt
 if errorlevel 1 (
 	echo.
 	echo [ERROR] Python dependency installation failed.
