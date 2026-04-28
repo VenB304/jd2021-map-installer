@@ -885,12 +885,12 @@ def compile_gesture_from_scratch(
         )
         num_sections = _count_jdnext_sections(jdnext_src_path)
 
-        state_table, num_states = generate_state_table(
+        state_table, num_states, state_to_joint = generate_state_table(
             num_sections, len(joint_constraints),
         )
         params = _build_params_from_jdnext(joint_constraints, num_sections)
         edges = _build_edge_table(
-            joint_constraints, num_states, strictness,
+            joint_constraints, num_states, strictness, state_to_joint,
         )
         gesture_data = build_gesture_binary(
             state_table, num_states, params, edges, num_joints=9,
@@ -1201,6 +1201,7 @@ def _build_edge_table(
     joint_constraints: list[tuple[int, float]],
     num_states: int,
     strictness: float,
+    state_to_joint: dict[int, int],
 ) -> list[tuple[float, float, int]]:
     """Build a 1000-edge table matching real Kinect edge distribution.
 
@@ -1243,32 +1244,51 @@ def _build_edge_table(
         144, 146, 148, 150, 152, 154, 156, 158, 160, 162, 164,
     ]
 
-    # Change 3: Quantized threshold_a bell-curve distribution for scoring edges.
-    # Real distribution (from makeitjingle_cut_1.gesture):
-    #   0.00: 16%, ±0.10: 19%, ±0.20: 16%, ±0.30: 10%, ±0.40: 10%,
-    #   ±0.50: 9%, ±0.60: 8%, ±0.70: 3%, ±0.80: 3%, ±0.90: 1%, ±1.00: 3%
-    _QUANTIZED_POOL: list[float] = []
-    for val, weight in _QUANT_WEIGHTS.items():
-        _QUANTIZED_POOL.extend([val] * weight)
+    # Build X/Y pairs: consecutive values are X, Y for each joint
+    from collections import defaultdict
+    per_joint: dict[int, list[float]] = defaultdict(list)
+    for jid, val in filtered:
+        per_joint[jid].append(val)
+        
+    all_pairs: list[tuple[float, float]] = []
+    for jid in sorted(per_joint.keys()):
+        vals = per_joint[jid]
+        for p in range(0, len(vals) - 1, 2):
+            pair = (vals[p] * _JDNEXT_TO_DURANGO_SCALE,
+                    vals[p + 1] * _JDNEXT_TO_DURANGO_SCALE)
+            all_pairs.append(pair)
+            
+    if not all_pairs:
+        all_pairs = [(0.5, 0.5)]
 
-    # Sort constraints by value for structured pairing
+    n_pairs = len(all_pairs)
     sorted_filtered = sorted(filtered, key=lambda x: x[1])
-    stride_b = n // 3 if n > 3 else 1  # ~33% offset for decorrelation
+
+    # Inverse map: Kinect joint -> JDNext joint
+    durango_to_jdnext = {v: k for k, v in _JDNEXT_TO_DURANGO_JOINT_MAP.items()}
 
     for i in range(num_edges):
         state_id = i % num_states
 
         if i < target_scoring:
-            # --- Scoring edge: dual body position thresholds ---
-            # threshold_a: quantized position value (bell-curve distribution)
-            quant_a = _QUANTIZED_POOL[i % len(_QUANTIZED_POOL)]
+            # --- Scoring edge: camera X and Y pairs ---
+            kinect_joint = state_to_joint.get(state_id, 20) # Default SpineShoulder
+            jdnext_joint = durango_to_jdnext.get(kinect_joint, 1) # Default ShouldersCenter
+            
+            # Get camera values for this specific joint
+            joint_vals = per_joint.get(jdnext_joint, [0.0, 0.0])
+            if len(joint_vals) < 2:
+                joint_vals = [0.0, 0.0]
+                
+            # Pick a pair, cycling through available data for this joint
+            pair_idx = (i // max(1, num_states)) % max(1, len(joint_vals) // 2)
+            cam_x = joint_vals[pair_idx * 2] * _JDNEXT_TO_DURANGO_SCALE
+            cam_y = joint_vals[pair_idx * 2 + 1] * _JDNEXT_TO_DURANGO_SCALE
+            
+            ta_val = max(-3.8, min(3.8, cam_x * strictness))
+            tb_val = max(-3.8, min(3.8, cam_y * strictness))
 
-            # threshold_b: real camera constraint scaled to Durango range
-            ci_b = int(i * n / max(target_scoring, 1)) % n
-            _, val_b = sorted_filtered[ci_b]
-            scaled_b = val_b * _JDNEXT_TO_DURANGO_SCALE
-
-            edges.append((quant_a, scaled_b, state_id))
+            edges.append((ta_val, tb_val, state_id))
         else:
             # --- Gating edge: joint pair index + extreme position ---
             gating_idx = i - target_scoring

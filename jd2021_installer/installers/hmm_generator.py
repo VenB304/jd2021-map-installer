@@ -122,6 +122,7 @@ def _generate_zone_a(
     """
     records = bytearray()
     joints = ZONE_A_JOINT_IDS[:]
+    state_to_joint = {}
 
     # Calculate states per edge group
     # Groups cycle: 0..24, 0..24, 0..24, ...
@@ -170,7 +171,9 @@ def _generate_zone_a(
                 group_idx = 0
                 cycle += 1
 
-    return bytes(records)
+        state_to_joint[state_id - 1] = joint_id  # Store the mapping
+
+    return bytes(records), state_to_joint
 
 
 def _generate_zone_b(
@@ -191,9 +194,10 @@ def _generate_zone_b(
         Raw bytes of all Zone B records.
     """
     records = bytearray()
+    state_to_joint = {}
 
     if zone_b_count <= 0:
-        return bytes(records)
+        return bytes(records), state_to_joint
 
     # Allocate records to types based on the observed distribution
     type_allocation = _allocate_types(zone_b_count)
@@ -222,9 +226,10 @@ def _generate_zone_b(
                 records.extend(struct.pack('<4i',
                     rec_type, state_id, flag, joint_a))
 
+            state_to_joint[state_id] = joint_a
             state_id += 1
 
-    return bytes(records)
+    return bytes(records), state_to_joint
 
 
 def _allocate_types(zone_b_count: int) -> list[tuple[int, int]]:
@@ -277,8 +282,8 @@ def generate_state_table(
         jdnext_joint_weights:   Optional per-joint importance weights.
 
     Returns:
-        (state_table_bytes, num_states) — the raw bytes and the total
-        state count (including implicit state 0) for the header.
+        (state_table_bytes, num_states, state_to_joint) — the raw bytes, total
+        state count, and a dict mapping each state_id to its Kinect joint ID.
     """
     zone_a_count, zone_b_count, num_states = _compute_state_counts(
         num_jdnext_sections, num_jdnext_constraints,
@@ -290,17 +295,19 @@ def generate_state_table(
         num_states, zone_a_count, zone_b_count,
     )
 
-    zone_a_bytes = _generate_zone_a(zone_a_count, jdnext_joint_weights)
-    zone_b_bytes = _generate_zone_b(zone_b_count, zone_a_count + 1)
+    zone_a_bytes, zone_a_map = _generate_zone_a(zone_a_count, jdnext_joint_weights)
+    zone_b_bytes, zone_b_map = _generate_zone_b(zone_b_count, zone_a_count + 1)
 
     state_table = zone_a_bytes + zone_b_bytes
+    
+    state_to_joint = {**zone_a_map, **zone_b_map}
 
     logger.debug(
         "State table: %d bytes (Zone A=%d + Zone B=%d)",
         len(state_table), len(zone_a_bytes), len(zone_b_bytes),
     )
 
-    return state_table, num_states
+    return state_table, num_states, state_to_joint
 
 
 def build_gesture_binary(
