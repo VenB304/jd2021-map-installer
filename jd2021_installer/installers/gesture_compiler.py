@@ -871,7 +871,7 @@ def compile_gesture_from_scratch(
             return False
 
         # Phase 2: Try donor-based compilation (discorope as structural base)
-        donor_path = _find_donor_gesture()
+        donor_path = None # _find_donor_gesture()
         if donor_path is not None:
             return _compile_with_donor(
                 donor_path, joint_constraints, timing_values,

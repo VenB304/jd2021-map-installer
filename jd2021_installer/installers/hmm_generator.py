@@ -324,20 +324,14 @@ def build_gesture_binary(
     """
     num_edges = len(edges)
 
-    # Build header (59 bytes)
+    # Build header (35 bytes)
     header = bytearray()
     header.extend(b"GestureDetectorDurango\x00")  # 23 bytes
     header.extend(struct.pack('<f', 1.4))           # version
     header.extend(struct.pack('<i', num_edges))     # num_edges
     header.extend(struct.pack('<i', num_states))    # num_states
-    header.extend(struct.pack('<i', 0))             # pad1
-    header.extend(struct.pack('<i', 0))             # pad2
-    header.extend(struct.pack('<i', 0))             # pad3
-    header.extend(struct.pack('<i', 9))             # num_joints
-    header.extend(struct.pack('<i', 0))             # pad4
-    header.extend(struct.pack('<i', 0))             # pad5
 
-    assert len(header) == 59, f"Header size mismatch: {len(header)} != 59"
+    assert len(header) == 35, f"Header size mismatch: {len(header)} != 35"
 
     # Build params block (52 bytes)
     params_block = bytearray()
