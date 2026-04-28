@@ -121,6 +121,17 @@ _TIMING_MIN_SAMPLES = 5   # Minimum timing values for injection
 # Seed for reproducible gate value generation (same input → same output)
 _GATE_RNG_SEED = 42
 
+# Quantized threshold_a bell-curve distribution for scoring edges.
+# Real distribution (from makeitjingle_cut_1.gesture, 5-file average):
+#   0.00: 14%, ±0.10: 17%, ±0.20: 17%, ±0.30: 10%, ±0.40: 11%,
+#   ±0.50: 7%, ±0.60: 5%, ±0.70: 3%, ±0.80: 3%, ±0.90: 2%, ±1.00: 6%
+_QUANT_WEIGHTS: dict[float, int] = {
+    0.0: 16, 0.1: 10, -0.1: 9, 0.2: 8, -0.2: 8,
+    0.3: 5, -0.3: 5, 0.4: 5, -0.4: 5, 0.5: 4, -0.5: 5,
+    0.6: 3, -0.6: 5, 0.7: 2, -0.7: 1, 0.8: 1, -0.8: 2,
+    -1.0: 2, 1.0: 2, -0.9: 1, 0.9: 1,
+}
+
 
 # ---------------------------------------------------------------------------
 # JDNext Joint Mapping (from JD Controller App decompilation)
@@ -635,12 +646,6 @@ def _load_and_hybridize(
     n = len(filtered)
 
     # Build quantized threshold_a pool matching real bell-curve distribution
-    _QUANT_WEIGHTS = {
-        0.0: 16, 0.1: 10, -0.1: 9, 0.2: 8, -0.2: 8,
-        0.3: 5, -0.3: 5, 0.4: 5, -0.4: 5, 0.5: 4, -0.5: 5,
-        0.6: 3, -0.6: 5, 0.7: 2, -0.7: 1, 0.8: 1, -0.8: 2,
-        -1.0: 2, 1.0: 2, -0.9: 1, 0.9: 1,
-    }
     quant_pool: list[float] = []
     for val, weight in _QUANT_WEIGHTS.items():
         quant_pool.extend([val] * weight)
@@ -696,8 +701,18 @@ def _load_and_hybridize(
     seed_hash = hashlib.md5(b"hybridize_" + str(n).encode()).digest()
     rng = _random.Random(int.from_bytes(seed_hash[:4], 'little'))
 
+    # Build quantized threshold_a pool matching real Kinect bell-curve.
+    # Real Kinect scoring edges have threshold_a in [-1, +1] quantized
+    # to 0.1 steps.  The donor template leaves these at [-9, +10] which
+    # destroys score differentiation (everything matches or nothing does).
+    _TA_POOL: list[float] = []
+    for val, weight in _QUANT_WEIGHTS.items():
+        _TA_POOL.extend([val] * weight)
+    rng.shuffle(_TA_POOL)
+
     sorted_states = sorted(scoring_by_state.keys())
     num_scoring = sum(len(v) for v in scoring_by_state.values())
+    ta_counter = 0
 
     for sid in sorted_states:
         eg_key = state_egroup.get(sid, None)
@@ -705,6 +720,13 @@ def _load_and_hybridize(
 
         for edge_i in scoring_by_state[sid]:
             eoff = edge_start + edge_i * _DURANGO_EDGE_SIZE
+
+            # threshold_a: quantized body position from bell-curve
+            ta_val = _TA_POOL[ta_counter % len(_TA_POOL)]
+            ta_counter += 1
+            struct.pack_into(f"{endian}f", template_data, eoff, ta_val)
+
+            # threshold_b: body-part-specific Gaussian
             effective_std = std * 2.0
             tb_val = rng.gauss(mean, effective_std)
 
@@ -1038,7 +1060,17 @@ def _compile_with_donor(
         import random
         rng = random.Random(seed_val)
 
-        # Generate body-part-specific threshold_b for each state
+        # Build quantized threshold_a pool matching real Kinect bell-curve.
+        # Real Kinect scoring edges have threshold_a in [-1, +1] quantized
+        # to 0.1 steps.  The donor template leaves these at [-9, +10]
+        # (std=1.5 vs real std=0.66) which destroys score differentiation.
+        _TA_POOL: list[float] = []
+        for val, weight in _QUANT_WEIGHTS.items():
+            _TA_POOL.extend([val] * weight)
+        rng.shuffle(_TA_POOL)
+        ta_counter = 0
+
+        # Generate body-part-specific thresholds for each state
         for group_idx, sid in enumerate(sorted_states):
             edge_indices = scoring_by_state[sid]
 
@@ -1053,12 +1085,17 @@ def _compile_with_donor(
             for local_idx, edge_i in enumerate(edge_indices):
                 eoff = edge_start + edge_i * _DURANGO_EDGE_SIZE
 
+                # threshold_a: quantized body position from bell-curve
+                ta_val = _TA_POOL[ta_counter % len(_TA_POOL)]
+                ta_counter += 1
+                struct.pack_into(f"{endian}f", donor_data, eoff, ta_val)
+
                 if eg_key is not None:
                     mean, std = _KINECT_EGROUP_STATS.get(eg_key, _DEFAULT_STAT)
                 else:
                     mean, std = _DEFAULT_STAT
 
-                # Generate a value from this body part's distribution.
+                # threshold_b: body-part-specific Gaussian.
                 # Use 2x std because per-file distributions are wider than
                 # the cross-file average std (the average smooths out
                 # individual file variation).
@@ -1240,12 +1277,6 @@ def _build_edge_table(
     #   0.00: 16%, ±0.10: 19%, ±0.20: 16%, ±0.30: 10%, ±0.40: 10%,
     #   ±0.50: 9%, ±0.60: 8%, ±0.70: 3%, ±0.80: 3%, ±0.90: 1%, ±1.00: 3%
     _QUANTIZED_POOL: list[float] = []
-    _QUANT_WEIGHTS = {
-        0.0: 16, 0.1: 10, -0.1: 9, 0.2: 8, -0.2: 8,
-        0.3: 5, -0.3: 5, 0.4: 5, -0.4: 5, 0.5: 4, -0.5: 5,
-        0.6: 3, -0.6: 5, 0.7: 2, -0.7: 1, 0.8: 1, -0.8: 2,
-        -1.0: 2, 1.0: 2, -0.9: 1, 0.9: 1,
-    }
     for val, weight in _QUANT_WEIGHTS.items():
         _QUANTIZED_POOL.extend([val] * weight)
 
