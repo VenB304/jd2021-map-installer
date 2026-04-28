@@ -931,6 +931,7 @@ def _find_donor_gesture() -> Path | None:
         assets_dir = Path(__file__).resolve().parents[2] / "assets" / "gesture_templates"
 
     candidates = [
+        assets_dir / "kinect_real.gesture",       # Real MakeItJingle Kinect (variable scoring)
         assets_dir / "durango_template.gesture",
         assets_dir / "discorope.gesture",
     ]
