@@ -871,7 +871,7 @@ def compile_gesture_from_scratch(
             return False
 
         # Phase 2: Try donor-based compilation (discorope as structural base)
-        donor_path = None # _find_donor_gesture()
+        donor_path = _find_donor_gesture()
         if donor_path is not None:
             return _compile_with_donor(
                 donor_path, joint_constraints, timing_values,
@@ -1072,16 +1072,18 @@ def _compile_with_donor(
             pair_idx = int(local_idx * n_pairs / max(num_scoring, 1)) % n_pairs
             cam_x, cam_y = all_pairs[pair_idx]
 
-            # Apply strictness: blend between camera value and zero
-            # (lower strictness = values closer to zero = more permissive)
-            ta_val = cam_x * strictness
-            tb_val = cam_y * strictness
+            # Only inject into threshold_b (position). Keep original threshold_a (edge weight/gate)
+            # Read original ta_val so we don't destroy it
+            orig_ta = struct.unpack_from(f"{endian}f", donor_data, eoff)[0]
+            
+            # Use cam_y for position limit, or an average of X and Y
+            cam_val = (cam_x + cam_y) / 2.0
+            tb_val = cam_val * strictness
 
             # Clamp to Kinect range
-            ta_val = max(-3.8, min(3.8, ta_val))
             tb_val = max(-3.8, min(3.8, tb_val))
 
-            struct.pack_into(f"{endian}f", donor_data, eoff, ta_val)
+            struct.pack_into(f"{endian}f", donor_data, eoff, orig_ta)
             struct.pack_into(f"{endian}f", donor_data, eoff + 4, tb_val)
 
 
