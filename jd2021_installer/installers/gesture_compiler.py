@@ -1244,6 +1244,11 @@ def _build_edge_table(
         144, 146, 148, 150, 152, 154, 156, 158, 160, 162, 164,
     ]
 
+    # Build quantized pool for threshold_a bell curve
+    _QUANTIZED_POOL: list[float] = []
+    for val, weight in _QUANT_WEIGHTS.items():
+        _QUANTIZED_POOL.extend([val] * weight)
+
     # Build X/Y pairs: consecutive values are X, Y for each joint
     from collections import defaultdict
     per_joint: dict[int, list[float]] = defaultdict(list)
@@ -1271,22 +1276,24 @@ def _build_edge_table(
         state_id = i % num_states
 
         if i < target_scoring:
-            # --- Scoring edge: camera X and Y pairs ---
+            # --- Scoring edge: joint-aware position threshold ---
             kinect_joint = state_to_joint.get(state_id, 20) # Default SpineShoulder
             jdnext_joint = durango_to_jdnext.get(kinect_joint, 1) # Default ShouldersCenter
             
             # Get camera values for this specific joint
-            joint_vals = per_joint.get(jdnext_joint, [0.0, 0.0])
-            if len(joint_vals) < 2:
-                joint_vals = [0.0, 0.0]
+            joint_vals = per_joint.get(jdnext_joint, [0.0])
+            if not joint_vals:
+                joint_vals = [0.0]
                 
-            # Pick a pair, cycling through available data for this joint
-            pair_idx = (i // max(1, num_states)) % max(1, len(joint_vals) // 2)
-            cam_x = joint_vals[pair_idx * 2] * _JDNEXT_TO_DURANGO_SCALE
-            cam_y = joint_vals[pair_idx * 2 + 1] * _JDNEXT_TO_DURANGO_SCALE
+            # threshold_a: quantized position value (bell-curve distribution) acts as edge weight/gate
+            quant_a = _QUANTIZED_POOL[i % len(_QUANTIZED_POOL)]
             
-            ta_val = max(-3.8, min(3.8, cam_x * strictness))
-            tb_val = max(-3.8, min(3.8, cam_y * strictness))
+            # threshold_b: real camera constraint scaled to Durango range
+            pair_idx = (i // max(1, num_states)) % len(joint_vals)
+            cam_val = joint_vals[pair_idx] * _JDNEXT_TO_DURANGO_SCALE
+            
+            ta_val = quant_a
+            tb_val = max(-3.8, min(3.8, cam_val * strictness))
 
             edges.append((ta_val, tb_val, state_id))
         else:
