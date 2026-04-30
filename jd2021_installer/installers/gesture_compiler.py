@@ -766,51 +766,35 @@ def compile_hybrid_gesture(
         if not template_path.exists():
             return False
 
-        # 1. Parse JDNext Data
-        data = jdnext_src_path.read_bytes()
-        num_floats = len(data) // 8
-        raw = list(struct.unpack(f"<{num_floats}d", data))
-        
-        num_sections = int(raw[1])
-        sec_descs = []
-        idx = 30
-        for _ in range(num_sections):
-            if idx + 1 >= len(raw): break
-            sec_descs.append((int(raw[idx]), int(raw[idx + 1])))
-            idx += 2
-            
-        while idx < len(raw) and raw[idx] == int(raw[idx]) and abs(raw[idx]) < 100000:
-            idx += 1
-            
-        offset = idx
-        
-        # Extract Right Wrist ta/tb pairs (Joint 7 in JDNext)
-        rw_ta_tb = []
-        for sec_idx, (c_count, t_count) in enumerate(sec_descs):
-            if offset + c_count > len(raw): break
-            section_constraints = raw[offset:offset + c_count]
-            
-            if c_count >= 112:
-                # 8 values = 4 pairs of (ta, tb)
-                base = 48
-                rw_ta_tb.append((section_constraints[base], section_constraints[base+1]))
-                rw_ta_tb.append((section_constraints[base+2], section_constraints[base+3]))
-                rw_ta_tb.append((section_constraints[base+4], section_constraints[base+5]))
-                rw_ta_tb.append((section_constraints[base+6], section_constraints[base+7]))
-            
-            offset += c_count + t_count
-            
-        if not rw_ta_tb:
-            logger.error("Failed to extract ta/tb from JDNext")
+        # 1. Parse JDNext Data using existing robust parser
+        joint_constraints, timing_values = _decompile_jdnext(jdnext_src_path)
+        if not joint_constraints:
+            logger.warning("No constraints extracted from JDNext data")
             return False
+            
+        # Extract Right Wrist pairs (JDNext Joint ID = 7)
+        rw_vals = [v for jid, v in joint_constraints if jid == 7]
+        rw_pairs = []
+        for p in range(0, len(rw_vals) - 1, 2):
+            rw_pairs.append((rw_vals[p], rw_vals[p+1]))
+            
+        if not rw_pairs:
+            # Fallback if no wrist data
+            rw_pairs = [(0.5, 0.5)]
 
         # 2. Parse Donor Template
         template_data = bytearray(template_path.read_bytes())
         
-        # We need the edge table offset
-        header_num_edges = struct.unpack_from('<i', template_data, 27)[0]
-        header_num_states = struct.unpack_from('<i', template_data, 31)[0]
-        edge_start = len(template_data) - (header_num_edges * 12)
+        # Detect format properly to get correct edge sizes!
+        fmt_name, endian, edges_offset = _detect_template_format(template_data)
+        num_edges = struct.unpack_from(f"{endian}i", template_data, edges_offset)[0]
+        
+        edge_size = 40 if fmt_name == "Durango" else 28
+        edge_start = len(template_data) - (num_edges * edge_size)
+        
+        if edge_start < 0 or edge_start >= len(template_data):
+            logger.error("Donor gesture has invalid edge table offset")
+            return False
         
         # Parse Zone A to build state_to_joint map
         state_start = 59
@@ -819,7 +803,7 @@ def compile_hybrid_gesture(
         state_to_joint = {}
         
         while off + 20 <= len(template_data):
-            fields = struct.unpack_from('<5i', template_data, state_start + off)
+            fields = struct.unpack_from(f'{endian}5i', template_data, state_start + off)
             if fields[0] == state_id_counter:
                 state_to_joint[fields[0]] = fields[2] # joint_pair_id
                 off += 20
@@ -827,35 +811,57 @@ def compile_hybrid_gesture(
             else:
                 break # Reached Zone B
                 
-        # Also need to map Zone B if possible, but edges usually point to Zone A or early Zone B.
-        # Most gating edges are what defines the sequence.
-        
-        # 3. Inject ta/tb pairs into Donor Edges
-        # We will loop through the donor's edges.
+        # 3. Inject constraints into Donor Edges
         rw_edge_count = 0
-        for e in range(header_num_edges):
-            eoff = edge_start + e * 12
-            ta, tb, sid = struct.unpack_from('<ffi', template_data, eoff)
+        
+        # Scale factor: camera [-1,+1] -> Kinect edge values
+        _CAM_TO_KINECT_SCALE = 2.28
+        
+        # Identify Right Arm scoring edges to distribute JDNext sequence properly
+        right_arm_scoring_edges = []
+        for e in range(num_edges):
+            eoff = edge_start + e * edge_size
+            ta, tb, sid = struct.unpack_from(f'{endian}ffi', template_data, eoff)
             
+            # If ta is <= 10.0, it's a scoring edge (not a gating edge)
+            if abs(ta) <= 10.0:
+                joint_id = state_to_joint.get(sid, -1)
+                # Joint 10 is Right Wrist, 9 is Right Elbow, 8 is Right Shoulder, 11 is HandRight
+                if joint_id in [8, 9, 10, 11]:
+                    right_arm_scoring_edges.append(e)
+
+        num_ra_edges = len(right_arm_scoring_edges)
+
+        for e in range(num_edges):
+            eoff = edge_start + e * edge_size
+            ta, tb, sid = struct.unpack_from(f'{endian}ffi', template_data, eoff)
+            
+            # Leave gating edges alone!
+            if abs(ta) > 10.0:
+                continue
+                
             joint_id = state_to_joint.get(sid, -1)
             
-            # Joint 10 is Right Wrist, 9 is Right Elbow, 8 is Right Shoulder
             if joint_id in [8, 9, 10, 11]:
-                # This evaluates the right arm! Inject JDNext choreo!
                 # Map linearly across the JDNext sequence
-                progress = e / max(1, header_num_edges - 1)
-                jd_idx = min(len(rw_ta_tb) - 1, int(progress * len(rw_ta_tb)))
+                local_idx = right_arm_scoring_edges.index(e) if e in right_arm_scoring_edges else 0
+                pair_idx = int(local_idx * len(rw_pairs) / max(num_ra_edges, 1)) % len(rw_pairs)
                 
-                jd_ta, jd_tb = rw_ta_tb[jd_idx]
+                cam_x, cam_y = rw_pairs[pair_idx]
+                cam_val = (cam_x + cam_y) / 2.0
                 
-                # Overwrite ta and tb with JDNext!
-                struct.pack_into('<ff', template_data, eoff, jd_ta, jd_tb)
+                # Overwrite ONLY tb (position). KEEP ta (the structural edge gate/weight)!
+                tb_val = cam_val * _CAM_TO_KINECT_SCALE * strictness
+                tb_val = max(-3.8, min(3.8, tb_val))
+                
+                struct.pack_into(f'{endian}f', template_data, eoff + 4, tb_val)
                 rw_edge_count += 1
             else:
                 # Other joints: Make them forgiving so player only has to dance Right Arm
                 if abs(tb) > 0.001:
                     new_tb = tb * 5.0
-                    struct.pack_into('<f', template_data, eoff + 4, new_tb)
+                    new_tb = max(-8.0, min(8.0, new_tb)) # Keep it within reasonable bounds
+                    struct.pack_into(f'{endian}f', template_data, eoff + 4, new_tb)
                 
         output_path.parent.mkdir(parents=True, exist_ok=True)
         output_path.write_bytes(template_data)
