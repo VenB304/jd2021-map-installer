@@ -865,6 +865,23 @@ def compile_hybrid_gesture(
             struct.pack_into(f'{endian}f', template_data, eoff + 4, tb_val)
             rw_edge_count += 1
                 
+        # 4. Inject JDNext Tempo/Timing into the parameters block!
+        # The parameters block sits 52 bytes before the edge table. P0, P11, P12 control tempo.
+        if len(timing_values) >= 10:
+            import statistics
+            timing_median = statistics.median(timing_values)
+            # 0.4 is roughly the baseline timing value for Disco Rope.
+            duration_scale = timing_median / 0.4
+            duration_scale = max(0.5, min(duration_scale, 2.0))
+            
+            params_start = edge_start - 52
+            if params_start >= 0:
+                for pidx in (0, 11, 12):
+                    poff = params_start + pidx * 4
+                    orig_val = struct.unpack_from(f"{endian}f", template_data, poff)[0]
+                    scaled_val = orig_val * duration_scale
+                    struct.pack_into(f"{endian}f", template_data, poff, scaled_val)
+                    
         output_path.parent.mkdir(parents=True, exist_ok=True)
         output_path.write_bytes(template_data)
         logger.info("Successfully compiled hybrid gesture with %d mapped Right Arm edges: %s", rw_edge_count, output_path.name)
