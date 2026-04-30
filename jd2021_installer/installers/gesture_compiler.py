@@ -757,20 +757,14 @@ def compile_hybrid_gesture(
     output_path: Path,
     strictness: float = 1.0,
 ) -> bool:
-    """Compile a single JDNext gesture into a hybrid Durango Kinect gesture.
-
-    Uses the Synthetic Skeleton strategy: extracts Right Wrist 2D coordinates,
-    solves full 3D arm Inverse Kinematics, and generates a dynamic HMM
-    from scratch with strict thresholds for the moving arm and forgiving
-    thresholds for the rest of the body. Donor templates are ignored.
+    """Compile a JDNext gesture into a Durango binary using direct ta/tb mapping.
     """
     try:
         if not jdnext_src_path.exists():
-            logger.warning("JDNext gesture not found: %s", jdnext_src_path)
             return False
 
-        from jd2021_installer.installers.synthetic_skeleton import SyntheticSkeleton
-        import math
+        if not template_path.exists():
+            return False
 
         # 1. Parse JDNext Data
         data = jdnext_src_path.read_bytes()
@@ -789,97 +783,89 @@ def compile_hybrid_gesture(
             idx += 1
             
         offset = idx
-        skeleton_sequence = []
-        skel = SyntheticSkeleton()
         
-        # JDNext Joint 7 is Right Wrist
-        # Values are chunks of 8 per joint
-        # For Right Wrist, start index is (7 - 1) * 8 = 48
+        # Extract Right Wrist ta/tb pairs (Joint 7 in JDNext)
+        rw_ta_tb = []
         for sec_idx, (c_count, t_count) in enumerate(sec_descs):
             if offset + c_count > len(raw): break
             section_constraints = raw[offset:offset + c_count]
             
-            # Extract Right Wrist X/Y
-            rw_x = 0.0
-            rw_y = 0.0
             if c_count >= 112:
-                rw_x = section_constraints[48]
-                rw_y = section_constraints[49]
-            elif c_count >= 88:
-                # Type A heuristic fallback: try to find sensible coords
-                # For now, just keep previous frame or 0 if missing
-                rw_x = section_constraints[48 % c_count]
-                rw_y = section_constraints[49 % c_count]
-
-            # Solve IK for this frame
-            skel.apply_ik_right_arm(rw_x, rw_y)
-            
-            # Copy joint positions
-            frame_joints = [list(j) for j in skel.joints]
-            skeleton_sequence.append(frame_joints)
+                # 8 values = 4 pairs of (ta, tb)
+                base = 48
+                rw_ta_tb.append((section_constraints[base], section_constraints[base+1]))
+                rw_ta_tb.append((section_constraints[base+2], section_constraints[base+3]))
+                rw_ta_tb.append((section_constraints[base+4], section_constraints[base+5]))
+                rw_ta_tb.append((section_constraints[base+6], section_constraints[base+7]))
             
             offset += c_count + t_count
             
-        if not skeleton_sequence:
-            logger.error("Failed to extract skeleton sequence from JDNext")
+        if not rw_ta_tb:
+            logger.error("Failed to extract ta/tb from JDNext")
             return False
 
-        # 2. Generate State Table
-        # We need ~1000 edges, so let's generate ~600 states
-        num_constraints = sum(c for c, t in sec_descs)
-        state_table, num_states, state_to_joint = generate_state_table(
-            num_sections, num_constraints
-        )
+        # 2. Parse Donor Template
+        template_data = bytearray(template_path.read_bytes())
         
-        # 3. Generate Edge Table
-        # The Kinect uses 1000 edges. We will assign them linearly across the sequence.
-        NUM_EDGES = 1000
-        edges = []
+        # We need the edge table offset
+        header_num_edges = struct.unpack_from('<i', template_data, 27)[0]
+        header_num_states = struct.unpack_from('<i', template_data, 31)[0]
+        edge_start = len(template_data) - (header_num_edges * 12)
         
-        # Durango Joint ID Mapping -> Kinect V2 IDs
-        # 5: ElbowLeft, 6: WristLeft, 9: ElbowRight, 10: WristRight
-        # 13: KneeLeft, 14: AnkleLeft, 17: KneeRight, 18: AnkleRight
+        # Parse Zone A to build state_to_joint map
+        state_start = 59
+        off = 0
+        state_id_counter = 1
+        state_to_joint = {}
         
-        for e in range(NUM_EDGES):
-            state_id = (e % (num_states - 1)) + 1
-            joint_id = state_to_joint.get(state_id, 10)
-            
-            # Find the corresponding time frame
-            time_t = e / NUM_EDGES
-            frame_idx = int(time_t * len(skeleton_sequence))
-            frame_idx = min(frame_idx, len(skeleton_sequence) - 1)
-            frame = skeleton_sequence[frame_idx]
-            
-            # Target X coordinate in 3D space
-            target_x = frame[joint_id][0]
-            
-            if joint_id in [8, 9, 10, 11, 23, 24]: # Right arm -> Strict scoring
-                ta = target_x
-                tb = 0.3 * max(0.1, strictness)
-            else: # Rest of body -> Forgiving/Loose
-                ta = target_x
-                tb = 10.0
+        while off + 20 <= len(template_data):
+            fields = struct.unpack_from('<5i', template_data, state_start + off)
+            if fields[0] == state_id_counter:
+                state_to_joint[fields[0]] = fields[2] # joint_pair_id
+                off += 20
+                state_id_counter += 1
+            else:
+                break # Reached Zone B
                 
-            edges.append((ta, tb, state_id))
+        # Also need to map Zone B if possible, but edges usually point to Zone A or early Zone B.
+        # Most gating edges are what defines the sequence.
+        
+        # 3. Inject ta/tb pairs into Donor Edges
+        # We will loop through the donor's edges.
+        rw_edge_count = 0
+        for e in range(header_num_edges):
+            eoff = edge_start + e * 12
+            ta, tb, sid = struct.unpack_from('<ffi', template_data, eoff)
             
-        # 4. Assemble Binary
-        params = [0.0] * 13 # Minimal params
-        params[0] = 739.969 # Weight
-        params[11] = 144.714
-        params[12] = 58.004
-        
-        hybrid_data = build_gesture_binary(
-            state_table, num_states, params, edges
-        )
-        
+            joint_id = state_to_joint.get(sid, -1)
+            
+            # Joint 10 is Right Wrist, 9 is Right Elbow, 8 is Right Shoulder
+            if joint_id in [8, 9, 10, 11]:
+                # This evaluates the right arm! Inject JDNext choreo!
+                # Map linearly across the JDNext sequence
+                progress = e / max(1, header_num_edges - 1)
+                jd_idx = min(len(rw_ta_tb) - 1, int(progress * len(rw_ta_tb)))
+                
+                jd_ta, jd_tb = rw_ta_tb[jd_idx]
+                
+                # Overwrite ta and tb with JDNext!
+                struct.pack_into('<ff', template_data, eoff, jd_ta, jd_tb)
+                rw_edge_count += 1
+            else:
+                # Other joints: Make them forgiving so player only has to dance Right Arm
+                if abs(tb) > 0.001:
+                    new_tb = tb * 5.0
+                    struct.pack_into('<f', template_data, eoff + 4, new_tb)
+                
         output_path.parent.mkdir(parents=True, exist_ok=True)
-        output_path.write_bytes(hybrid_data)
-        logger.info("Successfully compiled synthetic hybrid gesture: %s", output_path.name)
+        output_path.write_bytes(template_data)
+        logger.info("Successfully compiled hybrid gesture with %d mapped Right Arm edges: %s", rw_edge_count, output_path.name)
         return True
         
     except Exception as e:
         logger.exception("Hybrid compile failed for %s: %s", jdnext_src_path, e)
         return False
+
 
 
 def compile_gesture_from_scratch(
