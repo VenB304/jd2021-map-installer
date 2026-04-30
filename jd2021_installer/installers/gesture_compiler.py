@@ -813,7 +813,14 @@ def compile_hybrid_gesture(
         while off + 20 <= len(template_data):
             fields = struct.unpack_from(f'{endian}5i', template_data, state_start + off)
             if fields[0] == state_id_counter:
-                state_to_joint[fields[0]] = fields[2] # joint_pair_id (RESTORED!)
+                state_to_joint[fields[0]] = fields[2] # joint_pair_id
+                
+                # OVERWRITE the edge_group to 0!
+                # Disco Rope's template expects high-velocity movement on certain states.
+                # If we use it for a "standing still" pose, the player will fail the velocity check.
+                # Forcing edge_group = 0 ensures the engine ONLY evaluates raw physical position!
+                struct.pack_into(f'{endian}i', template_data, state_start + off + 12, 0)
+                
                 off += 20
                 state_id_counter += 1
             else:
@@ -857,30 +864,14 @@ def compile_hybrid_gesture(
                 ta = 0.5
                 
             # Apply the user's strictness multiplier to the tolerance.
-            # Lower strictness = smaller ta = wider/more forgiving bell-curve window!
-            ta_val = ta * strictness
+            # Lower strictness = larger ta = wider/more forgiving window!
+            # (Previously we multiplied, which shrank the window!)
+            ta_val = ta / max(0.01, strictness)
             struct.pack_into(f'{endian}f', template_data, eoff, ta_val)
                 
             # Overwrite tb (position) for ALL edges!
             struct.pack_into(f'{endian}f', template_data, eoff + 4, tb_val)
             rw_edge_count += 1
-                
-        # 4. Inject JDNext Tempo/Timing into the parameters block!
-        # The parameters block sits 52 bytes before the edge table. P0, P11, P12 control tempo.
-        if len(timing_values) >= 10:
-            import statistics
-            timing_median = statistics.median(timing_values)
-            # 0.4 is roughly the baseline timing value for Disco Rope.
-            duration_scale = timing_median / 0.4
-            duration_scale = max(0.5, min(duration_scale, 2.0))
-            
-            params_start = edge_start - 52
-            if params_start >= 0:
-                for pidx in (0, 11, 12):
-                    poff = params_start + pidx * 4
-                    orig_val = struct.unpack_from(f"{endian}f", template_data, poff)[0]
-                    scaled_val = orig_val * duration_scale
-                    struct.pack_into(f"{endian}f", template_data, poff, scaled_val)
                     
         output_path.parent.mkdir(parents=True, exist_ok=True)
         output_path.write_bytes(template_data)

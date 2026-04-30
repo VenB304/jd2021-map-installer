@@ -68,7 +68,7 @@ class AppConfig(BaseModel):
     min_jd_version: int = 2014
     preview_fps: int = 25
     preview_startup_compensation_ms: float = 100.0
-    preview_only_audio_offset_ms: float = -100.0
+    preview_only_audio_offset_ms: float = 0.0
     audio_preview_fade_s: float = 2.0
 
     # Discord Fetch Mode (replaces Node.js JDH_Downloader)
