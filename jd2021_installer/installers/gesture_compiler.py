@@ -859,14 +859,9 @@ def compile_hybrid_gesture(
             tb_val = max(-3.8, min(3.8, tb_val))
             
             # ta is the TOLERANCE/WEIGHT of the edge.
-            # If it's a gating edge (ta > 10.0 or < -10.0), convert it to a scoring edge weight (0.5).
-            if abs(ta) > 10.0:
-                ta = 0.5
-                
-            # Apply the user's strictness multiplier to the tolerance.
-            # Lower strictness = larger ta = wider/more forgiving window!
-            # (Previously we multiplied, which shrank the window!)
-            ta_val = ta / max(0.01, strictness)
+            # Larger absolute ta = STRICTER check. (e.g., 165.0 is a gating check).
+            # Multiply by strictness so that lower strictness = smaller absolute ta = wider window!
+            ta_val = ta * strictness
             struct.pack_into(f'{endian}f', template_data, eoff, ta_val)
                 
             # Overwrite tb (position) for ALL edges!
