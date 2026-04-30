@@ -397,7 +397,7 @@ def _ensure_jdnext_albumcoach_texture_from_coach(map_target: Path, codename: str
             paste_x = int(center_x - c_img.width / 2.0)
             paste_y = 0
             
-            huge_canvas.paste(c_img, (paste_x, paste_y), c_img)
+            huge_canvas.alpha_composite(c_img, (paste_x, paste_y))
             
         # Get the strict bounding box of the composited group (trims top/bottom as well)
         bbox = huge_canvas.getbbox()
@@ -424,7 +424,7 @@ def _ensure_jdnext_albumcoach_texture_from_coach(map_target: Path, codename: str
         final_x = (W - new_w) // 2
         final_y = (H - new_h) // 2
         
-        final_canvas.paste(resized_group, (final_x, final_y), resized_group)
+        final_canvas.paste(resized_group, (final_x, final_y))
         final_canvas.save(dst)
         return True
         
@@ -460,7 +460,7 @@ def _apply_jdnext_bottom_alpha_fade_if_needed(map_target: Path, codename: str) -
         name_low = path.name.lower()
         if not name_low.startswith(f"{codename.lower()}_"):
             return False
-        if "coach_" not in name_low and "cover_albumcoach" not in name_low:
+        if "coach_" not in name_low or "cover_albumcoach" in name_low:
             return False
         return path.suffix.lower() in {".png", ".tga"}
 
