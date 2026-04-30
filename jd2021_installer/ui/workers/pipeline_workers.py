@@ -330,29 +330,34 @@ def _ensure_jdnext_albumcoach_texture_from_coach(map_target: Path, codename: str
         except OSError:
             return False
             
-    # Multi-coach: Compose them using PIL
+        # Multi-coach: Compose them using PIL
     try:
         from PIL import Image
         
         base_img = Image.open(sorted_coach_files[0]).convert("RGBA")
         W, H = base_img.size
-        
-        canvas = Image.new("RGBA", (W, H), (0, 0, 0, 0))
         N = len(sorted_coach_files)
         
-        # Scale, spacing, and Z-order rules based on N
+        # We want about 50% overlap of the raw coach widths to preserve the visual spacing.
+        overlap_ratio = 0.5
+        spacing_factor = 1.0 - overlap_ratio
+        
+        # Calculate exactly how much we need to scale the coaches so they don't clip.
+        # We leave a 4% total margin (96% usable width) to be safe.
+        # cw_total = cw + (N - 1) * spacing
+        # scale * W * (1 + (N - 1) * spacing_factor) = W * 0.96
+        scale = 0.96 / (1.0 + (N - 1) * spacing_factor)
+        spacing_ratio = scale * spacing_factor
+        spacing = W * spacing_ratio
+        
+        # Z-order rules based on N
         if N == 2:
-            scale, spacing_ratio = 0.85, 0.43
             draw_order = [1, 0] # P2, P1
         elif N == 3:
-            scale, spacing_ratio = 0.70, 0.35
             draw_order = [0, 2, 1] # P1, P3, P2
         elif N == 4:
-            scale, spacing_ratio = 0.60, 0.28
             draw_order = [0, 3, 2, 1] # P1, P4, P3, P2
         else:
-            scale = max(0.40, 1.0 - (N - 1) * 0.15)
-            spacing_ratio = 0.8 / N
             draw_order = []
             left, right = 0, N - 1
             while left <= right:
@@ -364,9 +369,9 @@ def _ensure_jdnext_albumcoach_texture_from_coach(map_target: Path, codename: str
                 right -= 1
             draw_order.reverse()
             
-        spacing = W * spacing_ratio
+        canvas = Image.new("RGBA", (W, H), (0, 0, 0, 0))
         
-        # Load and resize all coaches first
+        # Load and resize all coaches
         coach_imgs = []
         for c_file in sorted_coach_files:
             c_img = Image.open(c_file).convert("RGBA")
@@ -376,7 +381,7 @@ def _ensure_jdnext_albumcoach_texture_from_coach(map_target: Path, codename: str
             c_img = c_img.resize((cw, ch), Image.Resampling.LANCZOS)
             coach_imgs.append((c_img, cw, ch))
 
-        # Draw them in specified order
+        # Draw them
         for idx in draw_order:
             if idx >= len(coach_imgs):
                 continue
@@ -394,6 +399,7 @@ def _ensure_jdnext_albumcoach_texture_from_coach(map_target: Path, codename: str
         return True
         
     except Exception as exc:
+        print(f"PIL Composite Exception: {exc}")
         logger.debug("Failed to composite multi-coach albumcoach: %s", exc)
         # Fallback to copy the first coach if PIL compositing fails
         try:
