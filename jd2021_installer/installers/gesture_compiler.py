@@ -806,11 +806,7 @@ def compile_hybrid_gesture(
         while off + 20 <= len(template_data):
             fields = struct.unpack_from(f'{endian}5i', template_data, state_start + off)
             if fields[0] == state_id_counter:
-                # OVERWRITE the joint_pair_id to 10 (Right Wrist)!
-                # This lobotomizes the donor template so it completely ignores the left hand/legs.
-                struct.pack_into(f'{endian}i', template_data, state_start + off + 8, 10)
-                
-                state_to_joint[fields[0]] = 10 # We forced it to 10
+                state_to_joint[fields[0]] = fields[2] # joint_pair_id (RESTORED!)
                 off += 20
                 state_id_counter += 1
             else:
@@ -822,28 +818,26 @@ def compile_hybrid_gesture(
         # Scale factor: camera [-1,+1] -> Kinect edge values
         _CAM_TO_KINECT_SCALE = 2.28
         
-        # Identify Right Arm scoring edges to distribute JDNext sequence properly
-        right_arm_scoring_edges = []
-        for e in range(num_edges):
-            eoff = edge_start + e * edge_size
-            ta, tb, sid = struct.unpack_from(f'{endian}ffi', template_data, eoff)
-            
-            # If ta is <= 10.0, it's a scoring edge (not a gating edge)
-            if abs(ta) <= 10.0:
-                joint_id = state_to_joint.get(sid, -1)
-                # Joint 10 is Right Wrist, 9 is Right Elbow, 8 is Right Shoulder, 11 is HandRight
-                if joint_id in [8, 9, 10, 11]:
-                    right_arm_scoring_edges.append(e)
-
-        num_ra_edges = num_edges # Since all edges are now evaluating Right Arm!
+        durango_to_jdnext = {v: k for k, v in _JDNEXT_TO_DURANGO_JOINT_MAP.items()}
+        num_states = len(state_to_joint)
 
         for e in range(num_edges):
             eoff = edge_start + e * edge_size
             ta, tb, sid = struct.unpack_from(f'{endian}ffi', template_data, eoff)
             
-            # Map linearly across the JDNext sequence
-            pair_idx = int(e * len(rw_pairs) / max(num_ra_edges, 1)) % len(rw_pairs)
-            cam_x, cam_y = rw_pairs[pair_idx]
+            durango_joint = state_to_joint.get(sid, 10) # default to Right Wrist
+            jdnext_joint = durango_to_jdnext.get(durango_joint, 7)
+            
+            joint_pairs = joint_xy.get(jdnext_joint, rw_pairs)
+            if not joint_pairs:
+                joint_pairs = rw_pairs
+                
+            # Synchronize time perfectly: advance through the dance based on the state_id
+            progress = (sid - 1) / max(1, num_states - 1)
+            pair_idx = int(progress * (len(joint_pairs) - 1))
+            pair_idx = max(0, min(pair_idx, len(joint_pairs) - 1))
+            
+            cam_x, cam_y = joint_pairs[pair_idx]
             cam_val = (cam_x + cam_y) / 2.0
             
             tb_val = cam_val * _CAM_TO_KINECT_SCALE * strictness
