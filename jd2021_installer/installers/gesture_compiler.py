@@ -874,25 +874,6 @@ def compile_gesture_from_scratch(
     strictness: float = 1.0,
 ) -> bool:
     """Compile a JDNext gesture into a Durango binary.
-
-    **Primary strategy (Donor Mode):**
-    Uses ``discorope.gesture`` as a structural donor — copies its entire
-    known-working state table, parameters, and edge structure, then
-    ONLY injects JDNext camera constraint values into the scoring
-    edges' ``threshold_b`` field.  This guarantees the output has a
-    structure the engine accepts (discorope is the proven auto-perfect).
-
-    **Fallback (Generated Mode):**
-    If discorope is not found, falls back to the dynamic HMM generator.
-
-    Args:
-        jdnext_src_path: Path to the JDNext Camera ``.gesture`` file.
-        output_path:     Destination path for the compiled gesture file.
-        strictness:      Scoring strictness (0.0 = auto-perfect,
-                         1.0 = full JDNext scoring).  Default 1.0.
-
-    Returns:
-        ``True`` if compiled successfully, ``False`` otherwise.
     """
     try:
         if not jdnext_src_path.exists():
@@ -900,8 +881,6 @@ def compile_gesture_from_scratch(
             return False
 
         # Pre-flight check: Is this already a compiled binary gesture?
-        # If the map author already included valid Durango/X360 gestures,
-        # we must not parse them as float64 JDNext bytecode.
         with open(jdnext_src_path, 'rb') as f:
             magic_check = f.read(20)
         
@@ -911,54 +890,17 @@ def compile_gesture_from_scratch(
             shutil.copy2(jdnext_src_path, output_path)
             return True
 
-        # Phase 1: Decompile JDNext AST (joint-tagged)
-        joint_constraints, timing_values = _decompile_jdnext(jdnext_src_path)
-
-        if not joint_constraints:
-            logger.warning(
-                "No constraints extracted from '%s'; cannot generate",
-                jdnext_src_path.name,
-            )
-            return False
-
-        # Phase 2: Try donor-based compilation (discorope as structural base)
         donor_path = _find_donor_gesture()
         if donor_path is not None:
-            return _compile_with_donor(
-                donor_path, joint_constraints, timing_values,
-                output_path, jdnext_src_path.name, strictness,
+            return compile_hybrid_gesture(
+                jdnext_src_path, donor_path, output_path, strictness
             )
-
-        # Phase 3: Fallback to generated HMM (if no donor available)
+            
         logger.warning(
-            "No donor gesture found; falling back to generated HMM for '%s'",
+            "No donor gesture found; cannot generate hybrid gesture for '%s'",
             jdnext_src_path.name,
         )
-        num_sections = _count_jdnext_sections(jdnext_src_path)
-
-        state_table, num_states, state_to_joint = generate_state_table(
-            num_sections, len(joint_constraints),
-        )
-        params = _build_params_from_jdnext(joint_constraints, num_sections)
-        edges = _build_edge_table(
-            joint_constraints, num_states, strictness, state_to_joint,
-        )
-        gesture_data = build_gesture_binary(
-            state_table, num_states, params, edges, num_joints=9,
-        )
-
-        output_path.parent.mkdir(parents=True, exist_ok=True)
-        output_path.write_bytes(gesture_data)
-
-        logger.info(
-            "Compiled gesture (generated HMM): %s "
-            "(%d joint-tagged, %d states, strictness=%.2f)",
-            jdnext_src_path.name,
-            len(joint_constraints),
-            num_states,
-            strictness,
-        )
-        return True
+        return False
 
     except Exception:
         logger.exception(
