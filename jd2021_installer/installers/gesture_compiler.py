@@ -814,13 +814,6 @@ def compile_hybrid_gesture(
             fields = struct.unpack_from(f'{endian}5i', template_data, state_start + off)
             if fields[0] == state_id_counter:
                 state_to_joint[fields[0]] = fields[2] # joint_pair_id
-                
-                # OVERWRITE the edge_group to 0!
-                # Disco Rope's template expects high-velocity movement on certain states.
-                # If we use it for a "standing still" pose, the player will fail the velocity check.
-                # Forcing edge_group = 0 ensures the engine ONLY evaluates raw physical position!
-                struct.pack_into(f'{endian}i', template_data, state_start + off + 12, 0)
-                
                 off += 20
                 state_id_counter += 1
             else:
