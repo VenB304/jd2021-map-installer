@@ -789,7 +789,8 @@ def compile_hybrid_gesture(
         fmt_name, endian, edges_offset = _detect_template_format(template_data)
         num_edges = struct.unpack_from(f"{endian}i", template_data, edges_offset)[0]
         
-        edge_size = 40 if fmt_name == "Durango" else 28
+        # FIX: Durango/X360 edges are 12 bytes! 40 bytes is the state record size.
+        edge_size = 12
         edge_start = len(template_data) - (num_edges * edge_size)
         
         if edge_start < 0 or edge_start >= len(template_data):
@@ -805,7 +806,11 @@ def compile_hybrid_gesture(
         while off + 20 <= len(template_data):
             fields = struct.unpack_from(f'{endian}5i', template_data, state_start + off)
             if fields[0] == state_id_counter:
-                state_to_joint[fields[0]] = fields[2] # joint_pair_id
+                # OVERWRITE the joint_pair_id to 10 (Right Wrist)!
+                # This lobotomizes the donor template so it completely ignores the left hand/legs.
+                struct.pack_into(f'{endian}i', template_data, state_start + off + 8, 10)
+                
+                state_to_joint[fields[0]] = 10 # We forced it to 10
                 off += 20
                 state_id_counter += 1
             else:
@@ -830,38 +835,27 @@ def compile_hybrid_gesture(
                 if joint_id in [8, 9, 10, 11]:
                     right_arm_scoring_edges.append(e)
 
-        num_ra_edges = len(right_arm_scoring_edges)
+        num_ra_edges = num_edges # Since all edges are now evaluating Right Arm!
 
         for e in range(num_edges):
             eoff = edge_start + e * edge_size
             ta, tb, sid = struct.unpack_from(f'{endian}ffi', template_data, eoff)
             
-            # Leave gating edges alone!
-            if abs(ta) > 10.0:
-                continue
-                
-            joint_id = state_to_joint.get(sid, -1)
+            # Map linearly across the JDNext sequence
+            pair_idx = int(e * len(rw_pairs) / max(num_ra_edges, 1)) % len(rw_pairs)
+            cam_x, cam_y = rw_pairs[pair_idx]
+            cam_val = (cam_x + cam_y) / 2.0
             
-            if joint_id in [8, 9, 10, 11]:
-                # Map linearly across the JDNext sequence
-                local_idx = right_arm_scoring_edges.index(e) if e in right_arm_scoring_edges else 0
-                pair_idx = int(local_idx * len(rw_pairs) / max(num_ra_edges, 1)) % len(rw_pairs)
+            tb_val = cam_val * _CAM_TO_KINECT_SCALE * strictness
+            tb_val = max(-3.8, min(3.8, tb_val))
+            
+            # If it's a gating edge (ta > 10.0 or < -10.0), convert it to a scoring edge!
+            if abs(ta) > 10.0:
+                struct.pack_into(f'{endian}f', template_data, eoff, 0.5) # ta = 0.5 (medium weight)
                 
-                cam_x, cam_y = rw_pairs[pair_idx]
-                cam_val = (cam_x + cam_y) / 2.0
-                
-                # Overwrite ONLY tb (position). KEEP ta (the structural edge gate/weight)!
-                tb_val = cam_val * _CAM_TO_KINECT_SCALE * strictness
-                tb_val = max(-3.8, min(3.8, tb_val))
-                
-                struct.pack_into(f'{endian}f', template_data, eoff + 4, tb_val)
-                rw_edge_count += 1
-            else:
-                # Other joints: Make them forgiving so player only has to dance Right Arm
-                if abs(tb) > 0.001:
-                    new_tb = tb * 5.0
-                    new_tb = max(-8.0, min(8.0, new_tb)) # Keep it within reasonable bounds
-                    struct.pack_into(f'{endian}f', template_data, eoff + 4, new_tb)
+            # Overwrite tb (position) for ALL edges!
+            struct.pack_into(f'{endian}f', template_data, eoff + 4, tb_val)
+            rw_edge_count += 1
                 
         output_path.parent.mkdir(parents=True, exist_ok=True)
         output_path.write_bytes(template_data)
