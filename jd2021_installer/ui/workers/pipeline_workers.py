@@ -279,7 +279,7 @@ def _ensure_jdnext_albumcoach_texture_from_coach(map_target: Path, codename: str
 
     JDNext sources commonly do not ship a dedicated albumcoach texture. In that
     case, mirror the primary coach texture so downstream actor references can be
-    generated consistently.
+    generated consistently. For multi-coach maps, composites all coaches side-by-side.
     """
     texture_dirs = [
         map_target / "menuart" / "textures",
@@ -293,27 +293,151 @@ def _ensure_jdnext_albumcoach_texture_from_coach(map_target: Path, codename: str
             if (tex_dir / f"{codename}_cover_albumcoach{ext}").exists():
                 return False
 
-    src: Optional[Path] = None
-    dst: Optional[Path] = None
+    # Find all available coach textures for the map
+    import re
+    coach_pattern = re.compile(f"^{re.escape(codename.lower())}_coach_([1-9]){{1}}(\\.[a-z0-9.]+)?$")
+    
+    available_coaches: dict[int, Path] = {}
+    found_dir: Optional[Path] = None
+    
     for tex_dir in texture_dirs:
-        for ext in texture_exts:
-            coach_candidate = tex_dir / f"{codename}_coach_1{ext}"
-            if coach_candidate.exists():
-                src = coach_candidate
-                dst = tex_dir / f"{codename}_cover_albumcoach{ext}"
-                break
-        if src is not None:
-            break
-
-    if src is None or dst is None:
+        if not tex_dir.exists():
+            continue
+        for child in tex_dir.iterdir():
+            if not child.is_file():
+                continue
+            match = coach_pattern.match(child.name.lower())
+            if match:
+                coach_num = int(match.group(1))
+                # Prefer .png over .tga if duplicates exist
+                if coach_num not in available_coaches or child.suffix.lower() == ".png":
+                    available_coaches[coach_num] = child
+                    found_dir = tex_dir
+    
+    if not available_coaches or found_dir is None:
         return False
-
+        
+    sorted_coach_files = [available_coaches[k] for k in sorted(available_coaches.keys())]
+    
+    dst = found_dir / f"{codename}_cover_albumcoach.png"
+    
+    if len(sorted_coach_files) == 1:
+        # Single coach, just copy directly
+        try:
+            dst.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(sorted_coach_files[0], dst)
+            return True
+        except OSError:
+            return False
+            
+        # Multi-coach: Compose them using PIL
     try:
-        dst.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copy2(src, dst)
+        from PIL import Image
+        
+        base_img = Image.open(sorted_coach_files[0]).convert("RGBA")
+        W, H = base_img.size
+        N = len(sorted_coach_files)
+        
+        # Load all coaches and crop their left/right transparent padding
+        coach_imgs_dict = {}
+        total_visual_width = 0
+        
+        for idx, c_file in enumerate(sorted_coach_files):
+            c_img = Image.open(c_file).convert("RGBA")
+            if c_img.size != (W, H):
+                c_img = c_img.resize((W, H), Image.Resampling.LANCZOS)
+                
+            bbox = c_img.getbbox()
+            if bbox:
+                # Trim left and right transparency, but keep top to bottom (0 to H) to preserve vertical relative positions
+                left, upper, right, lower = bbox
+                c_img = c_img.crop((left, 0, right, H))
+            
+            coach_imgs_dict[idx] = c_img
+            total_visual_width += c_img.width
+            
+        avg_vw = total_visual_width / float(N) if N > 0 else W
+        
+        # We want about 25% overlap of their actual visual widths.
+        overlap_ratio = 0.25
+        spacing = avg_vw * (1.0 - overlap_ratio)
+        
+        # Z-order rules based on N
+        if N == 2:
+            draw_order = [1, 0] # P2, P1
+        elif N == 3:
+            draw_order = [0, 2, 1] # P1, P3, P2
+        elif N == 4:
+            draw_order = [0, 3, 2, 1] # P1, P4, P3, P2
+        else:
+            draw_order = []
+            left_idx, right_idx = 0, N - 1
+            while left_idx <= right_idx:
+                if left_idx == right_idx:
+                    draw_order.append(left_idx)
+                else:
+                    draw_order.extend([left_idx, right_idx])
+                left_idx += 1
+                right_idx -= 1
+            draw_order.reverse()
+            
+        # Create a huge canvas to composite them safely
+        huge_W = int(W * N)
+        huge_H = H
+        huge_canvas = Image.new("RGBA", (huge_W, huge_H), (0, 0, 0, 0))
+        
+        # Draw them
+        for idx in draw_order:
+            if idx not in coach_imgs_dict:
+                continue
+            c_img = coach_imgs_dict[idx]
+            
+            # Distribute centers horizontally around the middle of the huge canvas
+            center_x = (huge_W / 2.0) + (idx - (N - 1) / 2.0) * spacing
+            paste_x = int(center_x - c_img.width / 2.0)
+            paste_y = 0
+            
+            huge_canvas.alpha_composite(c_img, (paste_x, paste_y))
+            
+        # Get the strict bounding box of the composited group (trims top/bottom as well)
+        bbox = huge_canvas.getbbox()
+        if not bbox:
+            raise ValueError("Composited image is completely transparent.")
+            
+        cropped_group = huge_canvas.crop(bbox)
+        
+        # We want the group to fit within a 1024x1024 canvas. Let's leave a 4% total margin.
+        margin_factor = 0.96
+        max_w = W * margin_factor
+        max_h = H * margin_factor
+        
+        scale = min(max_w / float(cropped_group.width), max_h / float(cropped_group.height))
+        
+        new_w = int(cropped_group.width * scale)
+        new_h = int(cropped_group.height * scale)
+        resized_group = cropped_group.resize((new_w, new_h), Image.Resampling.LANCZOS)
+        
+        # Create final 1024x1024 canvas
+        final_canvas = Image.new("RGBA", (W, H), (0, 0, 0, 0))
+        
+        # Place them horizontally and vertically centered in the middle
+        final_x = (W - new_w) // 2
+        final_y = (H - new_h) // 2
+        
+        final_canvas.paste(resized_group, (final_x, final_y))
+        final_canvas.save(dst)
         return True
-    except OSError:
-        return False
+        
+    except Exception as exc:
+        print(f"PIL Composite Exception: {exc}")
+        logger.debug("Failed to composite multi-coach albumcoach: %s", exc)
+        # Fallback to copy the first coach if PIL compositing fails
+        try:
+            dst.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(sorted_coach_files[0], dst)
+            return True
+        except OSError:
+            return False
 
 
 def _apply_jdnext_bottom_alpha_fade_if_needed(map_target: Path, codename: str) -> int:
@@ -336,7 +460,7 @@ def _apply_jdnext_bottom_alpha_fade_if_needed(map_target: Path, codename: str) -
         name_low = path.name.lower()
         if not name_low.startswith(f"{codename.lower()}_"):
             return False
-        if "coach_" not in name_low and "cover_albumcoach" not in name_low:
+        if "coach_" not in name_low or "cover_albumcoach" in name_low:
             return False
         return path.suffix.lower() in {".png", ".tga"}
 
@@ -2085,12 +2209,6 @@ def install_map_to_game(
             )
 
         if _is_jdnext_source_map():
-            synthesized_albumcoach = _ensure_jdnext_albumcoach_texture_from_coach(map_target, codename)
-            if synthesized_albumcoach:
-                logger.debug(
-                    "Synthesized missing albumcoach texture from coach_1 for JDNext map '%s'.",
-                    codename,
-                )
             faded_coaches = _apply_jdnext_bottom_alpha_fade_if_needed(map_target, codename)
             if faded_coaches:
                 logger.debug(
@@ -2098,7 +2216,13 @@ def install_map_to_game(
                     faded_coaches,
                     codename,
                 )
-
+            
+            synthesized_albumcoach = _ensure_jdnext_albumcoach_texture_from_coach(map_target, codename)
+            if synthesized_albumcoach:
+                logger.debug(
+                    "Synthesized missing albumcoach texture from coach_1 for JDNext map '%s'.",
+                    codename,
+                )
             
         # V1 Parity: Validate and heal MenuArt (case-fix + RGBA re-save)
         from jd2021_installer.installers.media_processor import process_menu_art
