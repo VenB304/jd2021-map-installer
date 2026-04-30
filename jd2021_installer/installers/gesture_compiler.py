@@ -847,12 +847,19 @@ def compile_hybrid_gesture(
             cam_x, cam_y = joint_pairs[pair_idx]
             cam_val = (cam_x + cam_y) / 2.0
             
-            tb_val = cam_val * _CAM_TO_KINECT_SCALE * strictness
+            # tb_val is the EXPECTED physical coordinate. Do NOT scale this by strictness!
+            tb_val = cam_val * _CAM_TO_KINECT_SCALE
             tb_val = max(-3.8, min(3.8, tb_val))
             
-            # If it's a gating edge (ta > 10.0 or < -10.0), convert it to a scoring edge!
+            # ta is the TOLERANCE/WEIGHT of the edge.
+            # If it's a gating edge (ta > 10.0 or < -10.0), convert it to a scoring edge weight (0.5).
             if abs(ta) > 10.0:
-                struct.pack_into(f'{endian}f', template_data, eoff, 0.5) # ta = 0.5 (medium weight)
+                ta = 0.5
+                
+            # Apply the user's strictness multiplier to the tolerance.
+            # Lower strictness = smaller ta = wider/more forgiving bell-curve window!
+            ta_val = ta * strictness
+            struct.pack_into(f'{endian}f', template_data, eoff, ta_val)
                 
             # Overwrite tb (position) for ALL edges!
             struct.pack_into(f'{endian}f', template_data, eoff + 4, tb_val)
