@@ -759,61 +759,126 @@ def compile_hybrid_gesture(
 ) -> bool:
     """Compile a single JDNext gesture into a hybrid Durango Kinect gesture.
 
-    Reads the JDNext Float64 bytecode, extracts X/Y constraints and
-    timing data, loads the Durango template, injects position thresholds
-    and gate/weight values matching the real Kinect distribution, and
-    writes the hybrid binary to ``output_path``.
-
-    Args:
-        jdnext_src_path: Path to the JDNext Camera ``.gesture`` file.
-        template_path:   Path to the Durango template ``.gesture`` file.
-        output_path:     Destination path for the compiled hybrid file.
-        strictness:      Scoring strictness (0.0 = auto-perfect,
-                         1.0 = full JDNext scoring).  Default 1.0.
-
-    Returns:
-        ``True`` if the hybrid was compiled successfully, ``False`` otherwise.
+    Uses the Synthetic Skeleton strategy: extracts Right Wrist 2D coordinates,
+    solves full 3D arm Inverse Kinematics, and generates a dynamic HMM
+    from scratch with strict thresholds for the moving arm and forgiving
+    thresholds for the rest of the body. Donor templates are ignored.
     """
     try:
         if not jdnext_src_path.exists():
             logger.warning("JDNext gesture not found: %s", jdnext_src_path)
             return False
 
-        if not template_path.exists():
-            logger.error("Gesture template not found: %s", template_path)
+        from jd2021_installer.installers.synthetic_skeleton import SyntheticSkeleton
+        import math
+
+        # 1. Parse JDNext Data
+        data = jdnext_src_path.read_bytes()
+        num_floats = len(data) // 8
+        raw = list(struct.unpack(f"<{num_floats}d", data))
+        
+        num_sections = int(raw[1])
+        sec_descs = []
+        idx = 30
+        for _ in range(num_sections):
+            if idx + 1 >= len(raw): break
+            sec_descs.append((int(raw[idx]), int(raw[idx + 1])))
+            idx += 2
+            
+        while idx < len(raw) and raw[idx] == int(raw[idx]) and abs(raw[idx]) < 100000:
+            idx += 1
+            
+        offset = idx
+        skeleton_sequence = []
+        skel = SyntheticSkeleton()
+        
+        # JDNext Joint 7 is Right Wrist
+        # Values are chunks of 8 per joint
+        # For Right Wrist, start index is (7 - 1) * 8 = 48
+        for sec_idx, (c_count, t_count) in enumerate(sec_descs):
+            if offset + c_count > len(raw): break
+            section_constraints = raw[offset:offset + c_count]
+            
+            # Extract Right Wrist X/Y
+            rw_x = 0.0
+            rw_y = 0.0
+            if c_count >= 112:
+                rw_x = section_constraints[48]
+                rw_y = section_constraints[49]
+            elif c_count >= 88:
+                # Type A heuristic fallback: try to find sensible coords
+                # For now, just keep previous frame or 0 if missing
+                rw_x = section_constraints[48 % c_count]
+                rw_y = section_constraints[49 % c_count]
+
+            # Solve IK for this frame
+            skel.apply_ik_right_arm(rw_x, rw_y)
+            
+            # Copy joint positions
+            frame_joints = [list(j) for j in skel.joints]
+            skeleton_sequence.append(frame_joints)
+            
+            offset += c_count + t_count
+            
+        if not skeleton_sequence:
+            logger.error("Failed to extract skeleton sequence from JDNext")
             return False
 
-        # Phase 1: Decompile JDNext AST (joint-tagged)
-        joint_constraints, timing_values = _decompile_jdnext(jdnext_src_path)
-
-        # Load template as mutable bytearray
-        template_data = bytearray(template_path.read_bytes())
-
-        # Phase 2 + 3: Calibrate params + inject edges
-        hybrid_data = _load_and_hybridize(
-            template_data, joint_constraints, timing_values, strictness,
+        # 2. Generate State Table
+        # We need ~1000 edges, so let's generate ~600 states
+        num_constraints = sum(c for c, t in sec_descs)
+        state_table, num_states, state_to_joint = generate_state_table(
+            num_sections, num_constraints
         )
-
-        # Write output
+        
+        # 3. Generate Edge Table
+        # The Kinect uses 1000 edges. We will assign them linearly across the sequence.
+        NUM_EDGES = 1000
+        edges = []
+        
+        # Durango Joint ID Mapping -> Kinect V2 IDs
+        # 5: ElbowLeft, 6: WristLeft, 9: ElbowRight, 10: WristRight
+        # 13: KneeLeft, 14: AnkleLeft, 17: KneeRight, 18: AnkleRight
+        
+        for e in range(NUM_EDGES):
+            state_id = (e % (num_states - 1)) + 1
+            joint_id = state_to_joint.get(state_id, 10)
+            
+            # Find the corresponding time frame
+            time_t = e / NUM_EDGES
+            frame_idx = int(time_t * len(skeleton_sequence))
+            frame_idx = min(frame_idx, len(skeleton_sequence) - 1)
+            frame = skeleton_sequence[frame_idx]
+            
+            # Target X coordinate in 3D space
+            target_x = frame[joint_id][0]
+            
+            if joint_id in [8, 9, 10, 11, 23, 24]: # Right arm -> Strict scoring
+                ta = target_x
+                tb = 0.3 * max(0.1, strictness)
+            else: # Rest of body -> Forgiving/Loose
+                ta = target_x
+                tb = 10.0
+                
+            edges.append((ta, tb, state_id))
+            
+        # 4. Assemble Binary
+        params = [0.0] * 13 # Minimal params
+        params[0] = 739.969 # Weight
+        params[11] = 144.714
+        params[12] = 58.004
+        
+        hybrid_data = build_gesture_binary(
+            state_table, num_states, params, edges
+        )
+        
         output_path.parent.mkdir(parents=True, exist_ok=True)
         output_path.write_bytes(hybrid_data)
-
-        logger.info(
-            "Compiled hybrid gesture: %s (%d joint-tagged + %d timing → %s, "
-            "strictness=%.2f)",
-            jdnext_src_path.name,
-            len(joint_constraints),
-            len(timing_values),
-            output_path.name,
-            strictness,
-        )
+        logger.info("Successfully compiled synthetic hybrid gesture: %s", output_path.name)
         return True
-
-    except Exception:
-        logger.exception(
-            "Failed to compile hybrid gesture from '%s'",
-            jdnext_src_path.name,
-        )
+        
+    except Exception as e:
+        logger.exception("Hybrid compile failed for %s: %s", jdnext_src_path, e)
         return False
 
 
