@@ -772,14 +772,21 @@ def compile_hybrid_gesture(
             logger.warning("No constraints extracted from JDNext data")
             return False
             
-        # Extract Right Wrist pairs (JDNext Joint ID = 7)
-        rw_vals = [v for jid, v in joint_constraints if jid == 7]
-        rw_pairs = []
-        for p in range(0, len(rw_vals) - 1, 2):
-            rw_pairs.append((rw_vals[p], rw_vals[p+1]))
+        # Extract ALL joint pairs into a dictionary: joint_id -> list of (x, y)
+        from collections import defaultdict
+        joint_xy: dict[int, list[tuple[float, float]]] = defaultdict(list)
+        per_joint: dict[int, list[float]] = defaultdict(list)
+        for jid, val in joint_constraints:
+            per_joint[jid].append(val)
             
+        for jid in sorted(per_joint.keys()):
+            vals = per_joint[jid]
+            for p in range(0, len(vals) - 1, 2):
+                joint_xy[jid].append((vals[p], vals[p+1]))
+                
+        # Fallback right wrist for safety
+        rw_pairs = joint_xy.get(7, [(0.5, 0.5)])
         if not rw_pairs:
-            # Fallback if no wrist data
             rw_pairs = [(0.5, 0.5)]
 
         # 2. Parse Donor Template
