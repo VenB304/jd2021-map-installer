@@ -1368,6 +1368,11 @@ def copy_moves(
                     created,
                     template.name,
                 )
+                if skip_gestures and not skipped_gesture_names:
+                    logger.info(
+                        "While camera gesture conversion is turned on, %s will be used because the map being installed does not have camera gestures.",
+                        template.name,
+                    )
 
     if total_copied:
         logger.debug("Merged %d gesture/msm file(s) from %s into PC/", total_copied, src_root)
