@@ -279,7 +279,7 @@ def _ensure_jdnext_albumcoach_texture_from_coach(map_target: Path, codename: str
 
     JDNext sources commonly do not ship a dedicated albumcoach texture. In that
     case, mirror the primary coach texture so downstream actor references can be
-    generated consistently.
+    generated consistently. For multi-coach maps, composites all coaches side-by-side.
     """
     texture_dirs = [
         map_target / "menuart" / "textures",
@@ -293,27 +293,115 @@ def _ensure_jdnext_albumcoach_texture_from_coach(map_target: Path, codename: str
             if (tex_dir / f"{codename}_cover_albumcoach{ext}").exists():
                 return False
 
-    src: Optional[Path] = None
-    dst: Optional[Path] = None
+    # Find all available coach textures for the map
+    import re
+    coach_pattern = re.compile(f"^{re.escape(codename.lower())}_coach_([1-9]){{1}}(\\.[a-z0-9.]+)?$")
+    
+    available_coaches: dict[int, Path] = {}
+    found_dir: Optional[Path] = None
+    
     for tex_dir in texture_dirs:
-        for ext in texture_exts:
-            coach_candidate = tex_dir / f"{codename}_coach_1{ext}"
-            if coach_candidate.exists():
-                src = coach_candidate
-                dst = tex_dir / f"{codename}_cover_albumcoach{ext}"
-                break
-        if src is not None:
-            break
-
-    if src is None or dst is None:
+        if not tex_dir.exists():
+            continue
+        for child in tex_dir.iterdir():
+            if not child.is_file():
+                continue
+            match = coach_pattern.match(child.name.lower())
+            if match:
+                coach_num = int(match.group(1))
+                # Prefer .png over .tga if duplicates exist
+                if coach_num not in available_coaches or child.suffix.lower() == ".png":
+                    available_coaches[coach_num] = child
+                    found_dir = tex_dir
+    
+    if not available_coaches or found_dir is None:
         return False
-
+        
+    sorted_coach_files = [available_coaches[k] for k in sorted(available_coaches.keys())]
+    
+    dst = found_dir / f"{codename}_cover_albumcoach.png"
+    
+    if len(sorted_coach_files) == 1:
+        # Single coach, just copy directly
+        try:
+            dst.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(sorted_coach_files[0], dst)
+            return True
+        except OSError:
+            return False
+            
+    # Multi-coach: Compose them using PIL
     try:
-        dst.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copy2(src, dst)
+        from PIL import Image
+        
+        base_img = Image.open(sorted_coach_files[0]).convert("RGBA")
+        W, H = base_img.size
+        
+        canvas = Image.new("RGBA", (W, H), (0, 0, 0, 0))
+        N = len(sorted_coach_files)
+        
+        # Scale, spacing, and Z-order rules based on N
+        if N == 2:
+            scale, spacing_ratio = 0.85, 0.43
+            draw_order = [1, 0] # P2, P1
+        elif N == 3:
+            scale, spacing_ratio = 0.70, 0.35
+            draw_order = [0, 2, 1] # P1, P3, P2
+        elif N == 4:
+            scale, spacing_ratio = 0.60, 0.28
+            draw_order = [0, 3, 2, 1] # P1, P4, P3, P2
+        else:
+            scale = max(0.40, 1.0 - (N - 1) * 0.15)
+            spacing_ratio = 0.8 / N
+            draw_order = []
+            left, right = 0, N - 1
+            while left <= right:
+                if left == right:
+                    draw_order.append(left)
+                else:
+                    draw_order.extend([left, right])
+                left += 1
+                right -= 1
+            draw_order.reverse()
+            
+        spacing = W * spacing_ratio
+        
+        # Load and resize all coaches first
+        coach_imgs = []
+        for c_file in sorted_coach_files:
+            c_img = Image.open(c_file).convert("RGBA")
+            if c_img.size != (W, H):
+                c_img = c_img.resize((W, H), Image.Resampling.LANCZOS)
+            cw, ch = int(W * scale), int(H * scale)
+            c_img = c_img.resize((cw, ch), Image.Resampling.LANCZOS)
+            coach_imgs.append((c_img, cw, ch))
+
+        # Draw them in specified order
+        for idx in draw_order:
+            if idx >= len(coach_imgs):
+                continue
+            c_img, cw, ch = coach_imgs[idx]
+            
+            # Distribute centers horizontally around W/2
+            center_x = (W / 2.0) + (idx - (N - 1) / 2.0) * spacing
+            paste_x = int(center_x - cw / 2.0)
+            # Anchor to the bottom edge
+            paste_y = H - ch
+            
+            canvas.paste(c_img, (paste_x, paste_y), c_img)
+            
+        canvas.save(dst)
         return True
-    except OSError:
-        return False
+        
+    except Exception as exc:
+        logger.debug("Failed to composite multi-coach albumcoach: %s", exc)
+        # Fallback to copy the first coach if PIL compositing fails
+        try:
+            dst.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(sorted_coach_files[0], dst)
+            return True
+        except OSError:
+            return False
 
 
 def _apply_jdnext_bottom_alpha_fade_if_needed(map_target: Path, codename: str) -> int:
