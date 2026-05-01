@@ -829,124 +829,145 @@ def compile_hybrid_gesture(
             else:
                 break # Reached Zone B
                 
-        # 3. Inject constraints into Donor Edges
-        rw_edge_count = 0
-        
-        # Scale factor: camera [-1,+1] -> Kinect edge values
-        _CAM_TO_KINECT_SCALE = 2.28
-        
+        # 3. Biomechanical Pre-computation
         import math as _math
+        import numpy as np
+        from jd2021_installer.installers.biomechanics import (
+            scale_to_physical, synthesize_depth_lbfgs, 
+            compute_kinematics, simulate_inverse_dynamics
+        )
+        
         durango_to_jdnext = {v: k for k, v in _JDNEXT_TO_DURANGO_JOINT_MAP.items()}
         num_states = len(state_to_joint)
+        
+        # Build 3D sequences
+        num_frames = max((len(pairs) for pairs in joint_xy.values()), default=0)
+        X_norm = np.zeros((num_frames, 15))
+        Y_norm = np.zeros((num_frames, 15))
+        for jid, pairs in joint_xy.items():
+            for f in range(min(num_frames, len(pairs))):
+                X_norm[f, jid] = pairs[f][0]
+                Y_norm[f, jid] = pairs[f][1]
+                
+        logger.info("Executing 2D-to-3D Biomechanical Translation...")
+        X_phys, Y_phys = scale_to_physical(X_norm, Y_norm)
+        Z_phys = synthesize_depth_lbfgs(X_phys, Y_phys)
+        Vx, Ax = compute_kinematics(X_phys)
+        Vy, Ay = compute_kinematics(Y_phys)
+        Vz, Az = compute_kinematics(Z_phys)
+        Torque, MuscleForce = simulate_inverse_dynamics(X_phys, Y_phys, Z_phys, Vx, Vy, Vz)
 
+        # 4. AdaBoost Ensemble Weight Redistribution (Pass 1)
+        total_original_weight = 0.0
+        total_surviving_weight = 0.0
+        irrecoverable_types = {18, 19, 20, 21, 22, 23, 35}  # Optical flow, TimeSpaceAngles
+        
+        edge_data_cache = []
         for e in range(num_edges):
             eoff = edge_start + e * edge_size
             ta, tb, sid = struct.unpack_from(f'{endian}ffi', template_data, eoff)
+            native_type = state_to_type.get(sid, 0)
+            is_gating = (abs(ta) > 10.0)
+            
+            if not is_gating:
+                total_original_weight += abs(ta)
+                if native_type not in irrecoverable_types:
+                    total_surviving_weight += abs(ta)
+                    
+            edge_data_cache.append({
+                'eoff': eoff, 'ta': ta, 'tb': tb, 'sid': sid,
+                'native_type': native_type, 'is_gating': is_gating
+            })
+            
+        gamma = total_original_weight / max(total_surviving_weight, 1e-6)
+        logger.debug("AdaBoost weight redistribution: gamma multiplier = %.3f", gamma)
+
+        # 5. Inject synthesized constraints into Donor Edges (Pass 2)
+        rw_edge_count = 0
+        
+        for e_info in edge_data_cache:
+            eoff = e_info['eoff']
+            ta = e_info['ta']
+            tb = e_info['tb']
+            sid = e_info['sid']
+            native_type = e_info['native_type']
+            is_gating = e_info['is_gating']
             
             durango_joint = state_to_joint.get(sid, 10) # default to Right Wrist
-            native_type = state_to_type.get(sid, 0)
             jdnext_joint = durango_to_jdnext.get(durango_joint, 7)
             
-            joint_pairs = joint_xy.get(jdnext_joint, rw_pairs)
-            if not joint_pairs:
-                joint_pairs = rw_pairs
-                
-            # Synchronize time: advance through the dance based on state_id
             progress = (sid - 1) / max(1, num_states - 1)
-            pair_idx = int(progress * (len(joint_pairs) - 1))
-            pair_idx = max(0, min(pair_idx, len(joint_pairs) - 1))
+            pair_idx = int(progress * (num_frames - 1))
+            pair_idx = max(0, min(pair_idx, num_frames - 1))
             
-            cam_x, cam_y = joint_pairs[pair_idx]
-            
-            # Neighbour frames for derivative computation
-            prev_idx = max(0, pair_idx - 1)
-            prev_x, prev_y = joint_pairs[prev_idx]
-            next_idx = min(len(joint_pairs) - 1, pair_idx + 1)
-            next_x, next_y = joint_pairs[next_idx]
-            
-            # Scaled positions
-            pos_x = cam_x * _CAM_TO_KINECT_SCALE
-            pos_y = cam_y * _CAM_TO_KINECT_SCALE
-            
-            # First derivatives (velocity) — backward difference
-            vel_x = (cam_x - prev_x) * _CAM_TO_KINECT_SCALE
-            vel_y = (cam_y - prev_y) * _CAM_TO_KINECT_SCALE
-            
-            # Second derivatives (acceleration) — central difference
-            accel_x = (next_x - 2*cam_x + prev_x) * _CAM_TO_KINECT_SCALE
-            accel_y = (next_y - 2*cam_y + prev_y) * _CAM_TO_KINECT_SCALE
-            
-            # Speed magnitudes (2D approx — no Z available from JDNext)
-            speed_sq = vel_x**2 + vel_y**2
+            if pair_idx < num_frames and jdnext_joint < 15:
+                pos_x = X_phys[pair_idx, jdnext_joint]
+                pos_y = Y_phys[pair_idx, jdnext_joint]
+                pos_z = Z_phys[pair_idx, jdnext_joint]
+                
+                vel_x = Vx[pair_idx, jdnext_joint]
+                vel_y = Vy[pair_idx, jdnext_joint]
+                vel_z = Vz[pair_idx, jdnext_joint]
+                
+                accel_x = Ax[pair_idx, jdnext_joint]
+                accel_y = Ay[pair_idx, jdnext_joint]
+                accel_z = Az[pair_idx, jdnext_joint]
+                
+                torque_val = Torque[pair_idx, jdnext_joint]
+                muscle_force = MuscleForce[pair_idx, jdnext_joint]
+            else:
+                pos_x = pos_y = pos_z = 0.0
+                vel_x = vel_y = vel_z = 0.0
+                accel_x = accel_y = accel_z = 0.0
+                torque_val = muscle_force = 0.0
+                
+            speed_sq = vel_x**2 + vel_y**2 + vel_z**2
             speed = speed_sq ** 0.5
+            accel_mag = (accel_x**2 + accel_y**2 + accel_z**2) ** 0.5
 
             # --- ClassifierData::EType dispatch ---
-            # All 36 types decoded from ua_engine.map reverse engineering.
-            # Derivable types are injected with the correct mathematical signal.
-            # Unavailable types (Z-depth, muscle physics, optical flow) use tb*0.5:
-            # this stays on the same side of the decision boundary as the expected
-            # value, neutralizing those stumps without false-vetoing.
-
             if native_type == 0:
-                # Base/null — position blend
-                tb_val = max(-3.8, min(3.8, (pos_x + pos_y) / 2.0))
-
+                tb_val = max(-3.8, min(3.8, (pos_x + pos_y + pos_z) / 3.0))
             elif native_type == 3:
-                # Angles — 2D angle of velocity vector
                 tb_val = _math.atan2(vel_y, vel_x) if (vel_x != 0.0 or vel_y != 0.0) else 0.0
-                tb_val = max(-3.14, min(3.14, tb_val))
-
             elif native_type in (8, 33):
-                # DiffPositionX / PositionVelocityX
-                tb_val = max(-2.5, min(2.5, vel_x))
-
+                tb_val = max(-3.8, min(3.8, vel_x))
             elif native_type in (9, 34):
-                # DiffPositionY / PositionVelocityY
-                tb_val = max(-2.5, min(2.5, vel_y))
-
+                tb_val = max(-3.8, min(3.8, vel_y))
+            elif native_type in (10, 32):
+                tb_val = max(-3.8, min(3.8, vel_z))
             elif native_type == 25:
-                # PositionAccelerationX
-                tb_val = max(-3.0, min(3.0, accel_x))
-
+                tb_val = max(-3.8, min(3.8, accel_x))
             elif native_type == 26:
-                # PositionAccelerationY
-                tb_val = max(-3.0, min(3.0, accel_y))
-
+                tb_val = max(-3.8, min(3.8, accel_y))
+            elif native_type == 27:
+                tb_val = max(-3.8, min(3.8, accel_z))
             elif native_type in (1, 2, 24):
-                # AngleAcceleration / AngleVelocities / PositionAcceleration (3D magnitude)
-                # Approximate with 2D accel magnitude
-                accel_mag = (accel_x**2 + accel_y**2) ** 0.5
-                tb_val = max(-3.0, min(3.0, accel_mag))
-
+                tb_val = max(-3.8, min(3.8, accel_mag))
             elif native_type == 28:
-                # PositionSpeed — sqrt(vx²+vy²), missing Z
-                tb_val = max(-2.5, min(2.5, speed))
-
+                tb_val = max(-3.8, min(3.8, speed))
             elif native_type == 29:
-                # PositionSpeedSQ — vx²+vy²
-                tb_val = max(-2.5, min(2.5, speed_sq))
-
+                tb_val = max(-3.8, min(3.8, speed_sq))
             elif native_type == 30:
-                # PositionVelocitySQX — vx²
-                tb_val = max(-2.5, min(2.5, vel_x**2))
-
+                tb_val = max(-3.8, min(3.8, vel_x**2))
             elif native_type == 31:
-                # PositionVelocitySQY — vy²
-                tb_val = max(-2.5, min(2.5, vel_y**2))
-
+                tb_val = max(-3.8, min(3.8, vel_y**2))
+            elif native_type in (4, 5, 6, 7):
+                tb_val = max(-3.8, min(3.8, torque_val))
+            elif native_type in (11, 12, 13, 14, 15, 16, 17):
+                tb_val = max(-3.8, min(3.8, muscle_force))
+            elif native_type in irrecoverable_types:
+                tb_val = 0.0
+                ta = 0.0
             else:
-                # Unavailable: Z-depth (10,27,32), Muscle physics (4-7,11-17),
-                # Optical flow (18-23), BoneLengthChanges (4), TimeSpaceAngles (35).
-                # tb*0.5 stays on the expected side of each stump's boundary,
-                # neutralizing the vote without inverting it.
                 tb_val = tb * 0.5
 
-            # ta = AdaBoost weight. Scoring edges get strictness shrink applied.
-            # Gating edges (|ta| > 10.0) are never touched.
-            if abs(ta) <= 10.0:
-                multiplier = 1.0 - (strictness * 0.75)
-                new_ta = ta * multiplier
-                ta_val = max(-1.0, min(1.0, new_ta))
+            if not is_gating:
+                if native_type in irrecoverable_types:
+                    ta_val = 0.0
+                else:
+                    new_ta = ta * gamma * (1.0 - (strictness * 0.75))
+                    ta_val = max(-1.0, min(1.0, new_ta))
             else:
                 ta_val = ta
 
