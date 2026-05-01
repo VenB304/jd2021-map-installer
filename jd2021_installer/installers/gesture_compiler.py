@@ -914,13 +914,25 @@ def compile_gesture_from_scratch(
         )
         
         # INCREASE STRICTNESS: Pure position checks (Type 0) are very easily spoofed.
-        # We must boost threshold_a (weight) to require precise physical adherence.
+        # We must boost threshold_a (weight) to require precise physical adherence,
+        # BUT we must absolutely NEVER exceed 1.0, because the engine interprets 
+        # any ta > 1.0 as a completely different structural edge (a Gating Edge), 
+        # which will cause instant misses.
         boosted_edges = []
         for ta, tb, sid in edges:
             if abs(ta) <= _GATING_THRESHOLD:
-                # Boost the scoring weight by 2.5x to prevent swaying exploits,
-                # AND scale it dynamically by the user's UI strictness setting.
-                ta = (ta * 2.5 * strictness) if ta != 0.0 else (0.5 * strictness)
+                # Scale the original ta slightly, but clamp it firmly within the [-1.0, 1.0] scoring range.
+                # We apply the UI strictness setting here.
+                new_ta = (ta * 1.5) if ta != 0.0 else 0.3
+                
+                # Apply user strictness, then clamp
+                new_ta = new_ta * strictness
+                
+                if new_ta > 0:
+                    ta = min(1.0, new_ta)
+                else:
+                    ta = max(-1.0, new_ta)
+                    
             boosted_edges.append((ta, tb, sid))
             
         # 4. Build Parameters Block
