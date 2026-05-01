@@ -835,6 +835,7 @@ def compile_hybrid_gesture(
         # Scale factor: camera [-1,+1] -> Kinect edge values
         _CAM_TO_KINECT_SCALE = 2.28
         
+        import math as _math
         durango_to_jdnext = {v: k for k, v in _JDNEXT_TO_DURANGO_JOINT_MAP.items()}
         num_states = len(state_to_joint)
 
@@ -850,57 +851,106 @@ def compile_hybrid_gesture(
             if not joint_pairs:
                 joint_pairs = rw_pairs
                 
-            # Synchronize time perfectly: advance through the dance based on the state_id
+            # Synchronize time: advance through the dance based on state_id
             progress = (sid - 1) / max(1, num_states - 1)
             pair_idx = int(progress * (len(joint_pairs) - 1))
             pair_idx = max(0, min(pair_idx, len(joint_pairs) - 1))
             
             cam_x, cam_y = joint_pairs[pair_idx]
-            cam_val = (cam_x + cam_y) / 2.0
             
-            # tb_val is the EXPECTED physical value
+            # Neighbour frames for derivative computation
+            prev_idx = max(0, pair_idx - 1)
+            prev_x, prev_y = joint_pairs[prev_idx]
+            next_idx = min(len(joint_pairs) - 1, pair_idx + 1)
+            next_x, next_y = joint_pairs[next_idx]
+            
+            # Scaled positions
+            pos_x = cam_x * _CAM_TO_KINECT_SCALE
+            pos_y = cam_y * _CAM_TO_KINECT_SCALE
+            
+            # First derivatives (velocity) — backward difference
+            vel_x = (cam_x - prev_x) * _CAM_TO_KINECT_SCALE
+            vel_y = (cam_y - prev_y) * _CAM_TO_KINECT_SCALE
+            
+            # Second derivatives (acceleration) — central difference
+            accel_x = (next_x - 2*cam_x + prev_x) * _CAM_TO_KINECT_SCALE
+            accel_y = (next_y - 2*cam_y + prev_y) * _CAM_TO_KINECT_SCALE
+            
+            # Speed magnitudes (2D approx — no Z available from JDNext)
+            speed_sq = vel_x**2 + vel_y**2
+            speed = speed_sq ** 0.5
+
+            # --- ClassifierData::EType dispatch ---
+            # All 36 types decoded from ua_engine.map reverse engineering.
+            # Derivable types are injected with the correct mathematical signal.
+            # Unavailable types (Z-depth, muscle physics, optical flow) use tb*0.5:
+            # this stays on the same side of the decision boundary as the expected
+            # value, neutralizing those stumps without false-vetoing.
+
             if native_type == 0:
-                # Type 0 is Pure Position
-                tb_val = cam_val * _CAM_TO_KINECT_SCALE
-                tb_val = max(-3.8, min(3.8, tb_val))
+                # Base/null — position blend
+                tb_val = max(-3.8, min(3.8, (pos_x + pos_y) / 2.0))
+
+            elif native_type == 3:
+                # Angles — 2D angle of velocity vector
+                tb_val = _math.atan2(vel_y, vel_x) if (vel_x != 0.0 or vel_y != 0.0) else 0.0
+                tb_val = max(-3.14, min(3.14, tb_val))
+
+            elif native_type in (8, 33):
+                # DiffPositionX / PositionVelocityX
+                tb_val = max(-2.5, min(2.5, vel_x))
+
+            elif native_type in (9, 34):
+                # DiffPositionY / PositionVelocityY
+                tb_val = max(-2.5, min(2.5, vel_y))
+
+            elif native_type == 25:
+                # PositionAccelerationX
+                tb_val = max(-3.0, min(3.0, accel_x))
+
+            elif native_type == 26:
+                # PositionAccelerationY
+                tb_val = max(-3.0, min(3.0, accel_y))
+
+            elif native_type in (1, 2, 24):
+                # AngleAcceleration / AngleVelocities / PositionAcceleration (3D magnitude)
+                # Approximate with 2D accel magnitude
+                accel_mag = (accel_x**2 + accel_y**2) ** 0.5
+                tb_val = max(-3.0, min(3.0, accel_mag))
+
+            elif native_type == 28:
+                # PositionSpeed — sqrt(vx²+vy²), missing Z
+                tb_val = max(-2.5, min(2.5, speed))
+
+            elif native_type == 29:
+                # PositionSpeedSQ — vx²+vy²
+                tb_val = max(-2.5, min(2.5, speed_sq))
+
+            elif native_type == 30:
+                # PositionVelocitySQX — vx²
+                tb_val = max(-2.5, min(2.5, vel_x**2))
+
+            elif native_type == 31:
+                # PositionVelocitySQY — vy²
+                tb_val = max(-2.5, min(2.5, vel_y**2))
+
             else:
-                # Non-Zero types (Velocity, Acceleration, Angles)
-                # Compute the derivative (delta) from the previous coordinate
-                prev_idx = max(0, pair_idx - 1)
-                prev_x, prev_y = joint_pairs[prev_idx]
-                prev_val = (prev_x + prev_y) / 2.0
-                
-                # Velocity = Change in position
-                velocity_val = (cam_val - prev_val) * _CAM_TO_KINECT_SCALE
-                
-                # For static poses, velocity_val will be 0.0.
-                # If the native state expects velocity, injecting 0.0 forces the player
-                # to actually stand still to pass, enforcing timing and breaking the sway exploit!
-                # We cap it to a reasonable velocity range to prevent wild spikes.
-                tb_val = max(-2.0, min(2.0, velocity_val))
-            
-            # ta is the TOLERANCE/WEIGHT of the edge.
+                # Unavailable: Z-depth (10,27,32), Muscle physics (4-7,11-17),
+                # Optical flow (18-23), BoneLengthChanges (4), TimeSpaceAngles (35).
+                # tb*0.5 stays on the expected side of each stump's boundary,
+                # neutralizing the vote without inverting it.
+                tb_val = tb * 0.5
+
+            # ta = AdaBoost weight. Scoring edges get strictness shrink applied.
+            # Gating edges (|ta| > 10.0) are never touched.
             if abs(ta) <= 10.0:
-                # To make the gesture STRICTER, we must SHRINK the tolerance window (ta).
-                # strictness=1.0 should make the window very small (e.g., 25% of original).
-                # strictness=0.0 is handled above (auto-perfect passthrough).
-                # So a strictness of 0.9 will multiply ta by ~0.325.
                 multiplier = 1.0 - (strictness * 0.75)
-                
                 new_ta = ta * multiplier
-                
-                # CLAMP to [-1.0, 1.0] so it never becomes a gating edge!
-                if new_ta > 0:
-                    ta_val = min(1.0, new_ta)
-                else:
-                    ta_val = max(-1.0, new_ta)
+                ta_val = max(-1.0, min(1.0, new_ta))
             else:
-                # Leave gating edges completely untouched!
                 ta_val = ta
-                
+
             struct.pack_into(f'{endian}f', template_data, eoff, ta_val)
-                
-            # Overwrite tb (position) for ALL edges!
             struct.pack_into(f'{endian}f', template_data, eoff + 4, tb_val)
             rw_edge_count += 1
                     
