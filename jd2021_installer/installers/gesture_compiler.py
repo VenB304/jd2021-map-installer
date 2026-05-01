@@ -926,36 +926,38 @@ def compile_hybrid_gesture(
             accel_mag = (accel_x**2 + accel_y**2 + accel_z**2) ** 0.5
 
             # --- ClassifierData::EType dispatch ---
+            # For magnitudes and accelerations, we multiply by 0.6 (or 0.36 for squared) 
+            # to set a reachable decision boundary rather than an absolute maximum wall.
             if native_type == 0:
                 tb_val = max(-3.8, min(3.8, (pos_x + pos_y + pos_z) / 3.0))
             elif native_type == 3:
                 tb_val = _math.atan2(vel_y, vel_x) if (vel_x != 0.0 or vel_y != 0.0) else 0.0
             elif native_type in (8, 33):
-                tb_val = max(-3.8, min(3.8, vel_x))
+                tb_val = max(-3.8, min(3.8, vel_x * 0.6))
             elif native_type in (9, 34):
-                tb_val = max(-3.8, min(3.8, vel_y))
+                tb_val = max(-3.8, min(3.8, vel_y * 0.6))
             elif native_type in (10, 32):
-                tb_val = max(-3.8, min(3.8, vel_z))
+                tb_val = max(-3.8, min(3.8, vel_z * 0.6))
             elif native_type == 25:
-                tb_val = max(-3.8, min(3.8, accel_x))
+                tb_val = max(-3.8, min(3.8, accel_x * 0.6))
             elif native_type == 26:
-                tb_val = max(-3.8, min(3.8, accel_y))
+                tb_val = max(-3.8, min(3.8, accel_y * 0.6))
             elif native_type == 27:
-                tb_val = max(-3.8, min(3.8, accel_z))
+                tb_val = max(-3.8, min(3.8, accel_z * 0.6))
             elif native_type in (1, 2, 24):
-                tb_val = max(-3.8, min(3.8, accel_mag))
+                tb_val = max(-3.8, min(3.8, accel_mag * 0.6))
             elif native_type == 28:
-                tb_val = max(-3.8, min(3.8, speed))
+                tb_val = max(-3.8, min(3.8, speed * 0.6))
             elif native_type == 29:
-                tb_val = max(-3.8, min(3.8, speed_sq))
+                tb_val = max(-3.8, min(3.8, speed_sq * 0.36))
             elif native_type == 30:
-                tb_val = max(-3.8, min(3.8, vel_x**2))
+                tb_val = max(-3.8, min(3.8, (vel_x**2) * 0.36))
             elif native_type == 31:
-                tb_val = max(-3.8, min(3.8, vel_y**2))
+                tb_val = max(-3.8, min(3.8, (vel_y**2) * 0.36))
             elif native_type in (4, 5, 6, 7):
-                tb_val = max(-3.8, min(3.8, torque_val))
+                tb_val = max(-3.8, min(3.8, torque_val * 0.5))
             elif native_type in (11, 12, 13, 14, 15, 16, 17):
-                tb_val = max(-3.8, min(3.8, muscle_force))
+                tb_val = max(-3.8, min(3.8, muscle_force * 0.5))
             elif native_type in irrecoverable_types:
                 tb_val = 0.0
                 ta = 0.0
@@ -966,7 +968,9 @@ def compile_hybrid_gesture(
                 if native_type in irrecoverable_types:
                     ta_val = 0.0
                 else:
-                    new_ta = ta * gamma * (1.0 - (strictness * 0.75))
+                    # Strictness slider: 1.0 = 100% of weight, 0.0 = 25% of weight
+                    strictness_multiplier = 0.25 + (strictness * 0.75)
+                    new_ta = ta * gamma * strictness_multiplier
                     ta_val = max(-1.0, min(1.0, new_ta))
             else:
                 ta_val = ta
