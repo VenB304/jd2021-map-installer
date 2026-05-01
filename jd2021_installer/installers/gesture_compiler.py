@@ -814,6 +814,11 @@ def compile_hybrid_gesture(
             fields = struct.unpack_from(f'{endian}5i', template_data, state_start + off)
             if fields[0] == state_id_counter:
                 state_to_joint[fields[0]] = fields[2] # joint_pair_id
+                
+                # OVERWRITE the edge_group_type to 0 (Pure Position)!
+                # This ensures static poses don't trigger false misses on velocity checks.
+                struct.pack_into(f'{endian}i', template_data, state_start + off + 12, 0)
+                
                 off += 20
                 state_id_counter += 1
             else:
@@ -852,9 +857,19 @@ def compile_hybrid_gesture(
             tb_val = max(-3.8, min(3.8, tb_val))
             
             # ta is the TOLERANCE/WEIGHT of the edge.
-            # Larger absolute ta = STRICTER check. (e.g., 165.0 is a gating check).
-            # Multiply by strictness so that lower strictness = smaller absolute ta = wider window!
-            ta_val = ta * strictness
+            if abs(ta) <= 10.0:
+                # 1.5x Strictness Boost to compensate for Type 0 lack of velocity!
+                new_ta = ta * 1.5 * strictness
+                
+                # CLAMP to [-1.0, 1.0] so it never becomes a gating edge!
+                if new_ta > 0:
+                    ta_val = min(1.0, new_ta)
+                else:
+                    ta_val = max(-1.0, new_ta)
+            else:
+                # Leave gating edges completely untouched!
+                ta_val = ta
+                
             struct.pack_into(f'{endian}f', template_data, eoff, ta_val)
                 
             # Overwrite tb (position) for ALL edges!
@@ -893,60 +908,21 @@ def compile_gesture_from_scratch(
             output_path.parent.mkdir(parents=True, exist_ok=True)
             shutil.copy2(jdnext_src_path, output_path)
             return True
-
-        # 1. Parse JDNext Data
-        joint_constraints, timing_values = _decompile_jdnext(jdnext_src_path)
-        if not joint_constraints:
-            logger.warning("No constraints extracted from JDNext data")
-            return False
+        # Revert to Hybrid Compilation!
+        # The from-scratch HMM generator has fatal structural flaws in Zone A/B packing 
+        # which causes the engine to instantly reject the gesture (resulting in 100% misses).
+        # The hybrid compiler safely bootstraps off a known-good structure (discorope.gesture).
+        donor_path = _find_donor_gesture()
+        if donor_path is not None:
+            return compile_hybrid_gesture(
+                jdnext_src_path, donor_path, output_path, strictness
+            )
             
-        num_sections = _count_jdnext_sections(jdnext_src_path)
-        num_constraints = len(joint_constraints)
-        
-        # 2. Generate State Table (with fixed Zone A edge_group_type = 0)
-        state_table, num_states, state_to_joint = generate_state_table(
-            num_sections, num_constraints
+        logger.warning(
+            "No donor gesture found; cannot generate hybrid gesture for '%s'",
+            jdnext_src_path.name,
         )
-        
-        # 3. Build Edge Table
-        edges = _build_edge_table(
-            joint_constraints, num_states, strictness, state_to_joint
-        )
-        
-        # INCREASE STRICTNESS: Pure position checks (Type 0) are very easily spoofed.
-        # We must boost threshold_a (weight) to require precise physical adherence,
-        # BUT we must absolutely NEVER exceed 1.0, because the engine interprets 
-        # any ta > 1.0 as a completely different structural edge (a Gating Edge), 
-        # which will cause instant misses.
-        boosted_edges = []
-        for ta, tb, sid in edges:
-            if abs(ta) <= _GATING_THRESHOLD:
-                # Scale the original ta slightly, but clamp it firmly within the [-1.0, 1.0] scoring range.
-                # We apply the UI strictness setting here.
-                new_ta = (ta * 1.5) if ta != 0.0 else 0.3
-                
-                # Apply user strictness, then clamp
-                new_ta = new_ta * strictness
-                
-                if new_ta > 0:
-                    ta = min(1.0, new_ta)
-                else:
-                    ta = max(-1.0, new_ta)
-                    
-            boosted_edges.append((ta, tb, sid))
-            
-        # 4. Build Parameters Block
-        params = _build_params_from_jdnext(joint_constraints, num_sections)
-        
-        # 5. Assemble Binary
-        binary_data = build_gesture_binary(
-            state_table, num_states, params, boosted_edges
-        )
-        
-        output_path.parent.mkdir(parents=True, exist_ok=True)
-        output_path.write_bytes(binary_data)
-        logger.info("Successfully compiled FULL rebuild gesture: %s", output_path.name)
-        return True
+        return False
 
     except Exception:
         logger.exception(
