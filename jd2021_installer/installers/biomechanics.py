@@ -61,25 +61,55 @@ SEGMENT_MASS_RATIOS = {
 
 
 # ---------------------------------------------------------------------------
-# Phase 1: Coordinate Space Translation
+# Phase 1: Coordinate Space Translation & Global Z Estimation
 # ---------------------------------------------------------------------------
 
-def scale_to_physical(x_norm: np.ndarray, y_norm: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+def estimate_global_z(x_norm: np.ndarray, y_norm: np.ndarray) -> np.ndarray:
     """
-    Translates JDNext [-1.0, 1.0] normalized screen space into physical meters.
+    Estimates the global Z-depth of the root by analyzing the apparent 2D torso length.
+    If the player steps closer, their 2D torso length increases in normalized space.
+    """
+    num_frames = x_norm.shape[0]
+    Z_global = np.full(num_frames, Z_ROOT)
     
-    Args:
-        x_norm: shape (num_frames, 15) JDNext X coordinates
-        y_norm: shape (num_frames, 15) JDNext Y coordinates
+    if x_norm.shape[1] > 8:
+        # Physical torso length target
+        target_torso_phys = STANDARD_BONES[(1, 8)]
         
-    Returns:
-        X_phys, Y_phys in real-world meters.
+        # Calculate 2D normalized torso length for each frame
+        torso_len_2d = np.sqrt((x_norm[:, 1] - x_norm[:, 8])**2 + (y_norm[:, 1] - y_norm[:, 8])**2)
+        torso_len_2d = np.maximum(torso_len_2d, 0.05)
+        
+        # Perspective relation: Z_global = Z_ROOT * (target_phys / apparent_phys_at_Z_ROOT)
+        Z_est = Z_ROOT * (target_torso_phys / (torso_len_2d * Y_MAX))
+        
+        # Clamp between 1.0m and 4.0m (Kinect view range)
+        Z_global = np.clip(Z_est, 1.0, 4.0)
+        
+        # Smooth global Z (prevent jittery steps)
+        if num_frames >= 5:
+            # Need an odd window length
+            w_len = min(11, num_frames if num_frames % 2 != 0 else num_frames - 1)
+            Z_global = savgol_filter(Z_global, window_length=w_len, polyorder=2)
+            
+    return Z_global
+
+def scale_to_physical(x_norm: np.ndarray, y_norm: np.ndarray) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     """
-    # X scales normally, Y is inverted to match optical center Y-Up vs Screen Y-Down
-    X_phys = x_norm * X_MAX
-    Y_phys = -y_norm * Y_MAX
+    Translates JDNext [-1.0, 1.0] normalized screen space into physical meters,
+    accounting for global Z-depth perspective.
+    """
+    Z_global = estimate_global_z(x_norm, y_norm)
     
-    return X_phys, Y_phys
+    # Calculate X and Y physical spans dynamically based on Z_global
+    Z_g = Z_global[:, np.newaxis]
+    X_max_dynamic = Z_g * np.tan(KINECT_FOV_H_RAD / 2.0)
+    Y_max_dynamic = Z_g * np.tan(KINECT_FOV_V_RAD / 2.0)
+    
+    X_phys = x_norm * X_max_dynamic
+    Y_phys = -y_norm * Y_max_dynamic
+    
+    return X_phys, Y_phys, Z_global
 
 
 # ---------------------------------------------------------------------------
@@ -94,28 +124,26 @@ def _depth_objective(Z_flat: np.ndarray, X: np.ndarray, Y: np.ndarray, lambda_sm
     Z = Z_flat.reshape((num_frames, num_joints))
     total_loss = 0.0
     
-    # 1. Bone Length Constancy Loss
     for (i, j), target_len in STANDARD_BONES.items():
         if i < num_joints and j < num_joints:
             dist_sq = (X[:, i] - X[:, j])**2 + (Y[:, i] - Y[:, j])**2 + (Z[:, i] - Z[:, j])**2
             loss_bone = np.sum((np.sqrt(np.maximum(0, dist_sq)) - target_len)**2)
             total_loss += loss_bone
             
-    # 2. Temporal Smoothness (First Derivative Penalty)
     if num_frames > 1:
         loss_smooth = np.sum((Z[1:, :] - Z[:-1, :])**2)
         total_loss += lambda_smooth * loss_smooth
         
     return total_loss
 
-def synthesize_depth_lbfgs(X_phys: np.ndarray, Y_phys: np.ndarray) -> np.ndarray:
+def synthesize_depth_lbfgs(X_phys: np.ndarray, Y_phys: np.ndarray, Z_global: np.ndarray) -> np.ndarray:
     """
     Executes a bounded L-BFGS-B optimization to synthesize missing Z-depth.
     """
     num_frames, num_joints = X_phys.shape
     
-    # Start with a flat Z=2.5m root plane guess
-    Z_initial = np.full((num_frames, num_joints), Z_ROOT)
+    # Start with the global Z depth for each frame instead of flat Z_ROOT
+    Z_initial = np.tile(Z_global[:, np.newaxis], (1, num_joints))
     
     logger.debug("Executing L-BFGS-B Z-Axis synthesis for %d frames...", num_frames)
     

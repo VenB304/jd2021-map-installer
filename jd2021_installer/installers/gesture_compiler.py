@@ -850,8 +850,8 @@ def compile_hybrid_gesture(
                 Y_norm[f, jid] = pairs[f][1]
                 
         logger.info("Executing 2D-to-3D Biomechanical Translation...")
-        X_phys, Y_phys = scale_to_physical(X_norm, Y_norm)
-        Z_phys = synthesize_depth_lbfgs(X_phys, Y_phys)
+        X_phys, Y_phys, Z_global = scale_to_physical(X_norm, Y_norm)
+        Z_phys = synthesize_depth_lbfgs(X_phys, Y_phys, Z_global)
         Vx, Ax = compute_kinematics(X_phys)
         Vy, Ay = compute_kinematics(Y_phys)
         Vz, Az = compute_kinematics(Z_phys)
