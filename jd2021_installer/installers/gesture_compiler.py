@@ -830,11 +830,14 @@ def compile_hybrid_gesture(
                 break # Reached Zone B
                 
         # 3. Biomechanical Pre-computation
+        # 3. Biomechanical Pre-computation
         import math as _math
         import numpy as np
         from jd2021_installer.installers.biomechanics import (
-            scale_to_physical, synthesize_depth_lbfgs, 
-            compute_kinematics, simulate_inverse_dynamics
+            scale_to_physical,
+            synthesize_depth_analytical,
+            compute_kinematics,
+            simulate_inverse_dynamics
         )
         
         durango_to_jdnext = {v: k for k, v in _JDNEXT_TO_DURANGO_JOINT_MAP.items()}
@@ -851,7 +854,7 @@ def compile_hybrid_gesture(
                 
         logger.info("Executing 2D-to-3D Biomechanical Translation...")
         X_phys, Y_phys, Z_global = scale_to_physical(X_norm, Y_norm)
-        Z_phys = synthesize_depth_lbfgs(X_phys, Y_phys, Z_global)
+        Z_phys = synthesize_depth_analytical(X_phys, Y_phys, Z_global)
         Vx, Ax = compute_kinematics(X_phys)
         Vy, Ay = compute_kinematics(Y_phys)
         Vz, Az = compute_kinematics(Z_phys)
