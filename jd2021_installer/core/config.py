@@ -46,6 +46,12 @@ class AppConfig(BaseModel):
     style_debug_mode: bool = False
     window_size_overlay_timeout_ms: int = 1100
     convert_jdnext_gestures: bool = True
+    # AlbumCoach compositing behavior for JDNext multi-coach maps:
+    # "ask" = prompt per map, "always_customize" = always show editor,
+    # "always_default" = use automatic compositing silently.
+    albumcoach_behavior: str = Field(
+        default="ask", pattern=r"^(ask|always_customize|always_default)$"
+    )
     # Scoring strictness for hybrid gestures: 0.0 = auto-perfect (effectively
     # discorope passthrough), 1.0 = strict real scoring from JDNext data.
     # Values in between blend proportionally.

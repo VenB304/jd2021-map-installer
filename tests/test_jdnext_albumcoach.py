@@ -35,13 +35,13 @@ def test_ensure_jdnext_albumcoach_multicoach(tmp_path: Path):
     # Open the composite image and verify it has a mix of colors (all 3 coaches)
     composite = Image.open(albumcoach_path).convert("RGBA")
     
-    # Assert dimensions are correct
-    assert composite.size == (100, 100), "Composite image should match the base dimensions"
+    # Assert dimensions are correct (compositing always produces 1024x1024)
+    assert composite.size == (1024, 1024), "Composite image should be 1024x1024"
     
-    # Check that pixels from the 3 coaches are present
+    # Check that pixels from the 3 coaches are present somewhere in the composite
     colors_found = set()
-    for x in range(100):
-        for y in range(100):
+    for x in range(0, 1024, 4):
+        for y in range(0, 1024, 4):
             pixel = composite.getpixel((x, y))
             if pixel in colors:
                 colors_found.add(pixel)

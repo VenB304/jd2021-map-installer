@@ -155,7 +155,10 @@ def _generate_zone_a(
         # field4: cycle counter (0 for first pass, 1 for second, etc.)
         field4 = cycle
 
-        records.extend(struct.pack('<5i', state_id, flag, joint_id, edge_group, field4))
+        # Fix packing order: [state_id, edge_group_id, joint_pair_id, edge_group_type, flag]
+        # We force edge_group_type = 0 (Pure Position) to ensure static JDNext poses don't fail velocity checks
+        edge_group_type = 0
+        records.extend(struct.pack('<5i', state_id, edge_group, joint_id, edge_group_type, flag))
         state_id += 1
 
         # Advance edge group

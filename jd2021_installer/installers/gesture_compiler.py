@@ -894,17 +894,47 @@ def compile_gesture_from_scratch(
             shutil.copy2(jdnext_src_path, output_path)
             return True
 
-        donor_path = _find_donor_gesture()
-        if donor_path is not None:
-            return compile_hybrid_gesture(
-                jdnext_src_path, donor_path, output_path, strictness
-            )
+        # 1. Parse JDNext Data
+        joint_constraints, timing_values = _decompile_jdnext(jdnext_src_path)
+        if not joint_constraints:
+            logger.warning("No constraints extracted from JDNext data")
+            return False
             
-        logger.warning(
-            "No donor gesture found; cannot generate hybrid gesture for '%s'",
-            jdnext_src_path.name,
+        num_sections = _count_jdnext_sections(jdnext_src_path)
+        num_constraints = len(joint_constraints)
+        
+        # 2. Generate State Table (with fixed Zone A edge_group_type = 0)
+        state_table, num_states, state_to_joint = generate_state_table(
+            num_sections, num_constraints
         )
-        return False
+        
+        # 3. Build Edge Table
+        edges = _build_edge_table(
+            joint_constraints, num_states, strictness, state_to_joint
+        )
+        
+        # INCREASE STRICTNESS: Pure position checks (Type 0) are very easily spoofed.
+        # We must boost threshold_a (weight) to require precise physical adherence.
+        boosted_edges = []
+        for ta, tb, sid in edges:
+            if abs(ta) <= _GATING_THRESHOLD:
+                # Boost the scoring weight by 2.5x to prevent swaying exploits,
+                # AND scale it dynamically by the user's UI strictness setting.
+                ta = (ta * 2.5 * strictness) if ta != 0.0 else (0.5 * strictness)
+            boosted_edges.append((ta, tb, sid))
+            
+        # 4. Build Parameters Block
+        params = _build_params_from_jdnext(joint_constraints, num_sections)
+        
+        # 5. Assemble Binary
+        binary_data = build_gesture_binary(
+            state_table, num_states, params, boosted_edges
+        )
+        
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        output_path.write_bytes(binary_data)
+        logger.info("Successfully compiled FULL rebuild gesture: %s", output_path.name)
+        return True
 
     except Exception:
         logger.exception(
