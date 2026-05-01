@@ -858,8 +858,13 @@ def compile_hybrid_gesture(
             
             # ta is the TOLERANCE/WEIGHT of the edge.
             if abs(ta) <= 10.0:
-                # 1.5x Strictness Boost to compensate for Type 0 lack of velocity!
-                new_ta = ta * 1.5 * strictness
+                # To make the gesture STRICTER, we must SHRINK the tolerance window (ta).
+                # strictness=1.0 should make the window very small (e.g., 25% of original).
+                # strictness=0.0 is handled above (auto-perfect passthrough).
+                # So a strictness of 0.9 will multiply ta by ~0.325.
+                multiplier = 1.0 - (strictness * 0.75)
+                
+                new_ta = ta * multiplier
                 
                 # CLAMP to [-1.0, 1.0] so it never becomes a gating edge!
                 if new_ta > 0:
