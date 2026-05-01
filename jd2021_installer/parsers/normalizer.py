@@ -1664,12 +1664,14 @@ def normalize(
         song_desc.num_coach = inferred_coaches
 
     if song_desc.num_coach > 0 and (song_desc.main_coach < 0 or song_desc.main_coach >= song_desc.num_coach):
+        fallback_coach = 1 if song_desc.num_coach == 3 else 0
         logger.info(
-            "Adjusted MainCoach from %d to 0 for NumCoach=%d",
+            "Adjusted MainCoach from %d to %d for NumCoach=%d",
             song_desc.main_coach,
+            fallback_coach,
             song_desc.num_coach,
         )
-        song_desc.main_coach = 0
+        song_desc.main_coach = fallback_coach
 
     # Infer codename from song_desc if not provided
     effective_codename = codename or song_desc.map_name
