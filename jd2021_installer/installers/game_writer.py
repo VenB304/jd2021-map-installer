@@ -166,7 +166,8 @@ def _write_musictrack_trk(target: Path, name: str, mt: MusicTrackStructure, vst:
 
 
 def _write_songdesc(target: Path, name: str, sd: SongDescription,
-                    num_coach: int, vst: float, config: AppConfig) -> None:
+                    num_coach: int, vst: float, config: AppConfig,
+                    has_autodance: bool = True) -> None:
     """Write SongDesc.tpl and SongDesc.act."""
     name_lower = name.lower()
 
@@ -265,6 +266,7 @@ params =
 					Title = {lua_long_string(sd.title)},
 					Credits = {lua_long_string(sd.credits or "All rights of the producer and other rightholders to the recorded work reserved. Unless otherwise authorized, the duplication, rental, loan, exchange or use of this video game for public performance, broadcasting and online distribution to the public are prohibited.")},
 					NumCoach = {num_coach},
+					NumOfAutodance = {1 if has_autodance else 0},
 					MainCoach = {sd.main_coach},
 					Difficulty = {sd.difficulty},
 					SweatDifficulty = {sd.sweat_difficulty},
@@ -1069,7 +1071,7 @@ def write_game_files(
 
         # Audio files (already existed in V2)
         _write_musictrack_trk(target, name, mt, vst)
-        _write_songdesc(target, name, sd, num_coach, vst, config)
+        _write_songdesc(target, name, sd, num_coach, vst, config, map_data.has_autodance)
         _write_audio_isc(target, name)
 
         # Timeline (Dance + Karaoke TapeCase files)
