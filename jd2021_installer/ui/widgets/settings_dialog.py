@@ -410,6 +410,23 @@ class SettingsDialog(QDialog):
         self.cb_convert_jdnext_gestures.toggled.connect(_toggle_gesture_strictness)
         _toggle_gesture_strictness(self.cb_convert_jdnext_gestures.isChecked())
 
+        # albumcoach_behavior
+        self.combo_albumcoach = QComboBox()
+        self.combo_albumcoach.addItem("Ask per map (default)", "ask")
+        self.combo_albumcoach.addItem("Always show customizer", "always_customize")
+        self.combo_albumcoach.addItem("Always use automatic default", "always_default")
+        self._set_combo_from_value(
+            self.combo_albumcoach,
+            getattr(self._config, "albumcoach_behavior", "ask"),
+        )
+        self.combo_albumcoach.setToolTip(
+            "Controls how the AlbumCoach composite texture is generated\n"
+            "for JDNext multi-coach maps that are missing one.\n"
+            "Ask: prompt before each install.\n"
+            "Always Customize: always open the editor.\n"
+            "Always Default: use automatic compositing silently."
+        )
+        general_form.addRow("AlbumCoach compositing:", self.combo_albumcoach)
 
         self.combo_log_detail = QComboBox()
         self.combo_log_detail.addItem("Quiet (warnings and errors only)", "quiet")
@@ -974,6 +991,7 @@ class SettingsDialog(QDialog):
         self._config.show_quickstart_on_launch = self.cb_quickstart.isChecked()
         self._config.convert_jdnext_gestures = self.cb_convert_jdnext_gestures.isChecked()
         self._config.gesture_scoring_strictness = self.spin_gesture_strictness.value()
+        self._config.albumcoach_behavior = self._combo_value(self.combo_albumcoach)
         self._config.log_detail_level = self._combo_value(self.combo_log_detail)
         self._config.theme = self._combo_value(self.combo_theme)
         self._config.enforce_min_window_size = self.cb_enforce_min_size.isChecked()

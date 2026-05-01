@@ -107,6 +107,7 @@ _SETTINGS_CHANGE_LABELS: dict[str, str] = {
     "show_preflight_success_popup": "Pre-flight success popup",
     "show_install_summary_popup": "Install summary popup",
     "show_quickstart_on_launch": "Quick-start on launch",
+    "albumcoach_behavior": "AlbumCoach compositing",
     "log_detail_level": "Log detail level",
     "theme": "Theme",
     "enforce_min_window_size": "Enforce minimum window size",
@@ -147,6 +148,7 @@ _SETTINGS_CHANGE_ORDER: tuple[str, ...] = (
     "show_preflight_success_popup",
     "show_install_summary_popup",
     "show_quickstart_on_launch",
+    "albumcoach_behavior",
     "log_detail_level",
     "theme",
     "enforce_min_window_size",
@@ -2330,6 +2332,9 @@ class MainWindow(QMainWindow):
             self._lock_ui(False)
             self._stop_file_logging()
             return
+
+        # Pre-install AlbumCoach customization for JDNext multi-coach maps.
+        self._apply_albumcoach_customization(map_data)
         
         # Start install worker
         self._start_install_worker(map_data)
@@ -2401,6 +2406,98 @@ class MainWindow(QMainWindow):
                 f"[{codename}] Non-default status {status_value} ({status_meaning}) detected. Preserving original status."
             )
         return True
+
+    def _apply_albumcoach_customization(self, map_data: NormalizedMapData) -> None:
+        """Offer AlbumCoach customization for JDNext multi-coach maps lacking one.
+
+        Conditions to trigger:
+          1. Map is from a JDNext source.
+          2. Map has ≥ 2 coach images.
+          3. No cover_albumcoach_path already provided by the source.
+          4. Setting is not ``always_default``.
+        """
+        if not getattr(map_data, "is_jdnext_source", False):
+            return
+
+        coach_images = [p for p in map_data.media.coach_images if p.exists()]
+        if len(coach_images) < 2:
+            return
+
+        # Deduplicate by coach number — media discovery may find multiple
+        # format variants (.png, .tga, .tga.ckd) for the same coach.
+        import re as _re
+        coaches_by_idx: dict[int, Path] = {}
+        fallback_idx = 1
+        for cpath in coach_images:
+            m = _re.search(r"coach[_-]?(\d+)", cpath.name.lower())
+            idx = int(m.group(1)) if m else fallback_idx
+            if not m:
+                while fallback_idx in coaches_by_idx:
+                    fallback_idx += 1
+                idx = fallback_idx
+            # Prefer .png over encoded formats
+            if idx not in coaches_by_idx or cpath.suffix.lower() == ".png":
+                coaches_by_idx[idx] = cpath
+        coach_images = [coaches_by_idx[k] for k in sorted(coaches_by_idx)]
+        if len(coach_images) < 2:
+            return
+
+        if map_data.media.cover_albumcoach_path and map_data.media.cover_albumcoach_path.exists():
+            return
+
+        behavior = getattr(self._config, "albumcoach_behavior", "ask")
+        if behavior == "always_default":
+            return
+
+        codename = map_data.codename
+
+        if behavior == "always_customize":
+            # Skip the ask dialog, go straight to the editor.
+            from jd2021_installer.ui.widgets.albumcoach_dialog import AlbumCoachCustomizerDialog
+
+            self.append_log(
+                f"[{codename}] Opening AlbumCoach customizer (always_customize)."
+            )
+            dlg = AlbumCoachCustomizerDialog(coach_images, parent=self)
+            dlg.exec()
+            result_image = dlg.result_image
+            never_ask = False
+            new_behavior = ""
+        else:
+            # "ask" — show the two-step prompt.
+            from jd2021_installer.ui.widgets.albumcoach_dialog import AlbumCoachCustomizerDialog
+
+            self.append_log(
+                f"[{codename}] JDNext multi-coach map detected without albumcoach. "
+                "Prompting user."
+            )
+            result_image, never_ask, new_behavior = AlbumCoachCustomizerDialog.prompt(
+                coach_images, parent=self
+            )
+
+        # Handle "never ask again" preference persistence.
+        if never_ask and new_behavior:
+            self._config.albumcoach_behavior = new_behavior
+            self._save_settings()
+            self.append_log(
+                f"[{codename}] AlbumCoach preference saved: {new_behavior}"
+            )
+
+        if result_image is not None:
+            # Save the user-customized image to temp and set the path so the
+            # pipeline copies it into the target instead of auto-synthesizing.
+            import tempfile
+            tmp_dir = Path(tempfile.mkdtemp(prefix="jd2021_albumcoach_"))
+            dst = tmp_dir / f"{codename}_cover_albumcoach.png"
+            result_image.save(str(dst))
+            map_data.media.cover_albumcoach_path = dst
+            self.append_log(
+                f"[{codename}] Custom AlbumCoach composite applied."
+            )
+        else:
+            self.append_log(
+                f"[{codename}] Using default AlbumCoach compositing."
+            )
 
     def _ask_batch_locked_status_policy(self) -> Optional[bool]:
         """Ask once for batch mode: force non-3 statuses to 3 or preserve originals."""
