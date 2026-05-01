@@ -1148,14 +1148,15 @@ def copy_moves(
     moves_target_root = Path(target_dir) / "timeline" / "moves"
     durango_moves_dir = moves_target_root / "durango"
     wiiu_moves_dir = moves_target_root / "wiiu"
+    pc_moves_dir = moves_target_root / "pc"
     total_copied = 0
     skipped_gesture_names: set[str] = set()
 
     def _copy_to_canonical(src_file: Path, platform_name: str) -> bool:
         """Copy to the canonical output folder based on file extension.
 
-        Gesture files are placed into durango/, MSM files into wiiu/.
-        The original platform layout is no longer preserved separately.
+        Gesture files are placed into durango/ and mirrored to pc/.
+        MSM files are placed into wiiu/.
         """
         ext_low = src_file.suffix.lower()
         if ext_low == ".gesture":
@@ -1166,12 +1167,22 @@ def copy_moves(
             canon_dir = durango_moves_dir
 
         dest = canon_dir / src_file.name
-        if dest.exists():
-            return False
+        copied = False
+        if not dest.exists():
+            dest.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(src_file, dest)
+            copied = True
 
-        dest.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copy2(src_file, dest)
-        return True
+        # Mirror gesture files to pc/ so the engine finds them
+        # when RUNNER.bat simulates the PC platform.
+        if ext_low == ".gesture":
+            pc_dest = pc_moves_dir / src_file.name
+            if not pc_dest.exists():
+                pc_dest.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copy2(src_file, pc_dest)
+                copied = True
+
+        return copied
 
     def _copy_to_platform_preserve(src_file: Path, platform_name: str) -> bool:
         """Copy a file to its canonical folder (durango for gestures, wiiu for msm)."""
@@ -1280,6 +1291,9 @@ def copy_moves(
                 if base != stem and sub_src.exists():
                     durango_moves_dir.mkdir(parents=True, exist_ok=True)
                     shutil.copy2(sub_src, durango_moves_dir / fname)
+                    # Mirror to pc/
+                    pc_moves_dir.mkdir(parents=True, exist_ok=True)
+                    shutil.copy2(sub_src, pc_moves_dir / fname)
                     total_copied += 1
 
     # Recovery path: synthesize expected classifier names from a known-good
@@ -1335,12 +1349,17 @@ def copy_moves(
             )
         else:
             durango_moves_dir.mkdir(parents=True, exist_ok=True)
+            pc_moves_dir.mkdir(parents=True, exist_ok=True)
             created = 0
             for name in sorted(expected_names):
                 dest = durango_moves_dir / name
                 if dest.exists():
                     continue
                 shutil.copy2(template, dest)
+                # Mirror to pc/ for PC-simulated platform
+                pc_dest = pc_moves_dir / name
+                if not pc_dest.exists():
+                    shutil.copy2(template, pc_dest)
                 created += 1
 
             if created:
