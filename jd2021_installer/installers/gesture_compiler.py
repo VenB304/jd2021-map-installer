@@ -968,6 +968,12 @@ def compile_hybrid_gesture(
                 # ta < 0 means stump expects feature <= tb.
                 padding = max(abs(expected) * 0.4, 0.25)
                 
+                # If this is a gating/veto edge (ta > 10.0), double the padding.
+                # Gating edges are pass/fail boundaries. We want them to catch completely 
+                # wrong moves, not punish slight natural variance.
+                if is_gating:
+                    padding *= 2.0
+                
                 if ta > 0:
                     tb_val = expected - padding
                 else:
