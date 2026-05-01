@@ -804,20 +804,25 @@ def compile_hybrid_gesture(
             logger.error("Donor gesture has invalid edge table offset")
             return False
         
-        # Parse Zone A to build state_to_joint map
+        # Parse Zone A to build state_to_joint and state_to_type maps
         state_start = 59
         off = 0
         state_id_counter = 1
         state_to_joint = {}
+        state_to_type = {}
         
         while off + 20 <= len(template_data):
             fields = struct.unpack_from(f'{endian}5i', template_data, state_start + off)
             if fields[0] == state_id_counter:
                 state_to_joint[fields[0]] = fields[2] # joint_pair_id
                 
-                # OVERWRITE the edge_group_type to 0 (Pure Position)!
-                # This ensures static poses don't trigger false misses on velocity checks.
-                struct.pack_into(f'{endian}i', template_data, state_start + off + 12, 0)
+                # Capture the native edge_group_type
+                native_type = struct.unpack_from(f'{endian}i', template_data, state_start + off + 12)[0]
+                state_to_type[fields[0]] = native_type
+                
+                # We NO LONGER overwrite edge_group_type to 0!
+                # We preserve the native Velocity/Acceleration/Angle checks 
+                # to prevent the positional swaying exploit!
                 
                 off += 20
                 state_id_counter += 1
@@ -838,6 +843,7 @@ def compile_hybrid_gesture(
             ta, tb, sid = struct.unpack_from(f'{endian}ffi', template_data, eoff)
             
             durango_joint = state_to_joint.get(sid, 10) # default to Right Wrist
+            native_type = state_to_type.get(sid, 0)
             jdnext_joint = durango_to_jdnext.get(durango_joint, 7)
             
             joint_pairs = joint_xy.get(jdnext_joint, rw_pairs)
@@ -852,9 +858,26 @@ def compile_hybrid_gesture(
             cam_x, cam_y = joint_pairs[pair_idx]
             cam_val = (cam_x + cam_y) / 2.0
             
-            # tb_val is the EXPECTED physical coordinate. Do NOT scale this by strictness!
-            tb_val = cam_val * _CAM_TO_KINECT_SCALE
-            tb_val = max(-3.8, min(3.8, tb_val))
+            # tb_val is the EXPECTED physical value
+            if native_type == 0:
+                # Type 0 is Pure Position
+                tb_val = cam_val * _CAM_TO_KINECT_SCALE
+                tb_val = max(-3.8, min(3.8, tb_val))
+            else:
+                # Non-Zero types (Velocity, Acceleration, Angles)
+                # Compute the derivative (delta) from the previous coordinate
+                prev_idx = max(0, pair_idx - 1)
+                prev_x, prev_y = joint_pairs[prev_idx]
+                prev_val = (prev_x + prev_y) / 2.0
+                
+                # Velocity = Change in position
+                velocity_val = (cam_val - prev_val) * _CAM_TO_KINECT_SCALE
+                
+                # For static poses, velocity_val will be 0.0.
+                # If the native state expects velocity, injecting 0.0 forces the player
+                # to actually stand still to pass, enforcing timing and breaking the sway exploit!
+                # We cap it to a reasonable velocity range to prevent wild spikes.
+                tb_val = max(-2.0, min(2.0, velocity_val))
             
             # ta is the TOLERANCE/WEIGHT of the edge.
             if abs(ta) <= 10.0:
