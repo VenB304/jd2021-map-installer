@@ -926,38 +926,38 @@ def compile_hybrid_gesture(
             accel_mag = (accel_x**2 + accel_y**2 + accel_z**2) ** 0.5
 
             # --- ClassifierData::EType dispatch ---
-            # For magnitudes and accelerations, we multiply by 0.6 (or 0.36 for squared) 
+            # For magnitudes and accelerations, we multiply by 0.4 (or 0.16 for squared) 
             # to set a reachable decision boundary rather than an absolute maximum wall.
             if native_type == 0:
                 tb_val = max(-3.8, min(3.8, (pos_x + pos_y + pos_z) / 3.0))
             elif native_type == 3:
                 tb_val = _math.atan2(vel_y, vel_x) if (vel_x != 0.0 or vel_y != 0.0) else 0.0
             elif native_type in (8, 33):
-                tb_val = max(-3.8, min(3.8, vel_x * 0.6))
+                tb_val = max(-3.8, min(3.8, vel_x * 0.4))
             elif native_type in (9, 34):
-                tb_val = max(-3.8, min(3.8, vel_y * 0.6))
+                tb_val = max(-3.8, min(3.8, vel_y * 0.4))
             elif native_type in (10, 32):
-                tb_val = max(-3.8, min(3.8, vel_z * 0.6))
+                tb_val = max(-3.8, min(3.8, vel_z * 0.4))
             elif native_type == 25:
-                tb_val = max(-3.8, min(3.8, accel_x * 0.6))
+                tb_val = max(-3.8, min(3.8, accel_x * 0.4))
             elif native_type == 26:
-                tb_val = max(-3.8, min(3.8, accel_y * 0.6))
+                tb_val = max(-3.8, min(3.8, accel_y * 0.4))
             elif native_type == 27:
-                tb_val = max(-3.8, min(3.8, accel_z * 0.6))
+                tb_val = max(-3.8, min(3.8, accel_z * 0.4))
             elif native_type in (1, 2, 24):
-                tb_val = max(-3.8, min(3.8, accel_mag * 0.6))
+                tb_val = max(-3.8, min(3.8, accel_mag * 0.4))
             elif native_type == 28:
-                tb_val = max(-3.8, min(3.8, speed * 0.6))
+                tb_val = max(-3.8, min(3.8, speed * 0.4))
             elif native_type == 29:
-                tb_val = max(-3.8, min(3.8, speed_sq * 0.36))
+                tb_val = max(-3.8, min(3.8, speed_sq * 0.16))
             elif native_type == 30:
-                tb_val = max(-3.8, min(3.8, (vel_x**2) * 0.36))
+                tb_val = max(-3.8, min(3.8, (vel_x**2) * 0.16))
             elif native_type == 31:
-                tb_val = max(-3.8, min(3.8, (vel_y**2) * 0.36))
+                tb_val = max(-3.8, min(3.8, (vel_y**2) * 0.16))
             elif native_type in (4, 5, 6, 7):
-                tb_val = max(-3.8, min(3.8, torque_val * 0.5))
+                tb_val = max(-3.8, min(3.8, torque_val * 0.3))
             elif native_type in (11, 12, 13, 14, 15, 16, 17):
-                tb_val = max(-3.8, min(3.8, muscle_force * 0.5))
+                tb_val = max(-3.8, min(3.8, muscle_force * 0.3))
             elif native_type in irrecoverable_types:
                 tb_val = 0.0
                 ta = 0.0

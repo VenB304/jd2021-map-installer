@@ -86,10 +86,10 @@ def estimate_global_z(x_norm: np.ndarray, y_norm: np.ndarray) -> np.ndarray:
         # Clamp between 1.0m and 4.0m (Kinect view range)
         Z_global = np.clip(Z_est, 1.0, 4.0)
         
-        # Smooth global Z (prevent jittery steps)
+        # Heavily smooth global Z to prevent tracking jitter from creating fake explosive forces
         if num_frames >= 5:
-            # Need an odd window length
-            w_len = min(11, num_frames if num_frames % 2 != 0 else num_frames - 1)
+            # Use a ~1 second window (31 frames at 30fps) for macro-movements only
+            w_len = min(31, num_frames if num_frames % 2 != 0 else num_frames - 1)
             Z_global = savgol_filter(Z_global, window_length=w_len, polyorder=2)
             
     return Z_global
