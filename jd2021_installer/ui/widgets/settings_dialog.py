@@ -413,8 +413,8 @@ class SettingsDialog(QDialog):
         # albumcoach_behavior
         self.combo_albumcoach = QComboBox()
         self.combo_albumcoach.addItem("Ask per map (default)", "ask")
-        self.combo_albumcoach.addItem("Always show customizer", "always_customize")
-        self.combo_albumcoach.addItem("Always use automatic default", "always_default")
+        self.combo_albumcoach.addItem("Show Customizer", "always_customize")
+        self.combo_albumcoach.addItem("Use Default (25%)", "always_default")
         self._set_combo_from_value(
             self.combo_albumcoach,
             getattr(self._config, "albumcoach_behavior", "ask"),

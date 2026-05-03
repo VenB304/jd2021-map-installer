@@ -103,6 +103,7 @@ def create_composited_albumcoach(
     z_order: Optional[list[int]] = None,
     canvas_size: tuple[int, int] = (1024, 1024),
     preloaded_images: Optional[dict[int, "Image.Image"]] = None,
+    scale_reference_overlap_pct: Optional[float] = None,
 ) -> "Image.Image":
     """Composite coach textures into a single albumcoach image.
 
@@ -124,6 +125,10 @@ def create_composited_albumcoach(
         Optional dict mapping coach index → already-loaded RGBA PIL Image.
         When provided, these are used instead of reading from *coach_paths*.
         This allows passing images with pre-applied effects (e.g. alpha fade).
+    scale_reference_overlap_pct:
+        If set, the output scale is computed using this overlap percentage,
+        so changing *overlap_pct* only moves coaches left/right without
+        changing the overall vertical scale.
 
     Returns
     -------
@@ -142,6 +147,8 @@ def create_composited_albumcoach(
         horizontal_order = list(range(N))
     if z_order is None:
         z_order = _default_z_order(N)
+
+    h_pos_map = {idx: pos for pos, idx in enumerate(horizontal_order)}
 
     # Load, resize, and crop transparent padding from each coach.
     coach_imgs: dict[int, "Image.Image"] = {}
@@ -164,6 +171,20 @@ def create_composited_albumcoach(
     overlap_ratio = overlap_pct / 100.0
     spacing = avg_vw * (1.0 - overlap_ratio)
 
+    def _composite_width_for_spacing(spacing_value: float) -> float:
+        min_x: Optional[float] = None
+        max_x: Optional[float] = None
+        for idx, img in coach_imgs.items():
+            h_pos = h_pos_map[idx]
+            offset = (h_pos - (N - 1) / 2.0) * spacing_value
+            left = offset - (img.width / 2.0)
+            right = offset + (img.width / 2.0)
+            min_x = left if min_x is None else min(min_x, left)
+            max_x = right if max_x is None else max(max_x, right)
+        if min_x is None or max_x is None:
+            return 0.0
+        return max_x - min_x
+
     # Build a draw order: iterate horizontal_order sorted by z_order (ascending)
     # so that higher z values are painted last (in front).
     draw_order = sorted(range(N), key=lambda i: z_order[i])
@@ -178,7 +199,7 @@ def create_composited_albumcoach(
         c_img = coach_imgs[draw_idx]
         # Horizontal placement is by the position of this coach in
         # *horizontal_order*.
-        h_pos = horizontal_order.index(draw_idx)
+        h_pos = h_pos_map[draw_idx]
         center_x = (huge_W / 2.0) + (h_pos - (N - 1) / 2.0) * spacing
         paste_x = int(center_x - c_img.width / 2.0)
         huge_canvas.alpha_composite(c_img, (paste_x, 0))
@@ -192,7 +213,15 @@ def create_composited_albumcoach(
     margin_factor = 0.96
     max_w = W * margin_factor
     max_h = H * margin_factor
-    scale = min(max_w / float(cropped.width), max_h / float(cropped.height))
+    if scale_reference_overlap_pct is None:
+        scale = min(max_w / float(cropped.width), max_h / float(cropped.height))
+    else:
+        ref_ratio = scale_reference_overlap_pct / 100.0
+        ref_spacing = avg_vw * (1.0 - ref_ratio)
+        ref_width = _composite_width_for_spacing(ref_spacing)
+        if ref_width <= 0:
+            ref_width = float(cropped.width)
+        scale = min(max_w / float(ref_width), max_h / float(cropped.height))
     new_w = int(cropped.width * scale)
     new_h = int(cropped.height * scale)
     resized = cropped.resize((new_w, new_h), Image.Resampling.LANCZOS)
@@ -367,6 +396,7 @@ class AlbumCoachCustomizerDialog(QDialog):
                 logger.warning("Could not open coach texture: %s", p)
 
         self._build_ui()
+        self._preview_scale_reference_overlap_pct = 0.0
         # Defer initial preview so the layout has settled and label size is valid.
         QTimer.singleShot(0, self._update_preview)
 
@@ -511,8 +541,8 @@ class AlbumCoachCustomizerDialog(QDialog):
                 horizontal_order=self._get_horizontal_order(),
                 z_order=self._get_z_order(),
                 preloaded_images=self._cached_pil,
+                scale_reference_overlap_pct=self._preview_scale_reference_overlap_pct,
             )
-            self._result_image = img
 
             # Scale pixmap to fit preview label.
             pm = _pil_to_qpixmap(img)
@@ -531,14 +561,29 @@ class AlbumCoachCustomizerDialog(QDialog):
             logger.debug("Preview update failed: %s", exc)
             self._preview_label.setText(f"Preview error:\n{exc}")
 
+    def _compose_result(self) -> None:
+        try:
+            self._result_image = create_composited_albumcoach(
+                self._coach_paths,
+                overlap_pct=float(self._overlap_slider.value()),
+                horizontal_order=self._get_horizontal_order(),
+                z_order=self._get_z_order(),
+                preloaded_images=self._cached_pil,
+            )
+        except Exception as exc:
+            logger.debug("Result compositing failed: %s", exc)
+            self._preview_label.setText(f"Preview error:\n{exc}")
+            self._result_image = None
+
     # ------------------------------------------------------------------
     # Button handler
     # ------------------------------------------------------------------
 
     def _on_apply(self) -> None:
-        # Ensure final image is up-to-date.
-        self._update_preview()
-        self.accept()
+        # Create the final image with default scaling behavior.
+        self._compose_result()
+        if self._result_image is not None:
+            self.accept()
 
     @property
     def result_image(self) -> Optional["Image.Image"]:
