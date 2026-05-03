@@ -147,6 +147,11 @@ class _FrameReaderWorker(QObject):
     def request_stop(self) -> None:
         self._stop_flag.set()
         self._ticking_event.set()  # Unblock if waiting
+        if self._ffmpeg is not None:
+            try:
+                self._ffmpeg.kill()
+            except Exception as e:
+                logger.debug("Error killing ffmpeg on stop: %s", e)
 
     def start_ticking(self, advance_s: float = 0.0) -> None:
         self._advance_s = advance_s
@@ -298,6 +303,7 @@ class PreviewWidget(QWidget):
         self._accurate_seek: bool = False
         self._preview_proxy_cache: dict[str, str] = {}
         self._ended_naturally: bool = False
+        self._dying_threads: list[QThread] = []
 
         self._build_ui()
 
@@ -582,20 +588,37 @@ class PreviewWidget(QWidget):
         self._stop_requested = True
         self._ended_naturally = False
         self._player.stop()
-        if self._worker is not None:
-            self._worker.request_stop()
+        
+        worker = self._worker
+        thread = self._thread
+        
+        self._worker = None
+        self._thread = None
+
+        if worker is not None:
+            try:
+                worker.frame_ready.disconnect()
+                worker.position_updated.disconnect()
+                worker.playback_ended.disconnect()
+            except TypeError:
+                pass
+            worker.request_stop()
         
         # Guard against RuntimeError if the C++ object was already deleted
-        if self._thread is not None:
+        if thread is not None:
             try:
-                if self._thread.isRunning():
-                    self._thread.quit()
-                    self._thread.wait(3000)
+                if thread.isRunning():
+                    thread.quit()
+                    # Do not wait() in the GUI thread to avoid blocking.
+                    # Keep a reference to prevent Python from garbage collecting the QThread
+                    # wrapper while the C++ thread is still running.
+                    self._dying_threads.append(thread)
+                    thread.finished.connect(
+                        lambda t=thread: self._dying_threads.remove(t) if t in self._dying_threads else None
+                    )
             except RuntimeError:
                 logger.debug("Preview thread already deleted.")
 
-        self._worker = None
-        self._thread = None
         if reset_position:
             self._position = 0.0
             self._lbl_time.setText("0:00")
