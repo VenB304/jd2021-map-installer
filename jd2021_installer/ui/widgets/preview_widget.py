@@ -139,13 +139,17 @@ class _FrameReaderWorker(QObject):
         self._start_position = start_position
         self._fps = max(1.0, float(fps))
         self._stop_flag = threading.Event()
+        self._ticking_event = threading.Event()
         self._ffmpeg: Optional[subprocess.Popen] = None
 
     # -- public ------------------------------------------------------------
 
     def request_stop(self) -> None:
-        """Set the stop flag so the read loop exits on next iteration."""
         self._stop_flag.set()
+        self._ticking_event.set()  # Unblock if waiting
+
+    def start_ticking(self) -> None:
+        self._ticking_event.set()
 
     @pyqtSlot()
     def run(self) -> None:
@@ -196,6 +200,10 @@ class _FrameReaderWorker(QObject):
                     QImage.Format.Format_RGB888,
                 )
                 self.frame_ready.emit(q_img.copy())  # .copy() — data outlives loop
+
+                if frames_read == 1:
+                    self._ticking_event.wait()
+                    wall_start = time.time()
 
                 if wall_start > 0:
                     position = self._start_position + max(0.0, time.time() - wall_start)
@@ -264,6 +272,9 @@ class PreviewWidget(QWidget):
         self._player = QMediaPlayer(self)
         self._audio_output = QAudioOutput(self)
         self._player.setAudioOutput(self._audio_output)
+        self._player.playbackStateChanged.connect(self._on_playback_state_changed)
+        
+        self._audio_output.setVolume(1.0)
         self._aud_delay_ms = 0
 
         # Subprocess tracking
@@ -682,6 +693,20 @@ class PreviewWidget(QWidget):
             QTimer.singleShot(self._aud_delay_ms, self._player.play)
         else:
             self._player.play()
+            
+        # Fallback in case audio fails to load or playingStateChanged is never emitted
+        QTimer.singleShot(500, self._force_worker_tick)
+
+    @pyqtSlot()
+    def _force_worker_tick(self) -> None:
+        if self._worker is not None:
+            self._worker.start_ticking()
+
+    @pyqtSlot(QMediaPlayer.PlaybackState)
+    def _on_playback_state_changed(self, state: QMediaPlayer.PlaybackState) -> None:
+        if state == QMediaPlayer.PlaybackState.PlayingState:
+            if self._worker is not None:
+                self._worker.start_ticking()
 
     # ==================================================================
     # UI CALLBACKS
