@@ -28,8 +28,9 @@ import time
 from pathlib import Path
 from typing import Optional
 
-from PyQt6.QtCore import QObject, QThread, QTimer, Qt, pyqtSignal, pyqtSlot
+from PyQt6.QtCore import QObject, QThread, QTimer, Qt, QUrl, pyqtSignal, pyqtSlot
 from PyQt6.QtGui import QImage, QPixmap
+from PyQt6.QtMultimedia import QMediaPlayer, QAudioOutput
 from PyQt6.QtWidgets import (
     QHBoxLayout,
     QLabel,
@@ -119,32 +120,26 @@ class _FrameReaderWorker(QObject):
         playback_ended(): the ffmpeg process reached EOF
     """
 
-    frame_ready = pyqtSignal(QPixmap)
+    frame_ready = pyqtSignal(QImage)
     position_updated = pyqtSignal(float)
     playback_ended = pyqtSignal()
-    ffplay_missing = pyqtSignal()
 
     def __init__(
         self,
         ffmpeg_cmd: list[str],
         width: int,
         height: int,
-        ffplay_cmd: Optional[list[str]] = None,
         start_position: float = 0.0,
         fps: float = PREVIEW_FPS,
-        startup_compensation_ms: float = 0.0,
     ) -> None:
         super().__init__()
         self._ffmpeg_cmd = ffmpeg_cmd
-        self._ffplay_cmd = ffplay_cmd
         self._width = width
         self._height = height
         self._start_position = start_position
         self._fps = max(1.0, float(fps))
-        self._startup_compensation_s = max(0.0, float(startup_compensation_ms) / 1000.0)
         self._stop_flag = threading.Event()
         self._ffmpeg: Optional[subprocess.Popen] = None
-        self._ffplay: Optional[subprocess.Popen] = None
 
     # -- public ------------------------------------------------------------
 
@@ -187,28 +182,12 @@ class _FrameReaderWorker(QObject):
                 frames_read += 1
 
                 if frames_read == 1:
-                    # Anchor both audio and video timing to first decoded frame.
-                    # This avoids per-timestamp drift where some seek targets need
-                    # more decode warm-up before video output becomes available.
-                    wall_start = time.time() + self._startup_compensation_s
-                    if self._ffplay_cmd:
-                        try:
-                            self._ffplay = subprocess.Popen(
-                                self._ffplay_cmd,
-                                stdout=subprocess.DEVNULL,
-                                stderr=subprocess.DEVNULL,
-                                creationflags=_CFLAGS,
-                            )
-                        except FileNotFoundError:
-                            logger.warning("ffplay not found — audio preview disabled.")
-                            self.ffplay_missing.emit()
-                        except Exception as exc:
-                            logger.error("Could not launch ffplay: %s", exc)
+                    wall_start = time.time()
 
                 if self._stop_flag.is_set():
                     return
 
-                # Convert raw bytes to QPixmap
+                # Convert raw bytes to QImage
                 q_img = QImage(
                     data,
                     self._width,
@@ -216,8 +195,7 @@ class _FrameReaderWorker(QObject):
                     self._width * 3,
                     QImage.Format.Format_RGB888,
                 )
-                pixmap = QPixmap.fromImage(q_img.copy())  # .copy() — data outlives loop
-                self.frame_ready.emit(pixmap)
+                self.frame_ready.emit(q_img.copy())  # .copy() — data outlives loop
 
                 if wall_start > 0:
                     position = self._start_position + max(0.0, time.time() - wall_start)
@@ -242,25 +220,19 @@ class _FrameReaderWorker(QObject):
     # -- internal ----------------------------------------------------------
 
     def _cleanup(self) -> None:
-        for proc, label in [
-            (self._ffmpeg, "ffmpeg"),
-            (self._ffplay, "ffplay"),
-        ]:
-            if proc is None:
-                continue
+        if self._ffmpeg is not None:
             try:
-                if label == "ffmpeg" and proc.stdout:
-                    proc.stdout.close()
+                if self._ffmpeg.stdout:
+                    self._ffmpeg.stdout.close()
             except OSError:
                 pass
-            if proc.poll() is None:
+            if self._ffmpeg.poll() is None:
                 try:
-                    proc.kill()
-                    proc.wait(timeout=3)
+                    self._ffmpeg.kill()
+                    self._ffmpeg.wait(timeout=3)
                 except OSError:
                     pass
         self._ffmpeg = None
-        self._ffplay = None
 
 
 # ---------------------------------------------------------------------------
@@ -288,6 +260,12 @@ class PreviewWidget(QWidget):
         self._position: float = 0.0
         self._duration: float = 120.0  # fallback
 
+        # Media Player
+        self._player = QMediaPlayer(self)
+        self._audio_output = QAudioOutput(self)
+        self._player.setAudioOutput(self._audio_output)
+        self._aud_delay_ms = 0
+
         # Subprocess tracking
         self._worker: Optional[_FrameReaderWorker] = None
         self._thread: Optional[QThread] = None
@@ -301,17 +279,13 @@ class PreviewWidget(QWidget):
         self._loop_start: float = 0.0
         self._loop_end: float = 0.0
         self._stop_requested: bool = False
-        self._ffplay_warned: bool = False
         self._ffmpeg_path: str = "ffmpeg"
         self._ffprobe_path: str = "ffprobe"
-        self._ffplay_path: str = "ffplay"
         self._ffmpeg_hwaccel: str = "auto"
         self._preview_video_mode: str = "proxy_low"
         self._preview_fps_default: float = float(PREVIEW_FPS)
         self._playback_fps: float = float(PREVIEW_FPS)
         self._accurate_seek: bool = False
-        self._preview_startup_compensation_ms: float = 100.0
-        self._startup_compensation_override_ms: Optional[float] = None
         self._preview_proxy_cache: dict[str, str] = {}
         self._ended_naturally: bool = False
 
@@ -419,16 +393,14 @@ class PreviewWidget(QWidget):
         self,
         ffmpeg_path: str,
         ffprobe_path: str,
-        ffplay_path: str,
         ffmpeg_hwaccel: str = "auto",
         preview_video_mode: str = "proxy_low",
         preview_fps: int = PREVIEW_FPS,
-        preview_startup_compensation_ms: float = 100.0,
+        **kwargs
     ) -> None:
         """Update ffmpeg tool paths used by preview subprocesses."""
         self._ffmpeg_path = ffmpeg_path or "ffmpeg"
         self._ffprobe_path = ffprobe_path or "ffprobe"
-        self._ffplay_path = ffplay_path or "ffplay"
         self._ffmpeg_hwaccel = ffmpeg_hwaccel or "auto"
         self._preview_video_mode = preview_video_mode or "proxy_low"
         try:
@@ -436,11 +408,6 @@ class PreviewWidget(QWidget):
         except (TypeError, ValueError):
             fps = float(PREVIEW_FPS)
         self._preview_fps_default = fps if fps > 0 else float(PREVIEW_FPS)
-        try:
-            compensation_ms = float(preview_startup_compensation_ms)
-        except (TypeError, ValueError):
-            compensation_ms = 100.0
-        self._preview_startup_compensation_ms = max(0.0, compensation_ms)
 
     def launch(
         self,
@@ -452,8 +419,8 @@ class PreviewWidget(QWidget):
         loop_start: float = 0.0,
         loop_end: float = 0.0,
         preview_fps: Optional[float] = None,
-        startup_compensation_ms: Optional[float] = None,
         accurate_seek: bool = False,
+        **kwargs
     ) -> None:
         """Start (or restart) embedded preview playback.
 
@@ -478,14 +445,6 @@ class PreviewWidget(QWidget):
                 fps_val = self._preview_fps_default
             effective_fps = fps_val if fps_val > 0 else self._preview_fps_default
 
-        if startup_compensation_ms is None:
-            effective_startup_compensation_ms = self._preview_startup_compensation_ms
-        else:
-            try:
-                effective_startup_compensation_ms = max(0.0, float(startup_compensation_ms))
-            except (TypeError, ValueError):
-                effective_startup_compensation_ms = self._preview_startup_compensation_ms
-
         resolved_video_path = self._resolve_preview_video_path(video_path)
         resolved_audio_path = self._resolve_preview_audio_path(audio_path)
 
@@ -497,7 +456,6 @@ class PreviewWidget(QWidget):
         self._loop_start = max(0.0, loop_start)
         self._loop_end = max(0.0, loop_end)
         self._playback_fps = effective_fps
-        self._startup_compensation_override_ms = startup_compensation_ms
         self._accurate_seek = bool(accurate_seek)
         self._stop_requested = False
         self._ended_naturally = False
@@ -537,8 +495,8 @@ class PreviewWidget(QWidget):
 
         vid_seek += start_time
         aud_seek += start_time
-
         fine_video_seek = max(0.0, vid_seek)
+        fine_audio_seek = max(0.0, aud_seek)
 
         vf_filters: list[str] = []
         if self._accurate_seek:
@@ -569,37 +527,22 @@ class PreviewWidget(QWidget):
             "-",
         ]
 
-        ffplay_cmd: list[str] = [
-            self._ffplay_path, "-nodisp", "-autoexit", "-loglevel", "quiet",
-        ]
-        fine_audio_seek = max(0.0, aud_seek)
-        if not self._accurate_seek:
-            ffplay_cmd += ["-ss", f"{fine_audio_seek:.6f}"]
-        ffplay_cmd += ["-i", resolved_audio_path]
-
-        afilters: list[str] = []
-        if self._accurate_seek:
-            # Fine decoder-side trim preserves fractional precision after coarse seek.
-            if fine_audio_seek > 1e-6:
-                afilters.append(f"atrim=start={fine_audio_seek:.6f}")
-            afilters.append("asetpts=PTS-STARTPTS")
-        if aud_delay_ms > 0:
-            afilters.append(f"adelay={aud_delay_ms}|{aud_delay_ms}")
-        if afilters:
-            ffplay_cmd += ["-af", ",".join(afilters)]
+        # Audio Setup via QMediaPlayer
+        self._player.setSource(QUrl.fromLocalFile(resolved_audio_path))
+        self._pending_audio_seek_ms = int(fine_audio_seek * 1000)
+        self._aud_delay_ms = aud_delay_ms
 
         # Build worker + thread
         self._position = start_time
         self.position_changed.emit(self._position)
         self._playing = True
+        self._first_frame_rendered = False
         self._set_play_button_icon(True)
 
         worker = _FrameReaderWorker(
             ffmpeg_cmd, w, h,
-            ffplay_cmd=ffplay_cmd,
             start_position=start_time,
             fps=effective_fps,
-            startup_compensation_ms=effective_startup_compensation_ms,
         )
         thread = QThread()
         worker.moveToThread(thread)
@@ -608,7 +551,6 @@ class PreviewWidget(QWidget):
         worker.frame_ready.connect(self._on_frame)
         worker.position_updated.connect(self._on_position)
         worker.playback_ended.connect(self._on_playback_ended)
-        worker.ffplay_missing.connect(self._on_ffplay_missing)
 
         # Clean-up chain
         worker.playback_ended.connect(thread.quit)
@@ -629,6 +571,7 @@ class PreviewWidget(QWidget):
         """
         self._stop_requested = True
         self._ended_naturally = False
+        self._player.stop()
         if self._worker is not None:
             self._worker.request_stop()
         
@@ -684,9 +627,12 @@ class PreviewWidget(QWidget):
     # SLOTS
     # ==================================================================
 
-    @pyqtSlot(QPixmap)
-    def _on_frame(self, pixmap: QPixmap) -> None:
-        self._canvas.setPixmap(pixmap)
+    @pyqtSlot(QImage)
+    def _on_frame(self, image: QImage) -> None:
+        self._canvas.setPixmap(QPixmap.fromImage(image))
+        if not self._first_frame_rendered:
+            self._first_frame_rendered = True
+            self._start_audio_playback()
 
     @pyqtSlot(float)
     def _on_position(self, pos: float) -> None:
@@ -728,11 +674,14 @@ class PreviewWidget(QWidget):
         self.preview_stopped.emit()
 
     @pyqtSlot()
-    def _on_ffplay_missing(self) -> None:
-        if self._ffplay_warned:
-            return
-        self._ffplay_warned = True
-        self.audio_unavailable.emit()
+    def _start_audio_playback(self) -> None:
+        if hasattr(self, "_pending_audio_seek_ms") and self._pending_audio_seek_ms > 0:
+            self._player.setPosition(self._pending_audio_seek_ms)
+            
+        if self._aud_delay_ms > 0:
+            QTimer.singleShot(self._aud_delay_ms, self._player.play)
+        else:
+            self._player.play()
 
     # ==================================================================
     # UI CALLBACKS
@@ -803,7 +752,6 @@ class PreviewWidget(QWidget):
                 loop_start=self._loop_start,
                 loop_end=self._loop_end,
                 preview_fps=self._playback_fps,
-                startup_compensation_ms=self._startup_compensation_override_ms,
                 accurate_seek=self._accurate_seek,
             )
 

@@ -752,17 +752,6 @@ class SettingsDialog(QDialog):
         )
         advanced_form.addRow("Preview FPS:", self.spin_preview_fps)
 
-        self.spin_preview_startup_comp = QDoubleSpinBox()
-        self.spin_preview_startup_comp.setRange(0.0, 1000.0)
-        self.spin_preview_startup_comp.setDecimals(1)
-        self.spin_preview_startup_comp.setSingleStep(5.0)
-        self.spin_preview_startup_comp.setValue(float(getattr(self._config, "preview_startup_compensation_ms", 100.0)))
-        self.spin_preview_startup_comp.setSuffix(" ms")
-        self.spin_preview_startup_comp.setToolTip(
-            "Playback startup compensation applied when preview begins."
-        )
-        advanced_form.addRow("Preview startup compensation:", self.spin_preview_startup_comp)
-
         self.spin_preview_audio_only_offset = QDoubleSpinBox()
         self.spin_preview_audio_only_offset.setRange(-2000.0, 2000.0)
         self.spin_preview_audio_only_offset.setDecimals(1)
@@ -1020,7 +1009,6 @@ class SettingsDialog(QDialog):
         self._config.fetch_bot_response_timeout_s = self.spin_fetch_bot_timeout.value()
         self._config.window_size_overlay_timeout_ms = self.spin_overlay_timeout.value()
         self._config.preview_fps = self.spin_preview_fps.value()
-        self._config.preview_startup_compensation_ms = self.spin_preview_startup_comp.value()
         self._config.preview_only_audio_offset_ms = self.spin_preview_audio_only_offset.value()
         self._config.audio_preview_fade_s = self.spin_audio_preview_fade.value()
         self._config.check_updates_on_launch = self.cb_check_updates_on_launch.isChecked()

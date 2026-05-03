@@ -751,11 +751,9 @@ class MainWindow(QMainWindow):
             self._preview_widget.set_tool_paths(
                 ffmpeg_path=resolved_ffmpeg or self._config.ffmpeg_path,
                 ffprobe_path=resolved_ffprobe or self._config.ffprobe_path,
-                ffplay_path=resolved_ffplay or "ffplay",
                 ffmpeg_hwaccel=getattr(self._config, "ffmpeg_hwaccel", "auto"),
                 preview_video_mode=getattr(self._config, "preview_video_mode", "proxy_low"),
                 preview_fps=getattr(self._config, "preview_fps", 24),
-                preview_startup_compensation_ms=getattr(self._config, "preview_startup_compensation_ms", 100.0),
             )
 
         if persist and updated:
@@ -1024,11 +1022,9 @@ class MainWindow(QMainWindow):
         self._preview_widget.set_tool_paths(
             ffmpeg_path=self._config.ffmpeg_path,
             ffprobe_path=self._config.ffprobe_path,
-            ffplay_path="ffplay",
             ffmpeg_hwaccel=getattr(self._config, "ffmpeg_hwaccel", "auto"),
             preview_video_mode=getattr(self._config, "preview_video_mode", "proxy_low"),
             preview_fps=getattr(self._config, "preview_fps", 24),
-            preview_startup_compensation_ms=getattr(self._config, "preview_startup_compensation_ms", 100.0),
         )
         self._preview_widget.setObjectName("mainWindowPreviewWidget")
         self._preview_widget.setMinimumHeight(300)
@@ -2913,15 +2909,13 @@ class MainWindow(QMainWindow):
                 loop_start, loop_end = self._get_preview_loop_seconds(self._current_map)
                 preview_fps = self._get_preview_fps_for_map(self._current_map)
                 is_jdnext_preview = self._is_jdnext_source_map(self._current_map)
-                startup_compensation_ms: Optional[float] = 0.0 if is_jdnext_preview else None
                 
                 logger.debug(
-                    "Preview launch: v_override=%.3f, a_offset=%.3f, preview_nudge=%.3f, fps=%.3f, startup_comp_ms=%s",
+                    "Preview launch: v_override=%.3f, a_offset=%.3f, preview_nudge=%.3f, fps=%.3f",
                     v_override,
                     a_offset,
                     preview_nudge_s,
                     preview_fps,
-                    "0.0" if startup_compensation_ms == 0.0 else "default",
                 )
 
                 self._preview_widget.launch(
@@ -2931,7 +2925,6 @@ class MainWindow(QMainWindow):
                     loop_start=loop_start,
                     loop_end=loop_end,
                     preview_fps=preview_fps,
-                    startup_compensation_ms=startup_compensation_ms,
                     accurate_seek=is_jdnext_preview,
                 )
             else:
@@ -2982,12 +2975,8 @@ class MainWindow(QMainWindow):
             loop_start, loop_end = self._get_preview_loop_seconds(self._current_map)
             preview_fps = self._get_preview_fps_for_map(self._current_map)
             is_jdnext_preview = self._is_jdnext_source_map(self._current_map)
-            startup_compensation_ms: Optional[float] = 0.0 if is_jdnext_preview else None
             
-            logger.debug(
-                "Debounced preview restart (startup_comp_ms=%s)...",
-                "0.0" if startup_compensation_ms == 0.0 else "default",
-            )
+            logger.debug("Debounced preview restart...")
             self._preview_widget.launch(
                 str(self._current_map.media.video_path),
                 str(self._current_map.media.audio_path),
@@ -2997,7 +2986,6 @@ class MainWindow(QMainWindow):
                 loop_start=loop_start,
                 loop_end=loop_end,
                 preview_fps=preview_fps,
-                startup_compensation_ms=startup_compensation_ms,
                 accurate_seek=is_jdnext_preview,
             )
 
