@@ -706,7 +706,7 @@ class PreviewWidget(QWidget):
             if self._worker is not None:
                 self._worker.start_ticking(0.0)
 
-    @pyqtSlot(int)
+    @pyqtSlot('qint64')
     def _on_player_position_changed(self, pos_ms: int) -> None:
         if getattr(self, "_waiting_for_audio_pos", False):
             target_ms = getattr(self, "_pending_audio_seek_ms", 0)
