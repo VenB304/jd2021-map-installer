@@ -8,3 +8,4 @@ UnityPy>=1.23
 fsspec>=2024.0
 pytest>=7.0
 pytest-qt>=4.2
+scipy>=1.11

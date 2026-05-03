@@ -329,107 +329,17 @@ def _ensure_jdnext_albumcoach_texture_from_coach(map_target: Path, codename: str
             return True
         except OSError:
             return False
-            
-        # Multi-coach: Compose them using PIL
+
+    # Multi-coach: Compose them using the shared utility
     try:
-        from PIL import Image
-        
-        base_img = Image.open(sorted_coach_files[0]).convert("RGBA")
-        W, H = base_img.size
-        N = len(sorted_coach_files)
-        
-        # Load all coaches and crop their left/right transparent padding
-        coach_imgs_dict = {}
-        total_visual_width = 0
-        
-        for idx, c_file in enumerate(sorted_coach_files):
-            c_img = Image.open(c_file).convert("RGBA")
-            if c_img.size != (W, H):
-                c_img = c_img.resize((W, H), Image.Resampling.LANCZOS)
-                
-            bbox = c_img.getbbox()
-            if bbox:
-                # Trim left and right transparency, but keep top to bottom (0 to H) to preserve vertical relative positions
-                left, upper, right, lower = bbox
-                c_img = c_img.crop((left, 0, right, H))
-            
-            coach_imgs_dict[idx] = c_img
-            total_visual_width += c_img.width
-            
-        avg_vw = total_visual_width / float(N) if N > 0 else W
-        
-        # We want about 25% overlap of their actual visual widths.
-        overlap_ratio = 0.25
-        spacing = avg_vw * (1.0 - overlap_ratio)
-        
-        # Z-order rules based on N
-        if N == 2:
-            draw_order = [1, 0] # P2, P1
-        elif N == 3:
-            draw_order = [0, 2, 1] # P1, P3, P2
-        elif N == 4:
-            draw_order = [0, 3, 2, 1] # P1, P4, P3, P2
-        else:
-            draw_order = []
-            left_idx, right_idx = 0, N - 1
-            while left_idx <= right_idx:
-                if left_idx == right_idx:
-                    draw_order.append(left_idx)
-                else:
-                    draw_order.extend([left_idx, right_idx])
-                left_idx += 1
-                right_idx -= 1
-            draw_order.reverse()
-            
-        # Create a huge canvas to composite them safely
-        huge_W = int(W * N)
-        huge_H = H
-        huge_canvas = Image.new("RGBA", (huge_W, huge_H), (0, 0, 0, 0))
-        
-        # Draw them
-        for idx in draw_order:
-            if idx not in coach_imgs_dict:
-                continue
-            c_img = coach_imgs_dict[idx]
-            
-            # Distribute centers horizontally around the middle of the huge canvas
-            center_x = (huge_W / 2.0) + (idx - (N - 1) / 2.0) * spacing
-            paste_x = int(center_x - c_img.width / 2.0)
-            paste_y = 0
-            
-            huge_canvas.alpha_composite(c_img, (paste_x, paste_y))
-            
-        # Get the strict bounding box of the composited group (trims top/bottom as well)
-        bbox = huge_canvas.getbbox()
-        if not bbox:
-            raise ValueError("Composited image is completely transparent.")
-            
-        cropped_group = huge_canvas.crop(bbox)
-        
-        # We want the group to fit within a 1024x1024 canvas. Let's leave a 4% total margin.
-        margin_factor = 0.96
-        max_w = W * margin_factor
-        max_h = H * margin_factor
-        
-        scale = min(max_w / float(cropped_group.width), max_h / float(cropped_group.height))
-        
-        new_w = int(cropped_group.width * scale)
-        new_h = int(cropped_group.height * scale)
-        resized_group = cropped_group.resize((new_w, new_h), Image.Resampling.LANCZOS)
-        
-        # Create final 1024x1024 canvas
-        final_canvas = Image.new("RGBA", (W, H), (0, 0, 0, 0))
-        
-        # Place them horizontally and vertically centered in the middle
-        final_x = (W - new_w) // 2
-        final_y = (H - new_h) // 2
-        
-        final_canvas.paste(resized_group, (final_x, final_y))
-        final_canvas.save(dst)
+        from jd2021_installer.ui.widgets.albumcoach_dialog import create_composited_albumcoach
+
+        result = create_composited_albumcoach(sorted_coach_files)
+        dst.parent.mkdir(parents=True, exist_ok=True)
+        result.save(dst)
         return True
         
     except Exception as exc:
-        print(f"PIL Composite Exception: {exc}")
         logger.debug("Failed to composite multi-coach albumcoach: %s", exc)
         # Fallback to copy the first coach if PIL compositing fails
         try:
@@ -1970,12 +1880,6 @@ def install_map_to_game(
                 except OSError:
                     pass
 
-        video_path = map_data.media.video_path
-        if video_path:
-            name = video_path.name.lower()
-            if re.match(r"^video_(ultra|high|mid|low)\.(hd|vp8|vp9)\.webm$", name):
-                return True
-
         return False
 
     source_is_jdnext = _is_jdnext_source_map()
@@ -2270,6 +2174,56 @@ def install_map_to_game(
         if progress_callback: progress_callback(85)
         from jd2021_installer.installers.media_processor import copy_moves
         copy_moves(media.moves_dir, map_target, skip_gestures=_is_jdnext_source_map())
+
+    # 5a. JDNext gesture compilation / surrogate fallback
+    #     copy_moves() above skips .gesture files for JDNext sources because
+    #     raw JDNext Float64 bytecode is incompatible with the X360 engine.
+    #     Here we either hybrid-compile them using real X/Y tracking data,
+    #     or duplicate the generic auto-perfect surrogate for each move.
+    if source_is_jdnext and media.moves_dir and media.moves_dir.exists():
+        gesture_sources = list(media.moves_dir.rglob("*.gesture"))
+        if gesture_sources:
+            # Gesture files go into durango/ and are mirrored to pc/.
+            durango_moves_out = map_target / "timeline" / "moves" / "durango"
+            pc_moves_out = map_target / "timeline" / "moves" / "pc"
+            durango_moves_out.mkdir(parents=True, exist_ok=True)
+            pc_moves_out.mkdir(parents=True, exist_ok=True)
+
+            cfg = config or AppConfig()
+            template_path = Path(cfg.gesture_template_path)
+
+            if getattr(cfg, "convert_jdnext_gestures", True):
+                if status_callback:
+                    status_callback(f"Compiling {len(gesture_sources)} hybrid gesture(s) from scratch...")
+                from jd2021_installer.installers.gesture_compiler import compile_gesture_from_scratch
+                compiled = 0
+                strictness = getattr(cfg, "gesture_scoring_strictness", 0.7)
+                for gsrc in gesture_sources:
+                    durango_out = durango_moves_out / gsrc.name
+                    if compile_gesture_from_scratch(gsrc, durango_out, strictness=strictness):
+                        compiled += 1
+                        # Mirror to pc/ so the engine finds our compiled gesture
+                        pc_out = pc_moves_out / gsrc.name
+                        shutil.copy2(durango_out, pc_out)
+                logger.info(
+                    "Gesture compiler: %d/%d gestures dynamically compiled for '%s'",
+                    compiled, len(gesture_sources), codename,
+                )
+            else:
+                # Fallback: copy the raw surrogate (auto-perfect, classic modding behavior)
+                if status_callback:
+                    status_callback(f"Copying {len(gesture_sources)} surrogate gesture(s)...")
+                from jd2021_installer.installers.gesture_compiler import copy_surrogate_as_fallback
+                for gsrc in gesture_sources:
+                    durango_out = durango_moves_out / gsrc.name
+                    copy_surrogate_as_fallback(template_path, durango_out)
+                    # Mirror to pc/
+                    pc_out = pc_moves_out / gsrc.name
+                    shutil.copy2(durango_out, pc_out)
+                logger.info(
+                    "Gesture fallback: %d surrogate gestures copied for '%s'",
+                    len(gesture_sources), codename,
+                )
 
     # 5b. Autodance + stape payloads (V1 step_11 parity)
     if map_data.has_autodance and map_data.source_dir and map_data.source_dir.exists():

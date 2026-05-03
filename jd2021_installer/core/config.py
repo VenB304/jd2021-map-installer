@@ -20,6 +20,7 @@ class AppConfig(BaseModel):
     cache_directory: Path = Path("./cache")
     temp_directory: Path = Path("./temp")
     app_icon_path: Path = Path("./assets/app_icon.jpg")
+    gesture_template_path: Path = Path("./assets/gesture_templates/durango_template.gesture")
 
     # Video quality preference (descending fallback)
     video_quality: str = Field(
@@ -44,6 +45,17 @@ class AppConfig(BaseModel):
     show_window_size_overlay: bool = False
     style_debug_mode: bool = False
     window_size_overlay_timeout_ms: int = 1100
+    convert_jdnext_gestures: bool = True
+    # AlbumCoach compositing behavior for JDNext multi-coach maps:
+    # "ask" = prompt per map, "always_customize" = always show editor,
+    # "always_default" = use automatic compositing silently.
+    albumcoach_behavior: str = Field(
+        default="ask", pattern=r"^(ask|always_customize|always_default)$"
+    )
+    # Scoring strictness for hybrid gestures: 0.0 = auto-perfect (effectively
+    # discorope passthrough), 1.0 = strict real scoring from JDNext data.
+    # Values in between blend proportionally.
+    gesture_scoring_strictness: float = Field(default=0.5, ge=0.0, le=1.0)
 
     # Download settings
     download_timeout_s: int = 600
@@ -61,8 +73,8 @@ class AppConfig(BaseModel):
     max_jd_version: int = 2021
     min_jd_version: int = 2014
     preview_fps: int = 25
-    preview_startup_compensation_ms: float = 100.0
-    preview_only_audio_offset_ms: float = -100.0
+
+    preview_only_audio_offset_ms: float = 0.0
     audio_preview_fade_s: float = 2.0
 
     # Discord Fetch Mode (replaces Node.js JDH_Downloader)

@@ -326,8 +326,7 @@ def _synthesize_tapes_from_parsed_map(
         move_name = _normalize_move_name(mc.get("MoveName", ""))
         move_type = int(mc.get("MoveType", 0) or 0)
         ext = "gesture" if move_type == 1 else "msm"
-        dance_clips.append(
-            {
+        clip = {
                 "__class": "MotionClip",
                 "StartTime": int(mc.get("StartTime", 0) or 0),
                 "Duration": int(mc.get("Duration", 0) or 0),
@@ -344,7 +343,23 @@ def _synthesize_tapes_from_parsed_map(
                 "MoveType": move_type,
                 "Color": _normalize_color(mc.get("Color", "")),
             }
-        )
+        # Gesture clips (MoveType 1) need MotionPlatformSpecifics with
+        # scoring thresholds — without these, the engine defaults to
+        # behaviour that produces all-perfects.
+        if move_type == 1:
+            _mps = {
+                "__class": "MotionPlatformSpecific",
+                "ScoreScale": 1,
+                "ScoreSmoothing": 0,
+                "LowThreshold": 0.2,
+                "HighThreshold": 1,
+            }
+            clip["MotionPlatformSpecifics"] = {
+                "X360": dict(_mps),
+                "ORBIS": {**_mps, "LowThreshold": -0.2, "HighThreshold": 0.6},
+                "DURANGO": dict(_mps),
+            }
+        dance_clips.append(clip)
 
     for pc in dance_data.get("PictoClips", []) if isinstance(dance_data, dict) else []:
         if not isinstance(pc, dict):

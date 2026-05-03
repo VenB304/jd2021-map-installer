@@ -372,6 +372,62 @@ class SettingsDialog(QDialog):
         )
         general_layout.addWidget(self.cb_quickstart)
 
+        # convert_jdnext_gestures
+        self.cb_convert_jdnext_gestures = QCheckBox("Automatically convert JDNext 2D Gestures to legacy format")
+        self.cb_convert_jdnext_gestures.setChecked(getattr(self._config, "convert_jdnext_gestures", True))
+        self.cb_convert_jdnext_gestures.setToolTip(
+            "During pipeline conversion, translates Next-gen camera motion tracking\n"
+            "into X360 volumetric depth data format for legacy compatibility."
+        )
+        general_layout.addWidget(self.cb_convert_jdnext_gestures)
+
+        # gesture_scoring_strictness (shown inline under the checkbox)
+        gesture_strictness_row = QHBoxLayout()
+        gesture_strictness_row.setContentsMargins(24, 0, 0, 0)  # indent under checkbox
+        gesture_strictness_lbl = QLabel("Gesture scoring strictness:")
+        gesture_strictness_row.addWidget(gesture_strictness_lbl)
+        self.spin_gesture_strictness = QDoubleSpinBox()
+        self.spin_gesture_strictness.setRange(0.0, 1.0)
+        self.spin_gesture_strictness.setDecimals(2)
+        self.spin_gesture_strictness.setSingleStep(0.05)
+        self.spin_gesture_strictness.setValue(
+            float(getattr(self._config, "gesture_scoring_strictness", 0.7))
+        )
+        self.spin_gesture_strictness.setToolTip(
+            "Controls how strictly hybrid gestures evaluate your moves.\n"
+            "0.0 = auto-perfect (every move passes)\n"
+            "0.7 = balanced (default, playable with real scoring feel)\n"
+            "1.0 = strict (tightest JDNext-derived thresholds)"
+        )
+        gesture_strictness_row.addWidget(self.spin_gesture_strictness)
+        gesture_strictness_row.addStretch()
+        general_layout.addLayout(gesture_strictness_row)
+
+        def _toggle_gesture_strictness(enabled: bool) -> None:
+            self.spin_gesture_strictness.setEnabled(enabled)
+            gesture_strictness_lbl.setEnabled(enabled)
+
+        self.cb_convert_jdnext_gestures.toggled.connect(_toggle_gesture_strictness)
+        _toggle_gesture_strictness(self.cb_convert_jdnext_gestures.isChecked())
+
+        # albumcoach_behavior
+        self.combo_albumcoach = QComboBox()
+        self.combo_albumcoach.addItem("Ask per map (default)", "ask")
+        self.combo_albumcoach.addItem("Show Customizer", "always_customize")
+        self.combo_albumcoach.addItem("Use Default (25%)", "always_default")
+        self._set_combo_from_value(
+            self.combo_albumcoach,
+            getattr(self._config, "albumcoach_behavior", "ask"),
+        )
+        self.combo_albumcoach.setToolTip(
+            "Controls how the AlbumCoach composite texture is generated\n"
+            "for JDNext multi-coach maps that are missing one.\n"
+            "Ask: prompt before each install.\n"
+            "Always Customize: always open the editor.\n"
+            "Always Default: use automatic compositing silently."
+        )
+        general_form.addRow("AlbumCoach compositing:", self.combo_albumcoach)
+
         self.combo_log_detail = QComboBox()
         self.combo_log_detail.addItem("Quiet (warnings and errors only)", "quiet")
         self.combo_log_detail.addItem("Normal (recommended)", "user")
@@ -696,17 +752,6 @@ class SettingsDialog(QDialog):
         )
         advanced_form.addRow("Preview FPS:", self.spin_preview_fps)
 
-        self.spin_preview_startup_comp = QDoubleSpinBox()
-        self.spin_preview_startup_comp.setRange(0.0, 1000.0)
-        self.spin_preview_startup_comp.setDecimals(1)
-        self.spin_preview_startup_comp.setSingleStep(5.0)
-        self.spin_preview_startup_comp.setValue(float(getattr(self._config, "preview_startup_compensation_ms", 100.0)))
-        self.spin_preview_startup_comp.setSuffix(" ms")
-        self.spin_preview_startup_comp.setToolTip(
-            "Playback startup compensation applied when preview begins."
-        )
-        advanced_form.addRow("Preview startup compensation:", self.spin_preview_startup_comp)
-
         self.spin_preview_audio_only_offset = QDoubleSpinBox()
         self.spin_preview_audio_only_offset.setRange(-2000.0, 2000.0)
         self.spin_preview_audio_only_offset.setDecimals(1)
@@ -933,6 +978,9 @@ class SettingsDialog(QDialog):
         self._config.show_preflight_success_popup = self.cb_preflight_popup.isChecked()
         self._config.show_install_summary_popup = self.cb_install_summary.isChecked()
         self._config.show_quickstart_on_launch = self.cb_quickstart.isChecked()
+        self._config.convert_jdnext_gestures = self.cb_convert_jdnext_gestures.isChecked()
+        self._config.gesture_scoring_strictness = self.spin_gesture_strictness.value()
+        self._config.albumcoach_behavior = self._combo_value(self.combo_albumcoach)
         self._config.log_detail_level = self._combo_value(self.combo_log_detail)
         self._config.theme = self._combo_value(self.combo_theme)
         self._config.enforce_min_window_size = self.cb_enforce_min_size.isChecked()
@@ -961,7 +1009,6 @@ class SettingsDialog(QDialog):
         self._config.fetch_bot_response_timeout_s = self.spin_fetch_bot_timeout.value()
         self._config.window_size_overlay_timeout_ms = self.spin_overlay_timeout.value()
         self._config.preview_fps = self.spin_preview_fps.value()
-        self._config.preview_startup_compensation_ms = self.spin_preview_startup_comp.value()
         self._config.preview_only_audio_offset_ms = self.spin_preview_audio_only_offset.value()
         self._config.audio_preview_fade_s = self.spin_audio_preview_fade.value()
         self._config.check_updates_on_launch = self.cb_check_updates_on_launch.isChecked()
