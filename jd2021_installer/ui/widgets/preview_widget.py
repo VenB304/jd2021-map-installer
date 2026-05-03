@@ -148,7 +148,8 @@ class _FrameReaderWorker(QObject):
         self._stop_flag.set()
         self._ticking_event.set()  # Unblock if waiting
 
-    def start_ticking(self) -> None:
+    def start_ticking(self, advance_s: float = 0.0) -> None:
+        self._advance_s = advance_s
         self._ticking_event.set()
 
     @pyqtSlot()
@@ -185,9 +186,6 @@ class _FrameReaderWorker(QObject):
 
                 frames_read += 1
 
-                if frames_read == 1:
-                    wall_start = time.time()
-
                 if self._stop_flag.is_set():
                     return
 
@@ -203,7 +201,8 @@ class _FrameReaderWorker(QObject):
 
                 if frames_read == 1:
                     self._ticking_event.wait()
-                    wall_start = time.time()
+                    advance = getattr(self, "_advance_s", 0.0)
+                    wall_start = time.time() - advance
 
                 if wall_start > 0:
                     position = self._start_position + max(0.0, time.time() - wall_start)
@@ -272,7 +271,7 @@ class PreviewWidget(QWidget):
         self._player = QMediaPlayer(self)
         self._audio_output = QAudioOutput(self)
         self._player.setAudioOutput(self._audio_output)
-        self._player.playbackStateChanged.connect(self._on_playback_state_changed)
+        self._player.positionChanged.connect(self._on_player_position_changed)
         
         self._audio_output.setVolume(1.0)
         self._aud_delay_ms = 0
@@ -690,23 +689,32 @@ class PreviewWidget(QWidget):
             self._player.setPosition(self._pending_audio_seek_ms)
             
         if self._aud_delay_ms > 0:
+            if self._worker is not None:
+                self._worker.start_ticking(0.0)
             QTimer.singleShot(self._aud_delay_ms, self._player.play)
         else:
+            self._waiting_for_audio_pos = True
             self._player.play()
             
-        # Fallback in case audio fails to load or playingStateChanged is never emitted
-        QTimer.singleShot(500, self._force_worker_tick)
+        # Fallback in case audio fails to load or position never updates
+        QTimer.singleShot(1000, self._force_worker_tick)
 
     @pyqtSlot()
     def _force_worker_tick(self) -> None:
-        if self._worker is not None:
-            self._worker.start_ticking()
-
-    @pyqtSlot(QMediaPlayer.PlaybackState)
-    def _on_playback_state_changed(self, state: QMediaPlayer.PlaybackState) -> None:
-        if state == QMediaPlayer.PlaybackState.PlayingState:
+        if getattr(self, "_waiting_for_audio_pos", False):
+            self._waiting_for_audio_pos = False
             if self._worker is not None:
-                self._worker.start_ticking()
+                self._worker.start_ticking(0.0)
+
+    @pyqtSlot(int)
+    def _on_player_position_changed(self, pos_ms: int) -> None:
+        if getattr(self, "_waiting_for_audio_pos", False):
+            target_ms = getattr(self, "_pending_audio_seek_ms", 0)
+            if pos_ms >= target_ms:
+                self._waiting_for_audio_pos = False
+                diff_s = max(0.0, (pos_ms - target_ms) / 1000.0)
+                if self._worker is not None:
+                    self._worker.start_ticking(diff_s)
 
     # ==================================================================
     # UI CALLBACKS
