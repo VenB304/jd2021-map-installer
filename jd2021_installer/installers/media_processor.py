@@ -501,7 +501,16 @@ def apply_audio_gain(
         config=config,
     )
 
-    tmp.replace(src)
+    import time
+    for i in range(5):
+        try:
+            tmp.replace(src)
+            break
+        except PermissionError:
+            if i == 4:
+                raise
+            time.sleep(0.2)
+
     logger.debug("Applied %+0.1fdB gain: %s", gain_db, src.name)
     return src
 

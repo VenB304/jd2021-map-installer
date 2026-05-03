@@ -146,6 +146,8 @@ class _FrameReaderWorker(QObject):
 
     def request_stop(self) -> None:
         self._stop_flag.set()
+<<<<<<< Updated upstream
+=======
         self._ticking_event.set()  # Unblock if waiting
         if self._ffmpeg is not None:
             try:
@@ -156,6 +158,8 @@ class _FrameReaderWorker(QObject):
     def start_ticking(self, advance_s: float = 0.0) -> None:
         self._advance_s = advance_s
         self._ticking_event.set()
+        self._reset_clock_requested = True
+>>>>>>> Stashed changes
 
     @pyqtSlot()
     def run(self) -> None:
@@ -202,18 +206,42 @@ class _FrameReaderWorker(QObject):
                     self._width * 3,
                     QImage.Format.Format_RGB888,
                 )
-                self.frame_ready.emit(q_img.copy())  # .copy() — data outlives loop
+<<<<<<< Updated upstream
+                pixmap = QPixmap.fromImage(q_img.copy())  # .copy() — data outlives loop
+                self.frame_ready.emit(pixmap)
+=======
 
                 if frames_read == 1:
+                    # Signal readiness by emitting the first frame, then wait for the handshake
+                    self.frame_ready.emit(q_img.copy())
                     self._ticking_event.wait()
                     advance = getattr(self, "_advance_s", 0.0)
                     wall_start = time.time() - advance
+                    self._reset_clock_requested = False
+                elif getattr(self, "_reset_clock_requested", False):
+                    self._ticking_event.wait()
+                    advance = getattr(self, "_advance_s", 0.0)
+                    wall_start = time.time() - advance
+                    self._reset_clock_requested = False
+>>>>>>> Stashed changes
 
                 if wall_start > 0:
-                    position = self._start_position + max(0.0, time.time() - wall_start)
+                    now = time.time()
+                    expected_pos = self._start_position + (now - wall_start)
+                    current_frame_time = self._start_position + (frames_read - 1) / float(self._fps)
+                    
+                    # Catch-up logic: if we are more than 2 frames behind the wall clock,
+                    # skip rendering this frame and read the next one from FFmpeg immediately.
+                    if expected_pos > (current_frame_time + (2.0 / self._fps)):
+                        continue
+                        
+                    position = current_frame_time
+                else:
+                    position = self._start_position
 
-                # Emit position every frame so seek/relaunch operations use
-                # up-to-date timestamps instead of 0.5s-quantized values.
+                # Emit subsequent frames normally
+                if frames_read > 1:
+                    self.frame_ready.emit(q_img.copy())
                 self.position_updated.emit(position)
 
                 # Keep preview rendering near target FPS without relying on ffmpeg -re.
@@ -272,15 +300,19 @@ class PreviewWidget(QWidget):
         self._position: float = 0.0
         self._duration: float = 120.0  # fallback
 
+<<<<<<< Updated upstream
+=======
         # Media Player
         self._player = QMediaPlayer(self)
         self._audio_output = QAudioOutput(self)
         self._player.setAudioOutput(self._audio_output)
         self._player.positionChanged.connect(self._on_player_position_changed)
+        self._player.mediaStatusChanged.connect(self._on_media_status_changed)
         
         self._audio_output.setVolume(1.0)
         self._aud_delay_ms = 0
 
+>>>>>>> Stashed changes
         # Subprocess tracking
         self._worker: Optional[_FrameReaderWorker] = None
         self._thread: Optional[QThread] = None
@@ -298,6 +330,14 @@ class PreviewWidget(QWidget):
         self._ffprobe_path: str = "ffprobe"
         self._ffmpeg_hwaccel: str = "auto"
         self._preview_video_mode: str = "proxy_low"
+        
+        # Caching
+        self._last_probed_video: Optional[str] = None
+        self._last_resolved_audio_src: Optional[str] = None
+        self._last_resolved_audio_result: Optional[str] = None
+        self._raw_video_dur_cache: dict[str, float] = {}
+        self._raw_audio_dur_cache: dict[str, float] = {}
+        self._audio_proxy_cache: dict[str, str] = {}
         self._preview_fps_default: float = float(PREVIEW_FPS)
         self._playback_fps: float = float(PREVIEW_FPS)
         self._accurate_seek: bool = False
@@ -436,7 +476,13 @@ class PreviewWidget(QWidget):
         loop_end: float = 0.0,
         preview_fps: Optional[float] = None,
         accurate_seek: bool = False,
-        **kwargs
+<<<<<<< Updated upstream
+=======
+        display_offset: float = 0.0,
+        display_duration: float = 0.0,
+        auto_loop: bool = True,
+        force_refresh: bool = False,
+>>>>>>> Stashed changes
     ) -> None:
         """Start (or restart) embedded preview playback.
 
@@ -448,6 +494,8 @@ class PreviewWidget(QWidget):
             start_time:  Seek position in seconds to start from.
             loop_start:  Loop start in seconds (0 disables looping).
             loop_end:    Loop end in seconds.
+            display_offset:   Optional visual offset for time labels/seekbar.
+            display_duration: Optional visual duration override for seekbar.
         """
         if not video_path or not audio_path:
             return
@@ -462,7 +510,9 @@ class PreviewWidget(QWidget):
             effective_fps = fps_val if fps_val > 0 else self._preview_fps_default
 
         resolved_video_path = self._resolve_preview_video_path(video_path)
+        # Resolve paths with proxying for heavy files
         resolved_audio_path = self._resolve_preview_audio_path(audio_path)
+        resolved_audio_path = self._resolve_heavy_audio_proxy(resolved_audio_path)
 
         # Stash for resume / seek
         self._video_path = video_path
@@ -473,25 +523,68 @@ class PreviewWidget(QWidget):
         self._loop_end = max(0.0, loop_end)
         self._playback_fps = effective_fps
         self._accurate_seek = bool(accurate_seek)
+        self._auto_loop = bool(auto_loop)
+
+        # Prioritize clean state over speed. Abandoning soft-seek to ensure perfect sync.
+        self._stop_worker()
+        self.stop(
+            reset_position=True,
+            clear_canvas=not self._auto_loop,
+            release_media=True
+        )
+        
+        self._player.setSource(QUrl.fromLocalFile(resolved_audio_path))
+        
         self._stop_requested = False
         self._ended_naturally = False
+        
+        self._display_offset = max(0.0, display_offset)
+        self._display_duration = max(0.0, display_duration)
 
-        # Kill previous, but keep position if we are just restarting/seeking
-        self.stop(
-            reset_position=(start_time == 0.0),
-            clear_canvas=(start_time == 0.0),
-        )
+        # Probe raw durations if not cached
+        v_raw = self._raw_video_dur_cache.get(resolved_video_path)
+        if v_raw is None or force_refresh:
+            try:
+                v_raw = self._ffprobe_duration(resolved_video_path)
+                self._raw_video_dur_cache[resolved_video_path] = v_raw
+            except Exception as exc:
+                logger.debug("Video probe failed: %s", exc)
+                v_raw = None
 
-        # Probe duration (best effort)
-        if start_time == 0.0:
-            self._duration = self._probe_duration(
-                resolved_video_path,
-                resolved_audio_path,
-                v_override,
-                a_offset,
-                ffprobe_path=self._ffprobe_path,
-            )
-            self._lbl_dur.setText(self._fmt(self._duration))
+        a_raw = self._raw_audio_dur_cache.get(resolved_audio_path)
+        if a_raw is None or force_refresh:
+            try:
+                a_raw = self._ffprobe_duration(resolved_audio_path)
+                self._raw_audio_dur_cache[resolved_audio_path] = a_raw
+            except Exception:
+                # Try candidates if direct probe failed
+                for cand in self._audio_probe_candidates(audio_path):
+                    try:
+                        a_raw = self._ffprobe_duration(cand)
+                        self._raw_audio_dur_cache[resolved_audio_path] = a_raw
+                        break
+                    except Exception:
+                        continue
+
+        # Compute playable duration from raw + offsets
+        playable_values: list[float] = []
+        if v_raw is not None:
+            if v_override < 0:
+                playable_values.append(v_raw - abs(v_override))
+            else:
+                playable_values.append(v_raw + v_override)
+        
+        if a_raw is not None:
+            if a_offset < 0:
+                playable_values.append(a_raw - abs(a_offset))
+            else:
+                playable_values.append(a_raw + a_offset)
+                
+        self._duration = max(playable_values) if playable_values else 120.0
+        
+        # UI Duration logic
+        ui_dur = self._display_duration if self._display_duration > 0 else self._duration
+        self._lbl_dur.setText(self._fmt(ui_dur))
 
         # Canvas dimensions
         w = max(self._canvas.width(), 320)
@@ -515,7 +608,9 @@ class PreviewWidget(QWidget):
         fine_audio_seek = max(0.0, aud_seek)
 
         vf_filters: list[str] = []
-        if self._accurate_seek:
+        # Accurate seek via trim is only used for non-looping playback.
+        # For loops, we use input seeking (-ss before -i) which is faster and compatible with -stream_loop.
+        if self._accurate_seek and not self._auto_loop:
             if fine_video_seek > 1e-6:
                 vf_filters.append(f"trim=start={fine_video_seek:.6f}")
             vf_filters.append("setpts=PTS-STARTPTS")
@@ -528,33 +623,80 @@ class PreviewWidget(QWidget):
         vf_chain = ",".join(vf_filters)
 
         fps_arg = str(int(effective_fps)) if abs(effective_fps - round(effective_fps)) < 1e-6 else f"{effective_fps:.6f}"
+        
+        # Calculate duration limit if looping or hard bound requested
+        duration_s = 0.0
+        if self._loop_end > start_time:
+            duration_s = self._loop_end - start_time
 
-        ffmpeg_cmd: list[str] = [self._ffmpeg_path, "-loglevel", "error"]
+        # Command assembly
+        # We use low probesize and analyzeduration to make FFmpeg start outputting frames instantly.
+        ffmpeg_cmd: list[str] = [
+            self._ffmpeg_path, 
+            "-loglevel", "error",
+            "-probesize", "32",
+            "-analyzeduration", "0",
+        ]
         if self._ffmpeg_hwaccel == "auto":
             ffmpeg_cmd += ["-hwaccel", "auto"]
-        if not self._accurate_seek:
-            ffmpeg_cmd += ["-ss", f"{fine_video_seek:.6f}"]
+            
+        # Input options
+        # We always use input seeking for loops to ensure speed and process stability.
+        if self._auto_loop or not self._accurate_seek:
+            if fine_video_seek > 1e-6:
+                ffmpeg_cmd += ["-ss", f"{fine_video_seek:.6f}"]
+            
+        ffmpeg_cmd += ["-i", resolved_video_path]
+        
+        # Output options
+        if duration_s > 0:
+            ffmpeg_cmd += ["-t", f"{duration_s:.6f}"]
+            
         ffmpeg_cmd += [
-            "-i", resolved_video_path,
             "-vf", vf_chain,
             "-r", fps_arg,
             "-pix_fmt", "rgb24",
             "-f", "rawvideo",
-            "-",
+            "-an", "-sn",
+            "-"
         ]
 
-        # Audio Setup via QMediaPlayer
-        self._player.setSource(QUrl.fromLocalFile(resolved_audio_path))
-        self._pending_audio_seek_ms = int(fine_audio_seek * 1000)
-        self._aud_delay_ms = aud_delay_ms
+<<<<<<< Updated upstream
+        ffplay_cmd: list[str] = [
+            self._ffplay_path, "-nodisp", "-autoexit", "-loglevel", "quiet",
+        ]
+        fine_audio_seek = max(0.0, aud_seek)
+        if not self._accurate_seek:
+            ffplay_cmd += ["-ss", f"{fine_audio_seek:.6f}"]
+        ffplay_cmd += ["-i", resolved_audio_path]
 
+        afilters: list[str] = []
+        if self._accurate_seek:
+            # Fine decoder-side trim preserves fractional precision after coarse seek.
+            if fine_audio_seek > 1e-6:
+                afilters.append(f"atrim=start={fine_audio_seek:.6f}")
+            afilters.append("asetpts=PTS-STARTPTS")
+        if aud_delay_ms > 0:
+            afilters.append(f"adelay={aud_delay_ms}|{aud_delay_ms}")
+        if afilters:
+            ffplay_cmd += ["-af", ",".join(afilters)]
+
+=======
+>>>>>>> Stashed changes
         # Build worker + thread
         self._position = start_time
-        self.position_changed.emit(self._position)
+        visual_pos = self._position - self._display_offset
+        self.position_changed.emit(visual_pos)
         self._playing = True
         self._first_frame_rendered = False
         self._set_play_button_icon(True)
-
+        
+        # Bi-directional Sync State
+        self._video_ready = False
+        self._audio_ready = False
+        self._pending_audio_seek_ms = int(fine_audio_seek * 1000)
+        self._aud_delay_ms = aud_delay_ms
+            
         worker = _FrameReaderWorker(
             ffmpeg_cmd, w, h,
             start_position=start_time,
@@ -576,18 +718,72 @@ class PreviewWidget(QWidget):
         self._worker = worker
         self._thread = thread
         thread.start()
+        
+        # Prepare audio engine
+        audio_target = QUrl.fromLocalFile(resolved_audio_path)
+        if self._player.source() != audio_target:
+            self._player.setSource(audio_target)
+            
+        self._start_audio_playback()
+        
         self.preview_started.emit()
 
-    def stop(self, reset_position: bool = True, clear_canvas: bool = True) -> None:
+    def _stop_worker(self) -> None:
+        """Kill only the background video worker, leaving the audio player untouched."""
+        worker = self._worker
+        thread = self._thread
+        
+        self._worker = None
+        self._thread = None
+
+        if worker is not None:
+            try:
+                worker.frame_ready.disconnect()
+                worker.position_updated.disconnect()
+                worker.playback_ended.disconnect()
+            except (TypeError, RuntimeError):
+                pass
+            try:
+                worker.request_stop()
+            except (TypeError, RuntimeError):
+                pass
+
+        if thread is not None:
+            try:
+                if thread.isRunning():
+                    thread.quit()
+                    # Give the thread 100ms to exit natively before we move it to the dying list.
+                    # This prevents the QThread destroyed warning in most cases.
+                    if not thread.wait(100):
+                        thread.terminate() # Forceful as a last resort
+                    
+                    self._dying_threads.append(thread)
+                    thread.finished.connect(
+                        lambda t=thread: self._dying_threads.remove(t) if t in self._dying_threads else None
+                    )
+            except RuntimeError:
+                pass
+
+    def stop(self, reset_position: bool = True, clear_canvas: bool = True, release_media: bool = True) -> None:
         """Stop any running preview subprocess safely.
         
         Args:
             reset_position: If True, sets _position back to 0.0 and clears labels.
             clear_canvas: If True, clears the preview canvas to "No Preview".
+            release_media: If True, clears the QMediaPlayer source.
         """
         self._stop_requested = True
         self._ended_naturally = False
-        self._player.stop()
+<<<<<<< Updated upstream
+        if self._worker is not None:
+            self._worker.request_stop()
+=======
+        
+        if release_media:
+            self._player.stop()
+            self._player.setSource(QUrl())  # Release file handle
+        else:
+            self._player.pause()
         
         worker = self._worker
         thread = self._thread
@@ -600,9 +796,14 @@ class PreviewWidget(QWidget):
                 worker.frame_ready.disconnect()
                 worker.position_updated.disconnect()
                 worker.playback_ended.disconnect()
-            except TypeError:
+            except (TypeError, RuntimeError):
+                # Guard against "wrapped C/C++ object has been deleted"
                 pass
-            worker.request_stop()
+            try:
+                worker.request_stop()
+            except (TypeError, RuntimeError):
+                pass
+>>>>>>> Stashed changes
         
         # Guard against RuntimeError if the C++ object was already deleted
         if thread is not None:
@@ -660,45 +861,51 @@ class PreviewWidget(QWidget):
     # SLOTS
     # ==================================================================
 
+<<<<<<< Updated upstream
+    @pyqtSlot(QPixmap)
+    def _on_frame(self, pixmap: QPixmap) -> None:
+        self._canvas.setPixmap(pixmap)
+=======
     @pyqtSlot(QImage)
     def _on_frame(self, image: QImage) -> None:
+        if self._stop_requested:
+            return
+
+        # Handshake: First frame signals video readiness
+        if not getattr(self, "_video_ready", False):
+            self._video_ready = True
+            self._check_sync_start(self._player.position())
+
         self._canvas.setPixmap(QPixmap.fromImage(image))
-        if not self._first_frame_rendered:
-            self._first_frame_rendered = True
-            self._start_audio_playback()
+        self._first_frame_rendered = True
+>>>>>>> Stashed changes
 
     @pyqtSlot(float)
     def _on_position(self, pos: float) -> None:
         self._position = pos
-        self.position_changed.emit(self._position)
-        self._lbl_time.setText(self._fmt(pos))
-        if self._duration > 0 and not self._seek_slider.isSliderDown():
-            pct = int((pos / self._duration) * 1000)
+        
+        visual_pos = max(0.0, pos - self._display_offset)
+        self.position_changed.emit(visual_pos)
+        self._lbl_time.setText(self._fmt(visual_pos))
+        
+        ui_dur = self._display_duration if self._display_duration > 0 else self._duration
+        if ui_dur > 0 and not self._seek_slider.isSliderDown():
+            pct = int((visual_pos / ui_dur) * 1000)
             self._seek_slider.blockSignals(True)
             self._seek_slider.setValue(min(pct, 1000))
             self._seek_slider.blockSignals(False)
 
     @pyqtSlot()
     def _on_playback_ended(self) -> None:
-        if (
-            not self._stop_requested
-            and self._loop_start > 0.0
-            and self._loop_end > self._loop_start
-            and self._video_path
-            and self._audio_path
-        ):
-            self.launch(
-                self._video_path,
-                self._audio_path,
-                self._v_override,
-                self._a_offset,
-                start_time=self._loop_start,
-                loop_start=self._loop_start,
-                loop_end=self._loop_end,
-                preview_fps=self._playback_fps,
-                startup_compensation_ms=self._startup_compensation_override_ms,
-                accurate_seek=self._accurate_seek,
-            )
+        if self._stop_requested:
+            return
+
+        self._playing = False
+        self._ended_naturally = True
+        self._set_play_button_icon(False)
+        
+        if self._auto_loop:
+            self._relaunch(self._loop_start)
             return
 
         self._playing = False
@@ -707,37 +914,110 @@ class PreviewWidget(QWidget):
         self.preview_stopped.emit()
 
     @pyqtSlot()
+<<<<<<< Updated upstream
+    def _on_ffplay_missing(self) -> None:
+        if self._ffplay_warned:
+            return
+        self._ffplay_warned = True
+        self.audio_unavailable.emit()
+=======
     def _start_audio_playback(self) -> None:
-        if hasattr(self, "_pending_audio_seek_ms") and self._pending_audio_seek_ms > 0:
-            self._player.setPosition(self._pending_audio_seek_ms)
+        if self._stop_requested:
+            return
+
+        if self._player.mediaStatus() in {QMediaPlayer.MediaStatus.LoadingMedia, QMediaPlayer.MediaStatus.NoMedia}:
+            # Media not ready yet, retry in a bit.
+            QTimer.singleShot(20, self._start_audio_playback)
+            return
+
+        self._waiting_for_audio_pos = True
+        target_ms = getattr(self, "_pending_audio_seek_ms", 0)
+        if target_ms > 0:
+            self._player.setPosition(target_ms)
+        
+        # Start persistent polling until handshake completes
+        if not hasattr(self, "_sync_poll_timer"):
+            self._sync_poll_timer = QTimer(self)
+            self._sync_poll_timer.timeout.connect(self._poll_audio_pos)
             
-        if self._aud_delay_ms > 0:
-            if self._worker is not None:
-                self._worker.start_ticking(0.0)
-            QTimer.singleShot(self._aud_delay_ms, self._player.play)
-        else:
-            self._waiting_for_audio_pos = True
-            self._player.play()
+        self._sync_poll_timer.start(16)
+        
+        # Fallback to ensure video starts if audio engine is exceptionally slow
+        QTimer.singleShot(10000, self._force_worker_tick)
+
+    @pyqtSlot(QMediaPlayer.MediaStatus)
+    def _on_media_status_changed(self, status: QMediaPlayer.MediaStatus) -> None:
+        """Apply pending seek as soon as media is ready."""
+        if status in {QMediaPlayer.MediaStatus.LoadedMedia, QMediaPlayer.MediaStatus.BufferedMedia}:
+            target_ms = getattr(self, "_pending_audio_seek_ms", 0)
+            if target_ms > 0:
+                self._player.setPosition(target_ms)
             
-        # Fallback in case audio fails to load or position never updates
-        QTimer.singleShot(1000, self._force_worker_tick)
+            # Start polling to confirm seek success
+            for delay in range(16, 1000, 16):
+                QTimer.singleShot(delay, self._poll_audio_pos)
 
     @pyqtSlot()
     def _force_worker_tick(self) -> None:
+        if self._stop_requested:
+            return
         if getattr(self, "_waiting_for_audio_pos", False):
             self._waiting_for_audio_pos = False
             if self._worker is not None:
                 self._worker.start_ticking(0.0)
 
+    def _poll_audio_pos(self) -> None:
+        """Manually poll position to check for seek completion."""
+        if not getattr(self, "_waiting_for_audio_pos", False) or self._stop_requested:
+            return
+        
+        pos_ms = self._player.position()
+        target_ms = getattr(self, "_pending_audio_seek_ms", 0)
+        
+        # Audio is "ready" if it's near the target position.
+        # For target 0, any position >= 0 is ready.
+        is_ready = (target_ms == 0 and pos_ms >= 0) or (target_ms > 0 and pos_ms >= (target_ms - 100))
+        
+        if is_ready:
+            self._check_sync_start(pos_ms)
+
+    def _check_sync_start(self, current_pos_ms: int) -> None:
+        """Handshake: Called when audio position moves."""
+        if getattr(self, "_waiting_for_audio_pos", False) and getattr(self, "_video_ready", False):
+            target_ms = getattr(self, "_pending_audio_seek_ms", 0)
+            
+            # Ensure the audio engine has actually reached the target area.
+            if (target_ms == 0 and current_pos_ms >= 0) or (target_ms > 0 and current_pos_ms >= (target_ms - 100)):
+                self._waiting_for_audio_pos = False
+                if hasattr(self, "_sync_poll_timer"):
+                    self._sync_poll_timer.stop()
+                
+                # Firing sequence: Start audio then unblock video
+                self._player.play()
+                
+                # Calculate precise offset
+                pos_ms = self._player.position()
+                diff_s = (pos_ms - target_ms) / 1000.0
+                
+                if self._worker is not None:
+                    # Sync lock: unblock the video worker
+                    self._worker.start_ticking(diff_s)
+
     @pyqtSlot('qint64')
     def _on_player_position_changed(self, pos_ms: int) -> None:
-        if getattr(self, "_waiting_for_audio_pos", False):
-            target_ms = getattr(self, "_pending_audio_seek_ms", 0)
-            if pos_ms >= target_ms:
-                self._waiting_for_audio_pos = False
-                diff_s = max(0.0, (pos_ms - target_ms) / 1000.0)
-                if self._worker is not None:
-                    self._worker.start_ticking(diff_s)
+        """Handshake: Called by QMediaPlayer signal."""
+        if not getattr(self, "_waiting_for_audio_pos", False) or self._stop_requested:
+            return
+            
+        target_ms = getattr(self, "_pending_audio_seek_ms", 0)
+        
+        # Check if audio is ready at target
+        if not getattr(self, "_audio_ready", False):
+            # Audio is ready if it's near target or moving
+            if (target_ms == 0 and pos_ms >= 0) or (target_ms > 0 and pos_ms >= (target_ms - 100)):
+                self._audio_ready = True
+                self._check_sync_start(pos_ms)
+>>>>>>> Stashed changes
 
     # ==================================================================
     # UI CALLBACKS
@@ -768,9 +1048,14 @@ class PreviewWidget(QWidget):
 
     def _on_seek_released(self) -> None:
         pct = self._seek_slider.value() / 1000.0
-        self._position = pct * self._duration
-        self.position_changed.emit(self._position)
-        self._lbl_time.setText(self._fmt(self._position))
+        ui_dur = self._display_duration if self._display_duration > 0 else self._duration
+        
+        visual_pos = pct * ui_dur
+        self._position = visual_pos + self._display_offset
+        
+        self.position_changed.emit(visual_pos)
+        self._lbl_time.setText(self._fmt(visual_pos))
+        
         if self._playing or self._resume_after_seek:
             self._relaunch(self._position)
         elif self._ended_naturally and self._video_path and self._audio_path:
@@ -781,22 +1066,27 @@ class PreviewWidget(QWidget):
         self._resume_after_seek = self._playing
 
     def _on_seek_value_changed(self, value: int) -> None:
-        target = (value / 1000.0) * self._duration
-        self._lbl_time.setText(self._fmt(target))
+        ui_dur = self._display_duration if self._display_duration > 0 else self._duration
+        target_visual = (value / 1000.0) * ui_dur
+        self._lbl_time.setText(self._fmt(target_visual))
+        
         if self._seek_slider.isSliderDown():
             return
 
+        # Actual position for internal logic
+        actual_target = target_visual + self._display_offset
+        
         # Clicking directly on the timeline groove may not set slider-down state.
         # Seek immediately so click-to-seek behaves as expected.
-        if self._playing and abs(target - self._position) >= 0.25:
-            self._position = target
-            self.position_changed.emit(self._position)
+        if self._playing and abs(actual_target - self._position) >= 0.25:
+            self._position = actual_target
+            self.position_changed.emit(target_visual)
             self._relaunch(self._position)
             return
 
-        if self._ended_naturally and abs(target - self._position) >= 0.25:
-            self._position = target
-            self.position_changed.emit(self._position)
+        if self._ended_naturally and abs(actual_target - self._position) >= 0.25:
+            self._position = actual_target
+            self.position_changed.emit(target_visual)
             self._relaunch(self._position)
 
     def _relaunch(self, start_time: float = 0.0) -> None:
@@ -809,6 +1099,9 @@ class PreviewWidget(QWidget):
                 loop_end=self._loop_end,
                 preview_fps=self._playback_fps,
                 accurate_seek=self._accurate_seek,
+                display_offset=self._display_offset,
+                display_duration=self._display_duration,
+                auto_loop=self._auto_loop,
             )
 
     # ==================================================================
@@ -860,6 +1153,8 @@ class PreviewWidget(QWidget):
                 )
                 if completed.returncode == 0 and cached_wav.exists() and cached_wav.stat().st_size > 1024:
                     logger.info("Preview audio cache created: %s", cached_wav.name)
+                    self._last_resolved_audio_src = audio_path
+                    self._last_resolved_audio_result = str(cached_wav)
                     return str(cached_wav)
             except Exception as exc:
                 logger.debug("Preview audio cache conversion skipped for %s: %s", path.name, exc)
@@ -910,14 +1205,14 @@ class PreviewWidget(QWidget):
         machines. A cached low-res H.264 proxy keeps preview controls responsive.
         """
         path = Path(video_path)
-        if path.suffix.lower() != ".webm":
-            return video_path
-        if self._preview_video_mode == "original":
-            return video_path
-
         try:
             stat = path.stat()
         except OSError:
+            return video_path
+
+        # Proxy if it's a WebM (VP9 is slow to seek) or any file > 100MB
+        is_heavy = (path.suffix.lower() == ".webm") or (stat.st_size > 100 * 1024 * 1024)
+        if not is_heavy or self._preview_video_mode == "original":
             return video_path
 
         cache_key_src = f"{path.resolve()}|{stat.st_size}|{stat.st_mtime_ns}"
@@ -977,88 +1272,88 @@ class PreviewWidget(QWidget):
 
         return video_path
 
+    def _ffprobe_duration(self, path: str) -> float:
+        cmd = [
+            self._ffprobe_path, "-v", "error", "-show_entries",
+            "format=duration", "-of", "default=nw=1:nk=1",
+            path,
+        ]
+        return float(
+            subprocess.check_output(cmd, text=True, creationflags=_CFLAGS).strip()
+        )
+
+    def _resolve_heavy_audio_proxy(self, audio_path: str) -> str:
+        """Create a lightweight proxy for large WAV/lossless files to speed up QMediaPlayer."""
+        p = Path(audio_path)
+        ext = p.suffix.lower()
+        
+        # Proxy everything except WAV to ensure instant seeking and high quality.
+        if ext == ".wav":
+            return audio_path
+            
+        try:
+            stat = p.stat()
+        except OSError:
+            return audio_path
+
+        # Cache check
+        cache_key_src = f"aud_proxy_v4_{p.resolve()}_{stat.st_size}_{stat.st_mtime_ns}"
+        cache_key = hashlib.sha1(cache_key_src.encode("utf-8")).hexdigest()
+        
+        if cache_key in self._audio_proxy_cache:
+            cached = self._audio_proxy_cache[cache_key]
+            if Path(cached).exists():
+                return cached
+
+        cache_dir = Path(tempfile.gettempdir()) / "jd2021_preview_audio_cache"
+        cache_dir.mkdir(parents=True, exist_ok=True)
+        # 44.1kHz Stereo WAV (PCM) provides the most stable synchronization and seeking.
+        proxy_path = cache_dir / f"{p.stem}_{cache_key[:10]}_v44.wav"
+
+        if proxy_path.exists() and proxy_path.stat().st_size > 1024:
+            self._audio_proxy_cache[cache_key] = str(proxy_path)
+            return str(proxy_path)
+
+        # High-quality WAV transcode (Whole file)
+        cmd = [
+            self._ffmpeg_path, "-y", "-v", "error",
+            "-i", str(p),
+            "-ar", "44100", "-ac", "2", "-c:a", "pcm_s16le",
+            str(proxy_path)
+        ]
+        try:
+            subprocess.run(cmd, creationflags=_CFLAGS, check=True)
+            self._audio_proxy_cache[cache_key] = str(proxy_path)
+            return str(proxy_path)
+        except Exception as exc:
+            logger.warning("Audio proxy creation failed: %s", exc)
+            return audio_path
+
+    def _audio_probe_candidates(self, path: str) -> list[str]:
+        # Preview sometimes points to extracted .wav.ckd, which ffprobe cannot read.
+        # Try sibling decoded files before giving up.
+        p = Path(path)
+        candidates = [str(p)]
+        if p.suffix.lower() == ".ckd":
+            no_ckd = p.with_suffix("")
+            candidates.extend(
+                [
+                    str(no_ckd),
+                    str(no_ckd.with_suffix(".wav")),
+                    str(no_ckd.with_suffix(".ogg")),
+                ]
+            )
+        seen: set[str] = set()
+        ordered: list[str] = []
+        for item in candidates:
+            key = item.lower()
+            if key in seen:
+                continue
+            seen.add(key)
+            ordered.append(item)
+        return ordered
+
     @staticmethod
     def _fmt(seconds: float) -> str:
         s = max(0.0, seconds)
         return f"{int(s // 60)}:{int(s % 60):02d}"
-
-    @staticmethod
-    def _probe_duration(
-        video_path: str, audio_path: str,
-        v_override: float, a_offset: float,
-        ffprobe_path: str = "ffprobe",
-    ) -> float:
-        """Estimate playable preview duration via ffprobe."""
-        def _ffprobe_duration(path: str) -> float:
-            cmd = [
-                ffprobe_path, "-v", "error", "-show_entries",
-                "format=duration", "-of", "default=nw=1:nk=1",
-                path,
-            ]
-            return float(
-                subprocess.check_output(cmd, text=True, creationflags=_CFLAGS).strip()
-            )
-
-        def _audio_probe_candidates(path: str) -> list[str]:
-            # Preview sometimes points to extracted .wav.ckd, which ffprobe cannot read.
-            # Try sibling decoded files before giving up.
-            p = Path(path)
-            candidates = [str(p)]
-            if p.suffix.lower() == ".ckd":
-                no_ckd = p.with_suffix("")
-                candidates.extend(
-                    [
-                        str(no_ckd),
-                        str(no_ckd.with_suffix(".wav")),
-                        str(no_ckd.with_suffix(".ogg")),
-                    ]
-                )
-            seen: set[str] = set()
-            ordered: list[str] = []
-            for item in candidates:
-                key = item.lower()
-                if key in seen:
-                    continue
-                seen.add(key)
-                ordered.append(item)
-            return ordered
-
-        v_dur: float | None = None
-        a_dur: float | None = None
-
-        try:
-            v_dur = _ffprobe_duration(video_path)
-        except Exception as exc:
-            logger.debug("Video duration probe failed for %s: %s", video_path, exc)
-
-        for candidate in _audio_probe_candidates(audio_path):
-            try:
-                a_dur = _ffprobe_duration(candidate)
-                if candidate != audio_path:
-                    logger.debug("Audio duration fallback probe succeeded: %s", candidate)
-                break
-            except Exception:
-                continue
-
-        if v_dur is None and a_dur is None:
-            logger.warning("Duration probe failed, using 120 s fallback: video=%s audio=%s", video_path, audio_path)
-            return 120.0
-
-        playable_values: list[float] = []
-        if v_dur is not None:
-            if v_override < 0:
-                playable_values.append(v_dur - abs(v_override))
-            elif v_override > 0:
-                playable_values.append(v_dur + v_override)
-            else:
-                playable_values.append(v_dur)
-
-        if a_dur is not None:
-            if a_offset and a_offset < 0:
-                playable_values.append(a_dur - abs(a_offset))
-            elif a_offset and a_offset > 0:
-                playable_values.append(a_dur + a_offset)
-            else:
-                playable_values.append(a_dur)
-
-        return max(playable_values) if playable_values else 120.0

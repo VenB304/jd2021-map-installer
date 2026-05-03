@@ -99,6 +99,8 @@ class AppConfig(BaseModel):
         pattern=r"^(reencode_to_vp8|fallback_compatible_down)$",
     )
     preview_video_mode: str = Field(default="original", pattern=r"^(proxy_low|original)$")
+    preview_playback_mode: str = Field(default="gameplay", pattern=r"^(gameplay|full|menu)$")
+
 
     class Config:
         env_prefix = "JD2021_"

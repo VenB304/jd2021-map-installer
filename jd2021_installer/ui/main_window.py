@@ -2902,30 +2902,76 @@ class MainWindow(QMainWindow):
                     self._sync_refinement.set_preview_state(False)
                     return
 
+                mode = getattr(self._config, "preview_playback_mode", "gameplay")
                 v_override = self._sync_refinement.get_video_offset() / 1000.0
                 a_offset = self._sync_refinement.get_audio_offset() / 1000.0
+                start_time = 0.0
+                loop_start = 0.0
+                loop_end = 0.0
+                display_offset = 0.0
+                display_duration = 0.0
+                
+                if mode == "full":
+                    # Play full video including intro, ignore video offset.
+                    # Align audio based on intro duration vs source pre-roll.
+                    intro_dur = abs(v_override) if v_override < 0 else abs(a_offset)
+                    marker_preroll_ms = getattr(self._current_map, "jdnext_marker_preroll_ms", None)
+                    source_preroll_dur = (marker_preroll_ms / 1000.0) if marker_preroll_ms is not None else abs(a_offset)
+                    
+                    v_override = 0.0
+                    a_offset = intro_dur - source_preroll_dur
+                    start_time = 0.0
+                elif mode == "menu":
+                    # Play the preview loop defined in the TRK file.
+                    mt = self._current_map.music_track
+                    markers = mt.markers if mt and mt.markers else []
+                    try:
+                        entry_idx = int(mt.preview_entry)
+                        if 0 <= entry_idx < len(markers):
+                            start_time = markers[entry_idx] / 48.0 / 1000.0
+                    except (TypeError, ValueError):
+                        pass
+                    
+                    loop_start, loop_end = self._get_preview_loop_seconds(self._current_map)
+                    display_offset = loop_start
+                    display_duration = loop_end - loop_start
+                
+                # Apply audio nudge (legacy/fallback)
                 preview_nudge_s = self._get_preview_only_audio_nudge_s(self._current_map)
                 a_offset += preview_nudge_s
-                loop_start, loop_end = self._get_preview_loop_seconds(self._current_map)
+                
+                # Fetch default loop bounds ONLY in menu mode for process restriction
+                # In other modes, we want the full video available.
+                
                 preview_fps = self._get_preview_fps_for_map(self._current_map)
                 is_jdnext_preview = self._is_jdnext_source_map(self._current_map)
                 
                 logger.debug(
-                    "Preview launch: v_override=%.3f, a_offset=%.3f, preview_nudge=%.3f, fps=%.3f",
+<<<<<<< Updated upstream
+                    "Preview launch: v_override=%.3f, a_offset=%.3f, preview_nudge=%.3f, fps=%.3f, startup_comp_ms=%s",
                     v_override,
                     a_offset,
                     preview_nudge_s,
                     preview_fps,
+                    "0.0" if startup_compensation_ms == 0.0 else "default",
+=======
+                    "Preview launch (mode=%s): v_override=%.3f, a_offset=%.3f, start=%.3f, loop=%.3f-%.3f, fps=%.3f",
+                    mode, v_override, a_offset, start_time, loop_start, loop_end, preview_fps,
+>>>>>>> Stashed changes
                 )
 
                 self._preview_widget.launch(
                     video, audio,
                     v_override=v_override,
                     a_offset=a_offset,
+                    start_time=start_time,
                     loop_start=loop_start,
                     loop_end=loop_end,
                     preview_fps=preview_fps,
                     accurate_seek=is_jdnext_preview,
+                    display_offset=display_offset,
+                    display_duration=display_duration,
+                    auto_loop=(mode == "menu"),
                 )
             else:
                 self.append_log("No video available for preview.")
@@ -2968,25 +3014,56 @@ class MainWindow(QMainWindow):
             return
 
         if self._current_map and self._current_map.media.video_path and self._current_map.media.video_path.exists():
+            mode = getattr(self._config, "preview_playback_mode", "gameplay")
             v_override = self._sync_refinement.get_video_offset() / 1000.0
             a_offset = self._sync_refinement.get_audio_offset() / 1000.0
+            start_time = self._preview_widget.get_current_position()
+            loop_start = 0.0
+            loop_end = 0.0
+            
+            display_offset = 0.0
+            display_duration = 0.0
+            if mode == "full":
+                intro_dur = abs(v_override) if v_override < 0 else abs(a_offset)
+                marker_preroll_ms = getattr(self._current_map, "jdnext_marker_preroll_ms", None)
+                source_preroll_dur = (marker_preroll_ms / 1000.0) if marker_preroll_ms is not None else abs(a_offset)
+                
+                v_override = 0.0
+                a_offset = intro_dur - source_preroll_dur
+            elif mode == "menu":
+                loop_start, loop_end = self._get_preview_loop_seconds(self._current_map)
+                display_offset = loop_start
+                display_duration = loop_end - loop_start
+            
             preview_nudge_s = self._get_preview_only_audio_nudge_s(self._current_map)
             a_offset += preview_nudge_s
-            loop_start, loop_end = self._get_preview_loop_seconds(self._current_map)
+            
+            # Fetch default loop bounds ONLY in menu mode for process restriction
+                
             preview_fps = self._get_preview_fps_for_map(self._current_map)
             is_jdnext_preview = self._is_jdnext_source_map(self._current_map)
             
-            logger.debug("Debounced preview restart...")
+<<<<<<< Updated upstream
+            logger.debug(
+                "Debounced preview restart (startup_comp_ms=%s)...",
+                "0.0" if startup_compensation_ms == 0.0 else "default",
+            )
+=======
+            logger.debug("Debounced preview restart (mode=%s)...", mode)
+>>>>>>> Stashed changes
             self._preview_widget.launch(
                 str(self._current_map.media.video_path),
                 str(self._current_map.media.audio_path),
                 v_override=v_override,
                 a_offset=a_offset,
-                start_time=self._preview_widget.get_current_position(),
+                start_time=start_time,
                 loop_start=loop_start,
                 loop_end=loop_end,
                 preview_fps=preview_fps,
                 accurate_seek=is_jdnext_preview,
+                display_offset=display_offset,
+                display_duration=display_duration,
+                auto_loop=(mode == "menu"),
             )
 
     def _on_apply_offset(self, audio_ms: float, video_ms: float) -> None:
@@ -3458,6 +3535,7 @@ class MainWindow(QMainWindow):
         self._config_panel.setEnabled(not locked)
         self._action_panel.set_all_enabled(not locked)
         if locked:
+            self._preview_widget.stop()
             self._set_preview_controls_ready(False)
 
     def _set_preview_controls_ready(self, ready: bool) -> None:

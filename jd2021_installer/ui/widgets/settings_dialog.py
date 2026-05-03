@@ -576,6 +576,22 @@ class SettingsDialog(QDialog):
             "Choose whether preview uses a generated proxy or the source file."
         )
         media_form.addRow("Preview source:", self.combo_preview_mode)
+        
+        self.combo_preview_playback_mode = QComboBox()
+        self.combo_preview_playback_mode.addItem("Gameplay (Default)", "gameplay")
+        self.combo_preview_playback_mode.addItem("Full Video & Intro", "full")
+        self.combo_preview_playback_mode.addItem("Menu Preview Loop", "menu")
+        self._set_combo_from_value(
+            self.combo_preview_playback_mode,
+            getattr(self._config, "preview_playback_mode", "gameplay"),
+        )
+        self.combo_preview_playback_mode.setToolTip(
+            "Choose how the preview player behaves when clicking 'Start Preview'.\n"
+            "Gameplay: Plays starting from the gameplay start (applying video offset).\n"
+            "Full: Plays the entire video from the beginning (including intro).\n"
+            "Menu: Plays the loop defined in the map's .trk file (as seen in-game menu)."
+        )
+        media_form.addRow("Preview playback mode:", self.combo_preview_playback_mode)
 
         media_layout.addLayout(media_form)
         media_layout.addStretch()
@@ -992,6 +1008,7 @@ class SettingsDialog(QDialog):
         self._config.ffmpeg_hwaccel = self.combo_hwaccel.currentText()
         self._config.vp9_handling_mode = str(self.combo_vp9_mode.currentData())
         self._config.preview_video_mode = self._combo_value(self.combo_preview_mode)
+        self._config.preview_playback_mode = self._combo_value(self.combo_preview_playback_mode)
         self._config.discord_channel_url = self.txt_discord_url.text().strip()
         self._config.ffmpeg_path = self.txt_ffmpeg_path.text().strip() or "ffmpeg"
         self._config.ffprobe_path = self.txt_ffprobe_path.text().strip() or "ffprobe"
