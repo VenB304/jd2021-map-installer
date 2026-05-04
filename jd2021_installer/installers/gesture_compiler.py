@@ -90,8 +90,8 @@ _GATING_THRESHOLD = 10.0
 # Center-exclusion dead zone: controls which constraints are used.
 # JDNext data contains many near-zero constraints (often padding/null).
 # Filtering them out makes the gesture only match distinctive choreographic
-# positions. Strictness maps linearly to dead zone radius.
-_DEAD_ZONE_MAX = 0.14   # At strictness=1.0
+# positions. Use this fixed max dead-zone radius for filtering.
+_DEAD_ZONE_MAX = 0.14
 
 # Timing injection: baseline for parameter scaling
 _TIMING_BASELINE = 10.0   # Median timing value baseline
@@ -555,7 +555,6 @@ def _load_and_hybridize(
     template_data: bytearray,
     joint_constraints: list[tuple[int, float]],
     timing_values: list[float] | None = None,
-    strictness: float = 1.0,
 ) -> bytearray:
     """Load a Durango/X360 template and inject JDNext data into the edge table.
 
@@ -572,8 +571,6 @@ def _load_and_hybridize(
         joint_constraints:  Joint-tagged JDNext constraints as
                             ``(joint_id, value)`` tuples.
         timing_values:      Extracted JDNext timing/weight values (> 1.0).
-        strictness:         Scoring strictness (0.0 = auto-perfect,
-                            1.0 = full JDNext injection).
 
     Returns the modified bytearray ready to write to disk.
     """
@@ -605,12 +602,8 @@ def _load_and_hybridize(
         logger.debug("No joint constraints to inject; output uses template edges")
         return template_data
 
-    if strictness <= 0.0:
-        logger.debug("Strictness=0.0; output uses template edges (auto-perfect)")
-        return template_data
-
     # Center-exclusion dead zone filtering (operates on values, keeps tags)
-    dead_zone = _DEAD_ZONE_MAX * strictness
+    dead_zone = _DEAD_ZONE_MAX
     filtered = [(jid, v) for jid, v in joint_constraints if abs(v) > dead_zone]
 
     if len(filtered) < num_edges:
@@ -739,10 +732,9 @@ def _load_and_hybridize(
             struct.pack_into(f"{endian}f", template_data, eoff + 4, tb_val)
 
     logger.debug(
-        "Injected %d scoring + %d gating edges "
-        "(dead_zone=%.3f, strictness=%.2f, format=%s)",
+        "Injected %d scoring + %d gating edges (dead_zone=%.3f, format=%s)",
         num_scoring, gating_count,
-        dead_zone, strictness, fmt_name,
+        dead_zone, fmt_name,
     )
     return template_data
 
@@ -1144,7 +1136,6 @@ def _compile_with_donor(
     timing_values: list[float],
     output_path: Path,
     src_name: str,
-    strictness: float,
 ) -> bool:
     """Compile a gesture using a known-good donor as the structural base.
 
@@ -1212,9 +1203,7 @@ def _compile_with_donor(
     for i, p in enumerate(song_params):
         struct.pack_into(f"{endian}f", donor_data, params_start + i * 4, p)
 
-    if strictness <= 0.0:
-        logger.debug("Strictness=0; donor gesture used as-is (auto-perfect)")
-    else:
+    # Inject camera constraints into donor scoring edges
         # --- Identify scoring vs gating edges ---
         from collections import defaultdict
         scoring_indices: list[int] = []
@@ -1273,7 +1262,7 @@ def _compile_with_donor(
             
             # Use cam_y for position limit, or an average of X and Y
             cam_val = (cam_x + cam_y) / 2.0
-            tb_val = cam_val * strictness
+            tb_val = cam_val
 
             # Clamp to Kinect range
             tb_val = max(-3.8, min(3.8, tb_val))
@@ -1289,10 +1278,10 @@ def _compile_with_donor(
 
     logger.info(
         "Compiled gesture (donor: %s): %s "
-        "(%d constraints → %d edges, strictness=%.2f, format=%s)",
+        "(%d constraints → %d edges, format=%s)",
         donor_path.name, src_name,
         len(joint_constraints), num_edges,
-        strictness, fmt_name,
+        fmt_name,
     )
     return True
 
@@ -1397,7 +1386,6 @@ def _build_params_from_jdnext(
 def _build_edge_table(
     joint_constraints: list[tuple[int, float]],
     num_states: int,
-    strictness: float,
     state_to_joint: dict[int, int],
 ) -> list[tuple[float, float, int]]:
     """Build a 1000-edge table matching real Kinect edge distribution.
@@ -1419,7 +1407,7 @@ def _build_edge_table(
     edges: list[tuple[float, float, int]] = []
 
     # Filter constraints by dead zone (keeps joint tags)
-    dead_zone = _DEAD_ZONE_MAX * strictness
+    dead_zone = _DEAD_ZONE_MAX
     filtered = [(jid, v) for jid, v in joint_constraints if abs(v) > dead_zone]
 
     if len(filtered) < 10:
@@ -1488,9 +1476,9 @@ def _build_edge_table(
             # threshold_b: real camera constraint scaled to Durango range
             pair_idx = (i // max(1, num_states)) % len(joint_vals)
             cam_val = joint_vals[pair_idx] * _JDNEXT_TO_DURANGO_SCALE
-            
+
             ta_val = quant_a
-            tb_val = max(-3.8, min(3.8, cam_val * strictness))
+            tb_val = max(-3.8, min(3.8, cam_val))
 
             edges.append((ta_val, tb_val, state_id))
         else:

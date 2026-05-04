@@ -381,34 +381,8 @@ class SettingsDialog(QDialog):
         )
         general_layout.addWidget(self.cb_convert_jdnext_gestures)
 
-        # gesture_scoring_strictness (shown inline under the checkbox)
-        gesture_strictness_row = QHBoxLayout()
-        gesture_strictness_row.setContentsMargins(24, 0, 0, 0)  # indent under checkbox
-        gesture_strictness_lbl = QLabel("Gesture scoring strictness:")
-        gesture_strictness_row.addWidget(gesture_strictness_lbl)
-        self.spin_gesture_strictness = QDoubleSpinBox()
-        self.spin_gesture_strictness.setRange(0.0, 1.0)
-        self.spin_gesture_strictness.setDecimals(2)
-        self.spin_gesture_strictness.setSingleStep(0.05)
-        self.spin_gesture_strictness.setValue(
-            float(getattr(self._config, "gesture_scoring_strictness", 0.7))
-        )
-        self.spin_gesture_strictness.setToolTip(
-            "Controls how strictly hybrid gestures evaluate your moves.\n"
-            "0.0 = auto-perfect (every move passes)\n"
-            "0.7 = balanced (default, playable with real scoring feel)\n"
-            "1.0 = strict (tightest JDNext-derived thresholds)"
-        )
-        gesture_strictness_row.addWidget(self.spin_gesture_strictness)
-        gesture_strictness_row.addStretch()
-        general_layout.addLayout(gesture_strictness_row)
-
-        def _toggle_gesture_strictness(enabled: bool) -> None:
-            self.spin_gesture_strictness.setEnabled(enabled)
-            gesture_strictness_lbl.setEnabled(enabled)
-
-        self.cb_convert_jdnext_gestures.toggled.connect(_toggle_gesture_strictness)
-        _toggle_gesture_strictness(self.cb_convert_jdnext_gestures.isChecked())
+        # No strictness slider — hybrid gestures use synthesized gating edges
+        # and donor templates. The checkbox above toggles conversion only.
 
         # albumcoach_behavior
         self.combo_albumcoach = QComboBox()
@@ -979,7 +953,6 @@ class SettingsDialog(QDialog):
         self._config.show_install_summary_popup = self.cb_install_summary.isChecked()
         self._config.show_quickstart_on_launch = self.cb_quickstart.isChecked()
         self._config.convert_jdnext_gestures = self.cb_convert_jdnext_gestures.isChecked()
-        self._config.gesture_scoring_strictness = self.spin_gesture_strictness.value()
         self._config.albumcoach_behavior = self._combo_value(self.combo_albumcoach)
         self._config.log_detail_level = self._combo_value(self.combo_log_detail)
         self._config.theme = self._combo_value(self.combo_theme)

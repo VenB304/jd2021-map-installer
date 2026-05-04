@@ -2206,10 +2206,9 @@ def install_map_to_game(
                     status_callback(f"Compiling {len(gesture_sources)} hybrid gesture(s) from scratch...")
                 from jd2021_installer.installers.gesture_compiler import compile_gesture_from_scratch
                 compiled = 0
-                strictness = getattr(cfg, "gesture_scoring_strictness", 0.7)
                 for gsrc in gesture_sources:
                     durango_out = durango_moves_out / gsrc.name
-                    if compile_gesture_from_scratch(gsrc, durango_out, strictness=strictness):
+                    if compile_gesture_from_scratch(gsrc, durango_out):
                         compiled += 1
                         # Mirror to pc/ so the engine finds our compiled gesture
                         pc_out = pc_moves_out / gsrc.name
