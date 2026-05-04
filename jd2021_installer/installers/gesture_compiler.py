@@ -755,7 +755,6 @@ def compile_hybrid_gesture(
     jdnext_src_path: Path,
     template_path: Path,
     output_path: Path,
-    strictness: float = 1.0,
 ) -> bool:
     """Compile a JDNext gesture into a Durango binary using direct ta/tb mapping.
     """
@@ -778,12 +777,28 @@ def compile_hybrid_gesture(
         per_joint: dict[int, list[float]] = defaultdict(list)
         for jid, val in joint_constraints:
             per_joint[jid].append(val)
-            
+
+        odd_tail_joints = 0
         for jid in sorted(per_joint.keys()):
             vals = per_joint[jid]
-            for p in range(0, len(vals) - 1, 2):
-                joint_xy[jid].append((vals[p], vals[p+1]))
-                
+            pair_limit = len(vals) - (len(vals) % 2)
+            for p in range(0, pair_limit, 2):
+                joint_xy[jid].append((vals[p], vals[p + 1]))
+            if len(vals) % 2 == 1:
+                odd_tail_joints += 1
+                tail = vals[-1]
+                joint_xy[jid].append((tail, tail))
+
+        total_pairs = sum(len(pairs) for pairs in joint_xy.values())
+        logger.debug(
+            "JDNext pairing summary for %s: %d raw constraints -> %d pairs across %d joints (%d odd tails preserved)",
+            jdnext_src_path.name,
+            len(joint_constraints),
+            total_pairs,
+            len(joint_xy),
+            odd_tail_joints,
+        )
+
         # Fallback right wrist for safety
         rw_pairs = joint_xy.get(7, [(0.5, 0.5)])
         if not rw_pairs:
@@ -860,6 +875,33 @@ def compile_hybrid_gesture(
         Vz, Az = compute_kinematics(Z_phys)
         Torque, MuscleForce = simulate_inverse_dynamics(X_phys, Y_phys, Z_phys, Vx, Vy, Vz)
 
+        # 4. Synthesize Gating Edge Targets from High-Variance Constraints
+        # Constraints with high variance across frames are structural (define the pose).
+        # These should become gating edges (|threshold_a| > 10) to reject bad input.
+        import statistics
+        
+        joint_variances = {}
+        for jid, vals in per_joint.items():
+            if len(vals) > 1:
+                joint_variances[jid] = statistics.stdev(vals)
+            else:
+                joint_variances[jid] = 0.0
+        
+        mean_variance = statistics.mean(joint_variances.values()) if joint_variances else 0.0
+        std_variance = statistics.stdev(joint_variances.values()) if len(joint_variances) > 1 else 0.1
+        
+        # Joints with variance > mean+0.5*std are structural (high discriminative power)
+        structural_joints = {
+            jid for jid, var in joint_variances.items() 
+            if var > (mean_variance + 0.5 * std_variance)
+        }
+        
+        logger.debug(
+            "Gating synthesis: %d structural joints identified (var > %.3f)",
+            len(structural_joints),
+            mean_variance + 0.5 * std_variance
+        )
+        
         # 4. AdaBoost Ensemble Weight Redistribution (Pass 1)
         total_original_weight = 0.0
         total_surviving_weight = 0.0
@@ -994,10 +1036,20 @@ def compile_hybrid_gesture(
                 if native_type in irrecoverable_types:
                     ta_val = 0.0
                 else:
-                    # Strictness slider: 1.0 = 100% of weight, 0.0 = 25% of weight
-                    strictness_multiplier = 0.25 + (strictness * 0.75)
-                    new_ta = ta * gamma * strictness_multiplier
-                    ta_val = max(-1.0, min(1.0, new_ta))
+                    # Decision: Structural joints become gating edges (|ta| > 10).
+                    # Others become scoring edges (|ta| <= 1).
+                    durango_joint = state_to_joint.get(sid, 10)
+                    jdnext_joint = durango_to_jdnext.get(durango_joint, 7)
+                    
+                    if jdnext_joint in structural_joints:
+                        # Structural edge: make it a gating edge (high |ta| for strict checking)
+                        ta_val = 15.0 if ta > 0 else -15.0
+                        logger.debug("  state_id=%d (joint=%d): synthetic gating edge", sid, jdnext_joint)
+                    else:
+                        # Non-structural edge: keep as scoring edge ([-1, +1] range)
+                        # With gating edges handling discrimination, scoring edges can use natural scaling
+                        new_ta = ta * gamma
+                        ta_val = max(-1.0, min(1.0, new_ta))
             else:
                 ta_val = ta
 
@@ -1019,7 +1071,6 @@ def compile_hybrid_gesture(
 def compile_gesture_from_scratch(
     jdnext_src_path: Path,
     output_path: Path,
-    strictness: float = 1.0,
 ) -> bool:
     """Compile a JDNext gesture into a Durango binary.
     """
@@ -1044,7 +1095,7 @@ def compile_gesture_from_scratch(
         donor_path = _find_donor_gesture()
         if donor_path is not None:
             return compile_hybrid_gesture(
-                jdnext_src_path, donor_path, output_path, strictness
+                jdnext_src_path, donor_path, output_path
             )
             
         logger.warning(

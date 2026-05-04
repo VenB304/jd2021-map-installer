@@ -2173,7 +2173,16 @@ def install_map_to_game(
         if status_callback: status_callback("Integrating move data...")
         if progress_callback: progress_callback(85)
         from jd2021_installer.installers.media_processor import copy_moves
-        copy_moves(media.moves_dir, map_target, skip_gestures=_is_jdnext_source_map())
+        
+        # For JDNext maps, only skip gestures if there actually are gesture files to process
+        # If extraction didn't produce camera gesture files, copy what's there as fallback
+        should_skip_gestures = False
+        if _is_jdnext_source_map():
+            # Check if camera gesture files actually exist in the source
+            has_camera_gestures = bool(list(media.moves_dir.rglob("*.gesture")))
+            should_skip_gestures = has_camera_gestures  # Skip copying only if we have source gestures to compile
+        
+        copy_moves(media.moves_dir, map_target, skip_gestures=should_skip_gestures)
 
     # 5a. JDNext gesture compilation / surrogate fallback
     #     copy_moves() above skips .gesture files for JDNext sources because
@@ -2224,6 +2233,19 @@ def install_map_to_game(
                     "Gesture fallback: %d surrogate gestures copied for '%s'",
                     len(gesture_sources), codename,
                 )
+        else:
+            # No camera gesture source files found
+            # Check if we still need to generate fallback gestures
+            durango_installed = (map_target / "timeline" / "moves" / "durango").exists()
+            if not durango_installed:
+                # No gestures were installed at all
+                logger.info(
+                    "No camera gesture source files found for JDNext map '%s'; "
+                    "gestures will use discorope fallback (all-perfect scoring)",
+                    codename,
+                )
+                # Note: The map will still be playable with auto-perfect scoring
+                # since copy_moves() should have copied pre-compiled gestures as fallback
 
     # 5b. Autodance + stape payloads (V1 step_11 parity)
     if map_data.has_autodance and map_data.source_dir and map_data.source_dir.exists():
