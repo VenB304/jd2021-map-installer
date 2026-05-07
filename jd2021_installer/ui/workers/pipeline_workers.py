@@ -1490,11 +1490,25 @@ class BatchInstallWorker(QObject):
                         setattr(map_data, "_install_source_mode", install_source_mode)
                         self._install_map_synchronously(map_data)
                         emit_map_stage(2)
+                        
+                        cb = self._config.cleanup_behavior
+                        if cb in ("delete", "aggressive"):
+                            dl_dir = self._config.download_root / map_data.codename
+                            if dl_dir.exists() and dl_dir.is_dir():
+                                shutil.rmtree(dl_dir, ignore_errors=True)
+                            if cb == "aggressive" and map_cache.exists() and map_cache.is_dir():
+                                shutil.rmtree(map_cache, ignore_errors=True)
+                        
                         completed_units += 3
                         success_count += 1
                         installed_codenames.add(canonical_key)
                         installed_maps.append(map_data)
                         logger.info("Batch installed map: %s", map_data.codename)
+                    
+                    cb = self._config.cleanup_behavior
+                    if cb in ("delete", "aggressive"):
+                        if map_dir.exists() and map_dir.is_dir() and map_dir != cpath:
+                            shutil.rmtree(map_dir, ignore_errors=True)
                     
                 except Exception as e:
                     cpath = Path(candidate["path"])
@@ -1564,6 +1578,17 @@ class BatchInstallWorker(QObject):
                     setattr(map_data, "_install_source_mode", install_source_mode)
                     self._install_map_synchronously(map_data)
                     emit_map_stage(2)
+                    
+                    cb = self._config.cleanup_behavior
+                    if cb in ("delete", "aggressive"):
+                        dl_dir = self._config.download_root / map_data.codename
+                        if dl_dir.exists() and dl_dir.is_dir():
+                            shutil.rmtree(dl_dir, ignore_errors=True)
+                        if cb == "aggressive" and map_cache.exists() and map_cache.is_dir():
+                            shutil.rmtree(map_cache, ignore_errors=True)
+                        if map_dir.exists() and map_dir.is_dir() and str(map_dir).startswith(str(batch_cache)):
+                            shutil.rmtree(map_dir, ignore_errors=True)
+
                     completed_units += 3
                     success_count += 1
                     installed_codenames.add(canonical_key)

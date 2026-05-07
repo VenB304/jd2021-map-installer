@@ -326,9 +326,10 @@ class SettingsDialog(QDialog):
         general_form.setVerticalSpacing(10)
         
         self.combo_cleanup = QComboBox()
-        self.combo_cleanup.addItem("Ask every time", "ask")
-        self.combo_cleanup.addItem("Always delete temporary files", "delete")
-        self.combo_cleanup.addItem("Keep temporary files", "keep")
+        self.combo_cleanup.addItem("Ask me after every installation", "ask")
+        self.combo_cleanup.addItem("Keep files", "keep")
+        self.combo_cleanup.addItem("Auto-delete files (Keeps UI Previews)", "delete")
+        self.combo_cleanup.addItem("Aggressive cleanup (Maximum space saving, disables UI Previews)", "aggressive")
         self._set_combo_from_value(self.combo_cleanup, self._config.cleanup_behavior)
         self.combo_cleanup.setToolTip(
             "Choose what happens to installer temp files after install."

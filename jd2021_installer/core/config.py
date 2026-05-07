@@ -31,7 +31,7 @@ class AppConfig(BaseModel):
     # UI/UX settings
     skip_preflight: bool = False
     suppress_offset_notification: bool = False
-    cleanup_behavior: str = Field(default="ask", pattern=r"^(ask|delete|keep)$")
+    cleanup_behavior: str = Field(default="ask", pattern=r"^(ask|delete|keep|aggressive)$")
     locked_status_behavior: str = Field(default="ask", pattern=r"^(ask|force3|keep)$")
     show_preflight_success_popup: bool = True
     show_install_summary_popup: bool = True
