@@ -1490,11 +1490,25 @@ class BatchInstallWorker(QObject):
                         setattr(map_data, "_install_source_mode", install_source_mode)
                         self._install_map_synchronously(map_data)
                         emit_map_stage(2)
+                        
+                        cb = self._config.cleanup_behavior
+                        if cb in ("delete", "aggressive"):
+                            dl_dir = self._config.download_root / map_data.codename
+                            if dl_dir.exists() and dl_dir.is_dir():
+                                shutil.rmtree(dl_dir, ignore_errors=True)
+                            if cb == "aggressive" and map_cache.exists() and map_cache.is_dir():
+                                shutil.rmtree(map_cache, ignore_errors=True)
+                        
                         completed_units += 3
                         success_count += 1
                         installed_codenames.add(canonical_key)
                         installed_maps.append(map_data)
                         logger.info("Batch installed map: %s", map_data.codename)
+                    
+                    cb = self._config.cleanup_behavior
+                    if cb in ("delete", "aggressive"):
+                        if map_dir.exists() and map_dir.is_dir() and map_dir != cpath:
+                            shutil.rmtree(map_dir, ignore_errors=True)
                     
                 except Exception as e:
                     cpath = Path(candidate["path"])
@@ -1564,6 +1578,17 @@ class BatchInstallWorker(QObject):
                     setattr(map_data, "_install_source_mode", install_source_mode)
                     self._install_map_synchronously(map_data)
                     emit_map_stage(2)
+                    
+                    cb = self._config.cleanup_behavior
+                    if cb in ("delete", "aggressive"):
+                        dl_dir = self._config.download_root / map_data.codename
+                        if dl_dir.exists() and dl_dir.is_dir():
+                            shutil.rmtree(dl_dir, ignore_errors=True)
+                        if cb == "aggressive" and map_cache.exists() and map_cache.is_dir():
+                            shutil.rmtree(map_cache, ignore_errors=True)
+                        if map_dir.exists() and map_dir.is_dir() and str(map_dir).startswith(str(batch_cache)):
+                            shutil.rmtree(map_dir, ignore_errors=True)
+
                     completed_units += 3
                     success_count += 1
                     installed_codenames.add(canonical_key)
@@ -2173,7 +2198,16 @@ def install_map_to_game(
         if status_callback: status_callback("Integrating move data...")
         if progress_callback: progress_callback(85)
         from jd2021_installer.installers.media_processor import copy_moves
-        copy_moves(media.moves_dir, map_target, skip_gestures=_is_jdnext_source_map())
+        
+        # For JDNext maps, only skip gestures if there actually are gesture files to process
+        # If extraction didn't produce camera gesture files, copy what's there as fallback
+        should_skip_gestures = False
+        if _is_jdnext_source_map():
+            # Check if camera gesture files actually exist in the source
+            has_camera_gestures = bool(list(media.moves_dir.rglob("*.gesture")))
+            should_skip_gestures = has_camera_gestures  # Skip copying only if we have source gestures to compile
+        
+        copy_moves(media.moves_dir, map_target, skip_gestures=should_skip_gestures)
 
     # 5a. JDNext gesture compilation / surrogate fallback
     #     copy_moves() above skips .gesture files for JDNext sources because
@@ -2197,10 +2231,9 @@ def install_map_to_game(
                     status_callback(f"Compiling {len(gesture_sources)} hybrid gesture(s) from scratch...")
                 from jd2021_installer.installers.gesture_compiler import compile_gesture_from_scratch
                 compiled = 0
-                strictness = getattr(cfg, "gesture_scoring_strictness", 0.7)
                 for gsrc in gesture_sources:
                     durango_out = durango_moves_out / gsrc.name
-                    if compile_gesture_from_scratch(gsrc, durango_out, strictness=strictness):
+                    if compile_gesture_from_scratch(gsrc, durango_out):
                         compiled += 1
                         # Mirror to pc/ so the engine finds our compiled gesture
                         pc_out = pc_moves_out / gsrc.name
@@ -2224,6 +2257,19 @@ def install_map_to_game(
                     "Gesture fallback: %d surrogate gestures copied for '%s'",
                     len(gesture_sources), codename,
                 )
+        else:
+            # No camera gesture source files found
+            # Check if we still need to generate fallback gestures
+            durango_installed = (map_target / "timeline" / "moves" / "durango").exists()
+            if not durango_installed:
+                # No gestures were installed at all
+                logger.info(
+                    "No camera gesture source files found for JDNext map '%s'; "
+                    "gestures will use discorope fallback (all-perfect scoring)",
+                    codename,
+                )
+                # Note: The map will still be playable with auto-perfect scoring
+                # since copy_moves() should have copied pre-compiled gestures as fallback
 
     # 5b. Autodance + stape payloads (V1 step_11 parity)
     if map_data.has_autodance and map_data.source_dir and map_data.source_dir.exists():

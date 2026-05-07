@@ -31,7 +31,7 @@ class AppConfig(BaseModel):
     # UI/UX settings
     skip_preflight: bool = False
     suppress_offset_notification: bool = False
-    cleanup_behavior: str = Field(default="ask", pattern=r"^(ask|delete|keep)$")
+    cleanup_behavior: str = Field(default="ask", pattern=r"^(ask|delete|keep|aggressive)$")
     locked_status_behavior: str = Field(default="ask", pattern=r"^(ask|force3|keep)$")
     show_preflight_success_popup: bool = True
     show_install_summary_popup: bool = True
@@ -52,10 +52,7 @@ class AppConfig(BaseModel):
     albumcoach_behavior: str = Field(
         default="ask", pattern=r"^(ask|always_customize|always_default)$"
     )
-    # Scoring strictness for hybrid gestures: 0.0 = auto-perfect (effectively
-    # discorope passthrough), 1.0 = strict real scoring from JDNext data.
-    # Values in between blend proportionally.
-    gesture_scoring_strictness: float = Field(default=0.5, ge=0.0, le=1.0)
+    # Scoring conversion behavior: handled via gesture template selection
 
     # Download settings
     download_timeout_s: int = 600

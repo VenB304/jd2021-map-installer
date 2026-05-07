@@ -90,8 +90,8 @@ _GATING_THRESHOLD = 10.0
 # Center-exclusion dead zone: controls which constraints are used.
 # JDNext data contains many near-zero constraints (often padding/null).
 # Filtering them out makes the gesture only match distinctive choreographic
-# positions. Strictness maps linearly to dead zone radius.
-_DEAD_ZONE_MAX = 0.14   # At strictness=1.0
+# positions. Use this fixed max dead-zone radius for filtering.
+_DEAD_ZONE_MAX = 0.14
 
 # Timing injection: baseline for parameter scaling
 _TIMING_BASELINE = 10.0   # Median timing value baseline
@@ -555,7 +555,6 @@ def _load_and_hybridize(
     template_data: bytearray,
     joint_constraints: list[tuple[int, float]],
     timing_values: list[float] | None = None,
-    strictness: float = 1.0,
 ) -> bytearray:
     """Load a Durango/X360 template and inject JDNext data into the edge table.
 
@@ -572,8 +571,6 @@ def _load_and_hybridize(
         joint_constraints:  Joint-tagged JDNext constraints as
                             ``(joint_id, value)`` tuples.
         timing_values:      Extracted JDNext timing/weight values (> 1.0).
-        strictness:         Scoring strictness (0.0 = auto-perfect,
-                            1.0 = full JDNext injection).
 
     Returns the modified bytearray ready to write to disk.
     """
@@ -605,12 +602,8 @@ def _load_and_hybridize(
         logger.debug("No joint constraints to inject; output uses template edges")
         return template_data
 
-    if strictness <= 0.0:
-        logger.debug("Strictness=0.0; output uses template edges (auto-perfect)")
-        return template_data
-
     # Center-exclusion dead zone filtering (operates on values, keeps tags)
-    dead_zone = _DEAD_ZONE_MAX * strictness
+    dead_zone = _DEAD_ZONE_MAX
     filtered = [(jid, v) for jid, v in joint_constraints if abs(v) > dead_zone]
 
     if len(filtered) < num_edges:
@@ -739,10 +732,9 @@ def _load_and_hybridize(
             struct.pack_into(f"{endian}f", template_data, eoff + 4, tb_val)
 
     logger.debug(
-        "Injected %d scoring + %d gating edges "
-        "(dead_zone=%.3f, strictness=%.2f, format=%s)",
+        "Injected %d scoring + %d gating edges (dead_zone=%.3f, format=%s)",
         num_scoring, gating_count,
-        dead_zone, strictness, fmt_name,
+        dead_zone, fmt_name,
     )
     return template_data
 
@@ -755,7 +747,6 @@ def compile_hybrid_gesture(
     jdnext_src_path: Path,
     template_path: Path,
     output_path: Path,
-    strictness: float = 1.0,
 ) -> bool:
     """Compile a JDNext gesture into a Durango binary using direct ta/tb mapping.
     """
@@ -778,12 +769,28 @@ def compile_hybrid_gesture(
         per_joint: dict[int, list[float]] = defaultdict(list)
         for jid, val in joint_constraints:
             per_joint[jid].append(val)
-            
+
+        odd_tail_joints = 0
         for jid in sorted(per_joint.keys()):
             vals = per_joint[jid]
-            for p in range(0, len(vals) - 1, 2):
-                joint_xy[jid].append((vals[p], vals[p+1]))
-                
+            pair_limit = len(vals) - (len(vals) % 2)
+            for p in range(0, pair_limit, 2):
+                joint_xy[jid].append((vals[p], vals[p + 1]))
+            if len(vals) % 2 == 1:
+                odd_tail_joints += 1
+                tail = vals[-1]
+                joint_xy[jid].append((tail, tail))
+
+        total_pairs = sum(len(pairs) for pairs in joint_xy.values())
+        logger.debug(
+            "JDNext pairing summary for %s: %d raw constraints -> %d pairs across %d joints (%d odd tails preserved)",
+            jdnext_src_path.name,
+            len(joint_constraints),
+            total_pairs,
+            len(joint_xy),
+            odd_tail_joints,
+        )
+
         # Fallback right wrist for safety
         rw_pairs = joint_xy.get(7, [(0.5, 0.5)])
         if not rw_pairs:
@@ -860,6 +867,33 @@ def compile_hybrid_gesture(
         Vz, Az = compute_kinematics(Z_phys)
         Torque, MuscleForce = simulate_inverse_dynamics(X_phys, Y_phys, Z_phys, Vx, Vy, Vz)
 
+        # 4. Synthesize Gating Edge Targets from High-Variance Constraints
+        # Constraints with high variance across frames are structural (define the pose).
+        # These should become gating edges (|threshold_a| > 10) to reject bad input.
+        import statistics
+        
+        joint_variances = {}
+        for jid, vals in per_joint.items():
+            if len(vals) > 1:
+                joint_variances[jid] = statistics.stdev(vals)
+            else:
+                joint_variances[jid] = 0.0
+        
+        mean_variance = statistics.mean(joint_variances.values()) if joint_variances else 0.0
+        std_variance = statistics.stdev(joint_variances.values()) if len(joint_variances) > 1 else 0.1
+        
+        # Joints with variance > mean+0.5*std are structural (high discriminative power)
+        structural_joints = {
+            jid for jid, var in joint_variances.items() 
+            if var > (mean_variance + 0.5 * std_variance)
+        }
+        
+        logger.debug(
+            "Gating synthesis: %d structural joints identified (var > %.3f)",
+            len(structural_joints),
+            mean_variance + 0.5 * std_variance
+        )
+        
         # 4. AdaBoost Ensemble Weight Redistribution (Pass 1)
         total_original_weight = 0.0
         total_surviving_weight = 0.0
@@ -965,6 +999,10 @@ def compile_hybrid_gesture(
             else:
                 is_valid_type = False
                 
+            # Detect unstable kinematic features for static poses
+            is_unstable_angle = (native_type == 3 and speed < 0.3)
+            is_unstable_vel = (native_type in (8, 9, 10, 32, 33, 34, 3, 25, 26, 27) and speed < 0.1)
+                
             if is_valid_type:
                 # Dynamically pad the threshold based on AdaBoost evaluation direction (ta sign)
                 # ta > 0 means stump expects feature > tb.
@@ -991,15 +1029,31 @@ def compile_hybrid_gesture(
                     tb_val = tb * 0.5
 
             if not is_gating:
-                if native_type in irrecoverable_types:
+                if native_type in irrecoverable_types or is_unstable_angle or is_unstable_vel:
                     ta_val = 0.0
+                    tb_val = 0.0
                 else:
-                    # Strictness slider: 1.0 = 100% of weight, 0.0 = 25% of weight
-                    strictness_multiplier = 0.25 + (strictness * 0.75)
-                    new_ta = ta * gamma * strictness_multiplier
-                    ta_val = max(-1.0, min(1.0, new_ta))
+                    # Decision: Structural joints become gating edges (|ta| > 10).
+                    # Others become scoring edges (|ta| <= 1).
+                    durango_joint = state_to_joint.get(sid, 10)
+                    jdnext_joint = durango_to_jdnext.get(durango_joint, 7)
+                    
+                    if jdnext_joint in structural_joints:
+                        # Structural edge: make it a gating edge (high |ta| for strict checking)
+                        ta_val = 15.0 if ta > 0 else -15.0
+                        logger.debug("  state_id=%d (joint=%d): synthetic gating edge", sid, jdnext_joint)
+                    else:
+                        # Non-structural edge: keep as scoring edge ([-1, +1] range)
+                        # With gating edges handling discrimination, scoring edges can use natural scaling
+                        new_ta = ta * gamma
+                        ta_val = max(-1.0, min(1.0, new_ta))
             else:
-                ta_val = ta
+                if is_unstable_angle or is_unstable_vel:
+                    # Even if it was originally a gating edge, if the pose is static, don't gate on random noise!
+                    ta_val = 0.0
+                    tb_val = 0.0
+                else:
+                    ta_val = ta
 
             struct.pack_into(f'{endian}f', template_data, eoff, ta_val)
             struct.pack_into(f'{endian}f', template_data, eoff + 4, tb_val)
@@ -1019,7 +1073,6 @@ def compile_hybrid_gesture(
 def compile_gesture_from_scratch(
     jdnext_src_path: Path,
     output_path: Path,
-    strictness: float = 1.0,
 ) -> bool:
     """Compile a JDNext gesture into a Durango binary.
     """
@@ -1044,7 +1097,7 @@ def compile_gesture_from_scratch(
         donor_path = _find_donor_gesture()
         if donor_path is not None:
             return compile_hybrid_gesture(
-                jdnext_src_path, donor_path, output_path, strictness
+                jdnext_src_path, donor_path, output_path
             )
             
         logger.warning(
@@ -1093,7 +1146,6 @@ def _compile_with_donor(
     timing_values: list[float],
     output_path: Path,
     src_name: str,
-    strictness: float,
 ) -> bool:
     """Compile a gesture using a known-good donor as the structural base.
 
@@ -1161,9 +1213,7 @@ def _compile_with_donor(
     for i, p in enumerate(song_params):
         struct.pack_into(f"{endian}f", donor_data, params_start + i * 4, p)
 
-    if strictness <= 0.0:
-        logger.debug("Strictness=0; donor gesture used as-is (auto-perfect)")
-    else:
+    # Inject camera constraints into donor scoring edges
         # --- Identify scoring vs gating edges ---
         from collections import defaultdict
         scoring_indices: list[int] = []
@@ -1222,7 +1272,7 @@ def _compile_with_donor(
             
             # Use cam_y for position limit, or an average of X and Y
             cam_val = (cam_x + cam_y) / 2.0
-            tb_val = cam_val * strictness
+            tb_val = cam_val
 
             # Clamp to Kinect range
             tb_val = max(-3.8, min(3.8, tb_val))
@@ -1238,10 +1288,10 @@ def _compile_with_donor(
 
     logger.info(
         "Compiled gesture (donor: %s): %s "
-        "(%d constraints → %d edges, strictness=%.2f, format=%s)",
+        "(%d constraints → %d edges, format=%s)",
         donor_path.name, src_name,
         len(joint_constraints), num_edges,
-        strictness, fmt_name,
+        fmt_name,
     )
     return True
 
@@ -1346,7 +1396,6 @@ def _build_params_from_jdnext(
 def _build_edge_table(
     joint_constraints: list[tuple[int, float]],
     num_states: int,
-    strictness: float,
     state_to_joint: dict[int, int],
 ) -> list[tuple[float, float, int]]:
     """Build a 1000-edge table matching real Kinect edge distribution.
@@ -1368,7 +1417,7 @@ def _build_edge_table(
     edges: list[tuple[float, float, int]] = []
 
     # Filter constraints by dead zone (keeps joint tags)
-    dead_zone = _DEAD_ZONE_MAX * strictness
+    dead_zone = _DEAD_ZONE_MAX
     filtered = [(jid, v) for jid, v in joint_constraints if abs(v) > dead_zone]
 
     if len(filtered) < 10:
@@ -1437,9 +1486,9 @@ def _build_edge_table(
             # threshold_b: real camera constraint scaled to Durango range
             pair_idx = (i // max(1, num_states)) % len(joint_vals)
             cam_val = joint_vals[pair_idx] * _JDNEXT_TO_DURANGO_SCALE
-            
+
             ta_val = quant_a
-            tb_val = max(-3.8, min(3.8, cam_val * strictness))
+            tb_val = max(-3.8, min(3.8, cam_val))
 
             edges.append((ta_val, tb_val, state_id))
         else:

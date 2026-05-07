@@ -146,8 +146,15 @@ def synthesize_depth_analytical(X_phys: np.ndarray, Y_phys: np.ndarray, Z_global
             missing_sq = target_len**2 - (x_diff**2 + y_diff**2)
             z_diff = np.sqrt(np.maximum(0, missing_sq))
             
-            # Assume limbs generally reach FORWARD (towards camera = negative Z direction)
-            Z_opt[:, c] = Z_opt[:, p] - z_diff
+            # Symmetrical Joint handling:
+            # If this is a right-side symmetrical joint (ShoulderRight, HipRight) whose parent is the center,
+            # push it BACKWARD (+z_diff) to balance the left-side joint which was pushed FORWARD (-z_diff).
+            # This prevents both shoulders/hips from projecting forward and forming a V-shape when sideways.
+            if c in (3, 10):  # ShoulderRight, HipRight
+                Z_opt[:, c] = Z_opt[:, p] + z_diff
+            else:
+                # Assume limbs generally reach FORWARD (towards camera = negative Z direction)
+                Z_opt[:, c] = Z_opt[:, p] - z_diff
             
     # Apply a light temporal smoothing to fix any popping from the distance clamps
     if num_frames >= 5:

@@ -3207,7 +3207,7 @@ class MainWindow(QMainWindow):
         behavior = self._config.cleanup_behavior
         should_delete = False
         
-        if behavior == "delete":
+        if behavior in ("delete", "aggressive"):
             should_delete = True
         elif behavior == "keep":
             should_delete = False
@@ -3241,6 +3241,13 @@ class MainWindow(QMainWindow):
                 if download_dir.exists():
                     import shutil
                     shutil.rmtree(download_dir, ignore_errors=True)
+                
+                # 1c. Aggressive cache wipe
+                if getattr(self._config, "cleanup_behavior", "ask") == "aggressive":
+                    map_cache = self._config.cache_directory / self._current_map.codename
+                    if map_cache.exists():
+                        import shutil
+                        shutil.rmtree(map_cache, ignore_errors=True)
             
             # 2. Clean up _batch_temp if it exists
             batch_temp = self._config.cache_directory / "_batch_temp"
