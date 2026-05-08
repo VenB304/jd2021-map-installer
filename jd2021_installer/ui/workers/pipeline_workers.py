@@ -350,6 +350,196 @@ def _ensure_jdnext_albumcoach_texture_from_coach(map_target: Path, codename: str
             return False
 
 
+def _synthesize_jdnext_cover_if_needed(
+    map_target: Path,
+    codename: str,
+    map_data: "NormalizedMapData",
+    config: Optional["AppConfig"],
+) -> bool:
+    """Synthesize a 1:1 cover art for JDNext maps from map_bkg + Title assets.
+
+    Checks the configured behavior (ask/synthesized/original) and:
+    - ``synthesized``: always composite.
+    - ``original``: skip, leave existing cover untouched.
+    - ``ask``: show a lightweight Qt dialog once per install.
+
+    Falls back to original if either source asset is missing.
+    Returns True when a synthesized cover was written.
+    """
+    behavior = getattr(config, "jdnext_cover_behavior", "ask") if config else "ask"
+    if behavior == "original":
+        return False
+
+    # Locate installed texture for a given keyword suffix
+    texture_dirs = [
+        map_target / "menuart" / "textures",
+        map_target / "MenuArt" / "textures",
+    ]
+    texture_exts = (".png", ".tga", ".jpg", ".jpeg")
+
+    def _find_installed_texture(keyword: str) -> Optional[Path]:
+        for tex_dir in texture_dirs:
+            if not tex_dir.is_dir():
+                continue
+            for ext in texture_exts:
+                p = tex_dir / f"{codename}_{keyword}{ext}"
+                if p.exists():
+                    return p
+            for ext in texture_exts:
+                for p in tex_dir.glob(f"*{keyword}*{ext}"):
+                    if p.is_file():
+                        return p
+        return None
+
+    map_bkg_path = _find_installed_texture("map_bkg")
+    if not map_bkg_path:
+        src_map_bkg = getattr(getattr(map_data, "media", None), "map_bkg_path", None)
+        if src_map_bkg and Path(src_map_bkg).exists():
+            map_bkg_path = Path(src_map_bkg)
+
+    title_path = _find_installed_texture("title")
+    if not title_path:
+        src_title = getattr(getattr(map_data, "media", None), "title_path", None)
+        if src_title and Path(src_title).exists():
+            title_path = Path(src_title)
+
+    if not map_bkg_path or not title_path:
+        logger.debug(
+            "JDNext cover synthesis skipped for '%s': missing %s",
+            codename,
+            "map_bkg" if not map_bkg_path else "Title",
+        )
+        return False
+
+    # --- Ask dialog when behavior == "ask" ---
+    if behavior == "ask":
+        try:
+            from PyQt6.QtWidgets import (
+                QApplication, QDialog, QHBoxLayout, QVBoxLayout,
+                QLabel, QPushButton, QCheckBox,
+            )
+            app = QApplication.instance()
+            if app is not None:
+                dlg_result: dict = {"choice": "synthesized", "never_ask": False}
+
+                dlg = QDialog()
+                dlg.setWindowTitle("JDNext Cover Art")
+                dlg.setModal(True)
+                dlg.setFixedWidth(440)
+
+                root = QVBoxLayout(dlg)
+                root.setContentsMargins(20, 16, 20, 16)
+                root.setSpacing(12)
+
+                msg = QLabel(
+                    f"<b>{codename}</b> is a JDNext map with a non-square cover.<br><br>"
+                    "Would you like to synthesize a proper 1:1 cover from the map "
+                    "background and Title assets?"
+                )
+                msg.setWordWrap(True)
+                root.addWidget(msg)
+
+                cb_never = QCheckBox("Remember my choice for all future maps")
+                cb_never.setToolTip(
+                    "Saves your choice to Settings → JDNext cover art.\n"
+                    "You can change it later."
+                )
+                root.addWidget(cb_never)
+
+                btn_row = QHBoxLayout()
+                btn_row.addStretch()
+
+                btn_synth = QPushButton("Use Synthesized Cover")
+                btn_synth.setMinimumWidth(160)
+                btn_synth.clicked.connect(
+                    lambda: (dlg_result.__setitem__("choice", "synthesized"), dlg.accept())
+                )
+                btn_row.addWidget(btn_synth)
+
+                btn_orig = QPushButton("Use Original Cover")
+                btn_orig.setMinimumWidth(140)
+                btn_orig.clicked.connect(
+                    lambda: (dlg_result.__setitem__("choice", "original"), dlg.accept())
+                )
+                btn_row.addWidget(btn_orig)
+
+                root.addLayout(btn_row)
+                dlg.exec()
+
+                dlg_result["never_ask"] = cb_never.isChecked()
+                if dlg_result["never_ask"] and config is not None:
+                    try:
+                        config.jdnext_cover_behavior = dlg_result["choice"]
+                    except Exception:
+                        pass
+
+                if dlg_result["choice"] == "original":
+                    return False
+            # No Qt app (headless/batch) — fall through to synthesize silently
+        except Exception as exc:
+            logger.debug("JDNext cover ask dialog failed (%s); defaulting to synthesized", exc)
+
+    # --- Composite ---
+    try:
+        from PIL import Image as _Image
+        from jd2021_installer.installers.media_processor import synthesize_jdnext_cover_art
+
+        composite = synthesize_jdnext_cover_art(map_bkg_path, title_path)
+
+        tex_dir = (
+            map_target / "menuart" / "textures"
+            if (map_target / "menuart" / "textures").is_dir()
+            else map_target / "MenuArt" / "textures"
+        )
+        tex_dir.mkdir(parents=True, exist_ok=True)
+
+        # Canonical engine dimensions per cover type (from JDU reference maps)
+        _COVER_TGA_SIZES: dict[str, tuple[int, int]] = {
+            "cover_generic": (512, 512),
+            "cover_online":  (256, 256),
+        }
+
+        # Write canonical TGA covers at the correct per-type dimension
+        for suffix, size in _COVER_TGA_SIZES.items():
+            resized = composite.resize(size, _Image.Resampling.LANCZOS) if size != (1024, 1024) else composite
+            tga_dst = tex_dir / f"{codename}_{suffix}.tga"
+            resized.save(tga_dst, format="TGA")
+
+        # Overwrite any existing PNG cover variants (excluding albumcoach/albumbkg).
+        # Resize each PNG to its original pixel dimensions so file sizes stay consistent.
+        import re as _re
+        cover_png_pattern = _re.compile(
+            rf"^{_re.escape(codename)}_?(cover(?!_album)[^.]*|Cover(?!_album)[^.]*)\.(png|jpg|jpeg)$",
+            _re.IGNORECASE,
+        )
+        for f in tex_dir.iterdir():
+            if not f.is_file():
+                continue
+            if not cover_png_pattern.match(f.name):
+                continue
+            try:
+                # Preserve original dimensions — resize master composite to match
+                with _Image.open(f) as orig:
+                    orig_size = orig.size
+                out = composite.resize(orig_size, _Image.Resampling.LANCZOS) if orig_size != (1024, 1024) else composite
+                out.save(f, format="PNG")
+            except Exception as _e:
+                logger.debug("Could not overwrite cover PNG %s: %s", f.name, _e)
+
+        logger.debug(
+            "Synthesized JDNext cover art for '%s': map_bkg=%s title=%s -> cover_generic(512)/online(256).tga + PNGs",
+            codename,
+            map_bkg_path.name,
+            title_path.name,
+        )
+        return True
+    except Exception as exc:
+        logger.warning("JDNext cover synthesis failed for '%s': %s", codename, exc)
+        return False
+
+
+
+
 def _apply_jdnext_bottom_alpha_fade_if_needed(map_target: Path, codename: str) -> int:
     """Apply JDNext-style bottom alpha fade to coach textures when missing.
 
@@ -2152,7 +2342,14 @@ def install_map_to_game(
                     "Synthesized missing albumcoach texture from coach_1 for JDNext map '%s'.",
                     codename,
                 )
-            
+
+            synthesized_cover = _synthesize_jdnext_cover_if_needed(map_target, codename, map_data, config)
+            if synthesized_cover:
+                logger.debug(
+                    "Synthesized JDNext 1:1 cover art for '%s'.",
+                    codename,
+                )
+
         # V1 Parity: Validate and heal MenuArt (case-fix + RGBA re-save)
         from jd2021_installer.installers.media_processor import process_menu_art
         process_menu_art(map_target, codename)

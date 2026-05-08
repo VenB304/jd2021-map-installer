@@ -52,6 +52,13 @@ class AppConfig(BaseModel):
     albumcoach_behavior: str = Field(
         default="ask", pattern=r"^(ask|always_customize|always_default)$"
     )
+    # Cover art synthesis behavior for JDNext maps:
+    # "synthesized" = always composite from map_bkg + Title asset
+    # "original"    = always use original cover art as-is (may be squished)
+    # "ask"         = prompt per map (default)
+    jdnext_cover_behavior: str = Field(
+        default="ask", pattern=r"^(ask|synthesized|original)$"
+    )
     # Scoring conversion behavior: handled via gesture template selection
 
     # Download settings

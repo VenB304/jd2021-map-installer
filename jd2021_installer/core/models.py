@@ -397,6 +397,7 @@ class MapMedia:
     banner_path: Optional[Path] = None  # Legacy/Generic banner
     banner_bkg_path: Optional[Path] = None
     map_bkg_path: Optional[Path] = None
+    title_path: Optional[Path] = None
     cover_albumbkg_path: Optional[Path] = None
     cover_albumcoach_path: Optional[Path] = None
     coach_images: List[Path] = field(default_factory=list)

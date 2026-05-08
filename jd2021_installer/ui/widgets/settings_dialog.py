@@ -403,6 +403,23 @@ class SettingsDialog(QDialog):
         )
         general_form.addRow("AlbumCoach compositing:", self.combo_albumcoach)
 
+        # jdnext_cover_behavior
+        self.combo_jdnext_cover = QComboBox()
+        self.combo_jdnext_cover.addItem("Ask per map (default)", "ask")
+        self.combo_jdnext_cover.addItem("Use Synthesized Cover (map background + Title)", "synthesized")
+        self.combo_jdnext_cover.addItem("Use Original Cover (may be squished)", "original")
+        self._set_combo_from_value(
+            self.combo_jdnext_cover,
+            getattr(self._config, "jdnext_cover_behavior", "ask"),
+        )
+        self.combo_jdnext_cover.setToolTip(
+            "Controls how cover art is generated for JDNext maps.\n"
+            "Synthesized: composites map_bkg + Title into a proper 1:1 square.\n"
+            "Original: uses the source cover as-is (may appear squished in-game).\n"
+            "Ask: prompt before each JDNext install."
+        )
+        general_form.addRow("JDNext cover art:", self.combo_jdnext_cover)
+
         self.combo_log_detail = QComboBox()
         self.combo_log_detail.addItem("Quiet (warnings and errors only)", "quiet")
         self.combo_log_detail.addItem("Normal (recommended)", "user")
@@ -955,6 +972,7 @@ class SettingsDialog(QDialog):
         self._config.show_quickstart_on_launch = self.cb_quickstart.isChecked()
         self._config.convert_jdnext_gestures = self.cb_convert_jdnext_gestures.isChecked()
         self._config.albumcoach_behavior = self._combo_value(self.combo_albumcoach)
+        self._config.jdnext_cover_behavior = self._combo_value(self.combo_jdnext_cover)
         self._config.log_detail_level = self._combo_value(self.combo_log_detail)
         self._config.theme = self._combo_value(self.combo_theme)
         self._config.enforce_min_window_size = self.cb_enforce_min_size.isChecked()

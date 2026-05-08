@@ -1348,6 +1348,7 @@ def _discover_media(directory: str, codename: Optional[str] = None, search_root:
     # Allow optional_fallback for optional assets (may not have codename prefix)
     media.banner_bkg_path = _get_best_asset("banner_bkg", all_media_files, allow_optional_fallback=True)
     media.map_bkg_path = _get_best_asset("map_bkg", all_media_files, allow_optional_fallback=True)
+    media.title_path = _get_best_asset("title", all_media_files, allow_optional_fallback=True)
 
     media.cover_albumbkg_path = _get_best_asset("albumbkg", all_media_files, allow_optional_fallback=True)
     media.cover_albumcoach_path = _get_best_asset("albumcoach", all_media_files, allow_optional_fallback=True)
