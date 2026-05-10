@@ -86,6 +86,7 @@ class AppConfig(BaseModel):
     browser_profile_dir: Path = Path("./.browser-profile")
     fetch_login_timeout_s: int = 300
     fetch_bot_response_timeout_s: int = 60
+    fetch_background_mode: bool = False
 
     # Update checker settings
     check_updates_on_launch: bool = True

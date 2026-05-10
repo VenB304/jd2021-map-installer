@@ -138,6 +138,7 @@ _SETTINGS_CHANGE_LABELS: dict[str, str] = {
     "assetstudio_cli_path": "AssetStudio CLI",
     "check_updates_on_launch": "Check updates on launch",
     "update_branch": "Update branch",
+    "fetch_background_mode": "Fetch background browser",
 }
 
 _SETTINGS_CHANGE_ORDER: tuple[str, ...] = (
@@ -179,6 +180,7 @@ _SETTINGS_CHANGE_ORDER: tuple[str, ...] = (
     "assetstudio_cli_path",
     "check_updates_on_launch",
     "update_branch",
+    "fetch_background_mode",
 )
 
 _READY_STATUS_VALUE = 3
