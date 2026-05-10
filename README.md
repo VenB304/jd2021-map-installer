@@ -154,6 +154,14 @@ Special thanks to the authors and contributors of these tools for making Just Da
 
 ---
 
+## 🤖 AI Acknowledgement
+
+This project was built with significant assistance from AI coding tools — primarily **Google Gemini**, **Claude** (Anthropic), and **Codex** (OpenAI) — used throughout development for architecture design, code generation, debugging, and documentation. Human direction, domain knowledge, and creative decisions drove the project; AI accelerated the implementation.
+
+Transparency matters. If you're exploring the codebase, know that vibe coding helped shape it. ✌️
+
+---
+
 <p align="center">
-  <sub>Made with 💜 for the Just Dance modding community</sub>
+  <sub>Made with 💜 (and a little 🤖) for the Just Dance modding community</sub>
 </p>
