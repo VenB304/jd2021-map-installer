@@ -998,11 +998,7 @@ def compile_hybrid_gesture(
                 expected = muscle_force
             else:
                 is_valid_type = False
-                
-            # Detect unstable kinematic features for static poses
-            is_unstable_angle = (native_type == 3 and speed < 0.3)
-            is_unstable_vel = (native_type in (8, 9, 10, 32, 33, 34, 3, 25, 26, 27) and speed < 0.1)
-                
+
             if is_valid_type:
                 # Dynamically pad the threshold based on AdaBoost evaluation direction (ta sign)
                 # ta > 0 means stump expects feature > tb.
@@ -1029,7 +1025,7 @@ def compile_hybrid_gesture(
                     tb_val = tb * 0.5
 
             if not is_gating:
-                if native_type in irrecoverable_types or is_unstable_angle or is_unstable_vel:
+                if native_type in irrecoverable_types:
                     ta_val = 0.0
                     tb_val = 0.0
                 else:
@@ -1048,12 +1044,7 @@ def compile_hybrid_gesture(
                         new_ta = ta * gamma
                         ta_val = max(-1.0, min(1.0, new_ta))
             else:
-                if is_unstable_angle or is_unstable_vel:
-                    # Even if it was originally a gating edge, if the pose is static, don't gate on random noise!
-                    ta_val = 0.0
-                    tb_val = 0.0
-                else:
-                    ta_val = ta
+                ta_val = ta
 
             struct.pack_into(f'{endian}f', template_data, eoff, ta_val)
             struct.pack_into(f'{endian}f', template_data, eoff + 4, tb_val)
