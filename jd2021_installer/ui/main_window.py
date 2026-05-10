@@ -2126,6 +2126,7 @@ class MainWindow(QMainWindow):
 
     def _on_install_requested(self) -> None:
         """Launch the Extract → Normalize → Install pipeline."""
+        self.append_log("Installation request received. Starting pre-flight checks...")
         if self._active_worker is not None:
             self._set_status("Please wait for the current operation to finish.")
             return
@@ -3330,43 +3331,6 @@ class MainWindow(QMainWindow):
             )
             return ArchiveIPKExtractor(ipk_path, desired_codename=desired_codename)
 
-    def _resolve_ipk_bundle_inputs(
-        self,
-        source_fields: dict,
-        ipk_path: Optional[Path],
-    ) -> tuple[Optional[Path], Optional[Path]]:
-        if not ipk_path or not ipk_path.is_file():
-            return None, None
-
-        ipk_fields = source_fields.get("ipk", {}) if isinstance(source_fields, dict) else {}
-        raw_bundle = str(ipk_fields.get("bundle", "")).strip()
-        raw_bundlelogic = str(ipk_fields.get("bundlelogic", "")).strip()
-
-        bundle_path = Path(raw_bundle) if raw_bundle else None
-        bundlelogic_path = Path(raw_bundlelogic) if raw_bundlelogic else None
-
-        from jd2021_installer.extractors.archive_ipk import find_bundle_ipks
-
-        if not bundle_path or not bundlelogic_path:
-            bundle_guess, bundlelogic_guess = find_bundle_ipks(ipk_path.parent, exclude=ipk_path)
-            if not bundle_path:
-                bundle_path = bundle_guess
-            if not bundlelogic_path:
-                bundlelogic_path = bundlelogic_guess
-
-        ipk_resolved = ipk_path.resolve()
-        if bundle_path and bundle_path.exists() and bundle_path.resolve() == ipk_resolved:
-            bundle_path = None
-        if bundlelogic_path and bundlelogic_path.exists() and bundlelogic_path.resolve() == ipk_resolved:
-            bundlelogic_path = None
-
-        if bundle_path and not bundle_path.is_file():
-            bundle_path = None
-        if bundlelogic_path and not bundlelogic_path.is_file():
-            bundlelogic_path = None
-
-        return bundle_path, bundlelogic_path
-
         if idx in (MODE_FETCH, MODE_JDNEXT):
             from jd2021_installer.extractors.web_playwright import WebPlaywrightExtractor
             fetch_mode_key = "jdnext" if idx == MODE_JDNEXT else "fetch"
@@ -3468,6 +3432,43 @@ class MainWindow(QMainWindow):
             f"The '{self._current_mode}' mode is not yet fully implemented.",
         )
         return None
+
+    def _resolve_ipk_bundle_inputs(
+        self,
+        source_fields: dict,
+        ipk_path: Optional[Path],
+    ) -> tuple[Optional[Path], Optional[Path]]:
+        if not ipk_path or not ipk_path.is_file():
+            return None, None
+
+        ipk_fields = source_fields.get("ipk", {}) if isinstance(source_fields, dict) else {}
+        raw_bundle = str(ipk_fields.get("bundle", "")).strip()
+        raw_bundlelogic = str(ipk_fields.get("bundlelogic", "")).strip()
+
+        bundle_path = Path(raw_bundle) if raw_bundle else None
+        bundlelogic_path = Path(raw_bundlelogic) if raw_bundlelogic else None
+
+        from jd2021_installer.extractors.archive_ipk import find_bundle_ipks
+
+        if not bundle_path or not bundlelogic_path:
+            bundle_guess, bundlelogic_guess = find_bundle_ipks(ipk_path.parent, exclude=ipk_path)
+            if not bundle_path:
+                bundle_path = bundle_guess
+            if not bundlelogic_path:
+                bundlelogic_path = bundlelogic_guess
+
+        ipk_resolved = ipk_path.resolve()
+        if bundle_path and bundle_path.exists() and bundle_path.resolve() == ipk_resolved:
+            bundle_path = None
+        if bundlelogic_path and bundlelogic_path.exists() and bundlelogic_path.resolve() == ipk_resolved:
+            bundlelogic_path = None
+
+        if bundle_path and not bundle_path.is_file():
+            bundle_path = None
+        if bundlelogic_path and not bundlelogic_path.is_file():
+            bundlelogic_path = None
+
+        return bundle_path, bundlelogic_path
 
     def _start_batch_install(
         self,
