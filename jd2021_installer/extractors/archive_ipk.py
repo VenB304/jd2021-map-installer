@@ -430,6 +430,40 @@ def _detect_maps_in_dir(directory: Path) -> list[str]:
     return sorted({c for c in codenames if c and c.lower() not in ignore_list})
 
 
+def find_bundle_ipks(
+    folder: Path,
+    exclude: Optional[Path] = None,
+) -> tuple[Optional[Path], Optional[Path]]:
+    """Locate bundle and bundlelogic IPKs within a folder.
+
+    Returns (bundle_ipk, bundlelogic_ipk); any entry can be None.
+    """
+    if not folder.exists() or not folder.is_dir():
+        return None, None
+
+    exclude_resolved = exclude.resolve() if exclude else None
+    ipks = sorted(
+        [p for p in folder.iterdir() if p.is_file() and p.suffix.lower() == ".ipk"],
+        key=lambda p: p.name.lower(),
+    )
+
+    bundle_ipk: Optional[Path] = None
+    bundlelogic_ipk: Optional[Path] = None
+    for path in ipks:
+        if exclude_resolved and path.resolve() == exclude_resolved:
+            continue
+        name = path.name.lower()
+        if "bundlelogic" in name:
+            if bundlelogic_ipk is None:
+                bundlelogic_ipk = path
+            continue
+        if "bundle" in name:
+            if bundle_ipk is None:
+                bundle_ipk = path
+
+    return bundle_ipk, bundlelogic_ipk
+
+
 class ArchiveIPKExtractor(BaseExtractor):
     """Extractor for IPK archive files."""
 
@@ -499,6 +533,9 @@ class ArchiveIPKExtractor(BaseExtractor):
 
     def get_codename(self) -> Optional[str]:
         return self._codename
+
+    def get_ipk_path(self) -> Path:
+        return self._ipk_path
 
     def get_source_dir(self) -> Path:
         """Return the folder that contains the selected .ipk file."""

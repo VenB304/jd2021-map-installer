@@ -76,14 +76,52 @@ class TestNormalizerEdgeCases:
         result = normalize(tmp_path)
         assert result.song_desc.artist == "Unknown Artist"
 
-    def test_raises_on_missing_musictrack(self, tmp_path: Path) -> None:
-        """Normalizer must raise if no musictrack CKD exists."""
-        import pytest
-        from jd2021_installer.core.exceptions import NormalizationError
-
+    def test_synthesizes_empty_musictrack_if_missing(self, tmp_path: Path) -> None:
+        """Normalizer must synthesize an empty music track if no CKD exists."""
         (tmp_path / "dummy.txt").write_text("not a ckd")
-        with pytest.raises(NormalizationError, match="musictrack"):
-            normalize(tmp_path)
+        result = normalize(tmp_path)
+        assert result.music_track is not None
+        assert result.music_track.markers == []
+
+    def test_supplemental_roots_fill_missing_ckds(self, tmp_path: Path) -> None:
+        import json
+
+        primary = tmp_path / "primary"
+        supplemental = tmp_path / "supplemental"
+        primary.mkdir(parents=True)
+        supplemental.mkdir(parents=True)
+
+        mt_data = {
+            "COMPONENTS": [{
+                "trackData": {
+                    "structure": {
+                        "markers": [0, 2400, 4800],
+                        "signatures": [{"beats": 4, "marker": 0}],
+                        "sections": [{"sectionType": 0, "marker": 0}],
+                        "startBeat": 0,
+                        "endBeat": 2,
+                        "videoStartTime": 0.0,
+                        "volume": 0.0,
+                    }
+                }
+            }]
+        }
+        sd_data = {
+            "COMPONENTS": [{
+                "MapName": "TestMap",
+                "Title": "Bundle Title",
+                "Artist": "Bundle Artist",
+                "NumCoach": 1,
+            }]
+        }
+
+        (supplemental / "TestMap_musictrack.tpl.ckd").write_text(json.dumps(mt_data))
+        (supplemental / "TestMap_songdesc.tpl.ckd").write_text(json.dumps(sd_data))
+
+        result = normalize(primary, codename="TestMap", supplemental_roots=[supplemental])
+        assert result.song_desc.title == "Bundle Title"
+        assert result.song_desc.artist == "Bundle Artist"
+        assert result.music_track.markers == [0, 2400, 4800]
 
     def test_audio_discovery_uses_search_root_for_ipk_sidecar(self, tmp_path: Path) -> None:
         """V1 parity: audio beside the IPK source folder must be discoverable."""
@@ -98,7 +136,7 @@ class TestNormalizerEdgeCases:
         media = _discover_media(
             str(extracted_dir),
             codename="judas",
-            search_root=str(ipk_source_dir),
+            search_roots=[str(ipk_source_dir)],
         )
 
         assert media.audio_path == sidecar_audio

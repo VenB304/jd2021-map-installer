@@ -34,7 +34,11 @@ from jd2021_installer.core.logging_config import log_exception_for_profile
 from jd2021_installer.core.models import NormalizedMapData
 from jd2021_installer.core.readjust_index import remove_entry
 from jd2021_installer.extractors.base import BaseExtractor
-from jd2021_installer.extractors.archive_ipk import ArchiveIPKExtractor
+from jd2021_installer.extractors.archive_ipk import (
+    ArchiveIPKExtractor,
+    extract_ipk,
+    find_bundle_ipks,
+)
 from jd2021_installer.installers.game_writer import write_game_files
 from jd2021_installer.parsers.normalizer import normalize
 
@@ -66,7 +70,7 @@ def _path_has_codename_component(path: Path, codename: str) -> bool:
 
 def _pick_ipk_audio(search_dirs: list[Path], codename: Optional[str]) -> Optional[Path]:
     candidates: list[Path] = []
-    for pattern in ("*.ogg", "*.wav", "*.wav.ckd"):
+    for pattern in ("*.ogg", "*.wav", "*.wav.ckd", "*.ogg.ckd", "*.opus.ckd"):
         for root in search_dirs:
             if not root or not root.is_dir():
                 continue
@@ -99,13 +103,13 @@ def _pick_ipk_audio(search_dirs: list[Path], codename: Optional[str]) -> Optiona
             return exact_wav_ckd[0]
 
     has_x360_path = any("/x360/" in str(p).lower().replace("\\", "/") for p in candidates)
-    preferred_suffixes = (".wav.ckd", ".wav", ".ogg") if has_x360_path else (".ogg", ".wav", ".wav.ckd")
+    preferred_suffixes = (".wav.ckd", ".ogg.ckd", ".wav", ".ogg") if has_x360_path else (".ogg", ".opus", ".ogg.ckd", ".opus.ckd", ".wav", ".wav.ckd")
 
     for suffix in preferred_suffixes:
         for p in candidates:
             low_name = p.name.lower()
-            if suffix == ".wav.ckd":
-                if low_name.endswith(".wav.ckd"):
+            if suffix.endswith(".ckd"):
+                if low_name.endswith(suffix):
                     return p
             elif low_name.endswith(suffix):
                 return p
@@ -652,12 +656,46 @@ def _apply_jdnext_bottom_alpha_fade_if_needed(map_target: Path, codename: str) -
     return updated
 
 
+def _is_binary_cooked_payload(path: Path) -> bool:
+    """Return True when a .ckd payload is UbiArt binary-cooked rather than plain text.
+
+    Binary-cooked .act/.isc files start with non-printable bytes (often null
+    bytes, binary length headers, or high-byte markers) whereas the text
+    equivalents start with ``params =`` or ``<?xml``.
+    """
+    try:
+        head = path.read_bytes()[:64]
+    except OSError:
+        return True  # unreadable → treat as binary to be safe
+
+    if not head:
+        return True
+
+    # Quick positive check: text .act files start with "params" or whitespace
+    # before it; text .isc files start with "<?xml".
+    stripped = head.lstrip()
+    if stripped[:6] == b"params" or stripped[:5] == b"<?xml":
+        return False
+
+    # If the first 64 bytes contain any null bytes or a majority of non-ASCII
+    # bytes, it's binary cooked data.
+    if b"\x00" in head:
+        return True
+    non_ascii = sum(1 for b in head if b > 127)
+    return non_ascii > len(head) * 0.3
+
+
 def _install_menuart_companion_assets(menuart_sources: list[Path], map_target: Path) -> int:
     """Install non-texture MenuArt companion files shipped as *.ckd payloads.
 
     Some source layouts provide MenuArt actor/scene files as `.act.ckd` and
     `.isc.ckd` that are already plain payloads. These should be installed as
     `.act` / `.isc` files rather than fed to the texture decoder.
+
+    Binary-cooked ``.act.ckd`` payloads (common in IPK archives) are skipped
+    because ``game_writer`` has already generated proper text ``.act`` files.
+    Installing a binary payload would overwrite the correct text actor with
+    unreadable binary data.
     """
     actor_dir = map_target / "MenuArt" / "Actors"
     scene_dir = map_target / "MenuArt"
@@ -683,11 +721,31 @@ def _install_menuart_companion_assets(menuart_sources: list[Path], map_target: P
             if inner_suffix not in {".act", ".isc"}:
                 continue
 
+            # Skip binary-cooked payloads — game_writer already produces
+            # the correct text .act files; overwriting them with binary data
+            # corrupts the installed map's coach/menuart actors.
+            if _is_binary_cooked_payload(ckd_path):
+                logger.debug(
+                    "Skipping binary-cooked MenuArt companion %s (game_writer "
+                    "already generated proper text version).",
+                    ckd_path.name,
+                )
+                continue
+
             out_name = ckd_path.stem
             if inner_suffix == ".act":
                 dst_path = actor_dir / out_name
             else:
                 dst_path = scene_dir / out_name
+
+            # Don't overwrite an existing text .act that game_writer created.
+            if dst_path.exists():
+                logger.debug(
+                    "Skipping MenuArt companion %s — destination already exists: %s",
+                    ckd_path.name,
+                    dst_path.name,
+                )
+                continue
 
             try:
                 shutil.copy2(ckd_path, dst_path)
@@ -747,10 +805,15 @@ def _validate_ipk_media_presence(
     map_output_dir: Path,
     codename: Optional[str],
     search_root: Optional[Path],
+    supplemental_roots: Optional[list[Path]] = None,
 ) -> list[str]:
     search_dirs = [map_output_dir]
     if search_root and search_root not in search_dirs:
         search_dirs.append(search_root)
+    if supplemental_roots:
+        for root in supplemental_roots:
+            if root not in search_dirs:
+                search_dirs.append(root)
 
     warnings: list[str] = []
 
@@ -771,6 +834,32 @@ def _validate_ipk_media_presence(
     return warnings
 
 
+def _extract_supplemental_ipk(
+    ipk_path: Optional[Path],
+    output_root: Path,
+    label: str,
+) -> Optional[Path]:
+    if not ipk_path or not ipk_path.is_file():
+        return None
+
+    target_dir = output_root / label
+    if target_dir.exists():
+        try:
+            if any(target_dir.iterdir()):
+                return target_dir
+        except OSError:
+            pass
+        shutil.rmtree(target_dir, ignore_errors=True)
+
+    target_dir.mkdir(parents=True, exist_ok=True)
+    try:
+        extract_ipk(ipk_path, target_dir)
+        return target_dir
+    except Exception as exc:
+        logger.warning("Supplemental %s IPK extraction failed (%s): %s", label, ipk_path.name, exc)
+        return None
+
+
 class ExtractAndNormalizeWorker(QObject):
     """Extract map data and normalize it in a background thread."""
 
@@ -784,12 +873,16 @@ class ExtractAndNormalizeWorker(QObject):
         extractor: BaseExtractor,
         output_dir: Path,
         codename: Optional[str] = None,
+        bundle_ipk: Optional[Path] = None,
+        bundlelogic_ipk: Optional[Path] = None,
         parent: Optional[QObject] = None,
     ) -> None:
         super().__init__(parent)
         self._extractor = extractor
         self._output_dir = output_dir
         self._codename = codename
+        self._bundle_ipk = bundle_ipk
+        self._bundlelogic_ipk = bundlelogic_ipk
 
     def run(self) -> None:
         failed_stage = "Extracting map data..."
@@ -821,17 +914,58 @@ class ExtractAndNormalizeWorker(QObject):
             search_root: Optional[Path] = None
             normalize_search_root: Optional[Path] = None
             media_errors: list[str] = []
+            supplemental_roots: list[Path] = []
 
             if isinstance(self._extractor, ArchiveIPKExtractor):
                 # V1 parity: IPK mode also probes media alongside the selected .ipk file.
                 search_root = self._extractor.get_source_dir()
-                media_errors.extend(_validate_ipk_media_presence(map_output_dir, codename, search_root))
+                bundle_ipk = self._bundle_ipk
+                bundlelogic_ipk = self._bundlelogic_ipk
+                if not bundle_ipk or not bundlelogic_ipk:
+                    bundle_guess, bundlelogic_guess = find_bundle_ipks(
+                        self._extractor.get_source_dir(),
+                        exclude=self._extractor.get_ipk_path(),
+                    )
+                    if not bundle_ipk:
+                        bundle_ipk = bundle_guess
+                    if not bundlelogic_ipk:
+                        bundlelogic_ipk = bundlelogic_guess
+
+                supplemental_root = self._output_dir / "_supplemental"
+                bundle_root = _extract_supplemental_ipk(bundle_ipk, supplemental_root, "bundle")
+                if bundle_root:
+                    supplemental_roots.append(bundle_root)
+                bundlelogic_root = _extract_supplemental_ipk(bundlelogic_ipk, supplemental_root, "bundlelogic")
+                if bundlelogic_root:
+                    supplemental_roots.append(bundlelogic_root)
+
+                if supplemental_roots:
+                    logger.info(
+                        "Supplemental bundle roots detected: %s",
+                        ", ".join(str(p) for p in supplemental_roots),
+                    )
+
+                media_errors.extend(
+                    _validate_ipk_media_presence(
+                        map_output_dir,
+                        codename,
+                        search_root,
+                        supplemental_roots=supplemental_roots,
+                    )
+                )
                 # For normalization, scan the extracted tree so map-local optional assets
                 # (e.g., albumcoach/map_bkg) are discovered before ACT generation.
                 normalize_search_root = map_output_dir
             elif hasattr(self._extractor, "is_ipk_source"):
                 if bool(self._extractor.is_ipk_source()):  # type: ignore[attr-defined]
-                    media_errors.extend(_validate_ipk_media_presence(map_output_dir, codename, None))
+                    media_errors.extend(
+                        _validate_ipk_media_presence(
+                            map_output_dir,
+                            codename,
+                            None,
+                            supplemental_roots=supplemental_roots,
+                        )
+                    )
                     normalize_search_root = map_output_dir
 
             if media_errors:
@@ -851,6 +985,7 @@ class ExtractAndNormalizeWorker(QObject):
                 map_output_dir,
                 codename,
                 search_root=normalize_search_root,
+                supplemental_roots=supplemental_roots,
             )
 
             # Extraction/normalisation is only the first phase of the overall pipeline.
@@ -974,7 +1109,8 @@ def reprocess_audio(
     media = map_data.media
 
     if (not media.audio_path or not media.audio_path.exists()) and map_data.source_dir:
-        fallback_audio = _pick_ipk_audio([map_data.source_dir], codename)
+        search_dirs = [map_data.source_dir] + getattr(map_data, "supplemental_roots", [])
+        fallback_audio = _pick_ipk_audio(search_dirs, codename)
         if fallback_audio and fallback_audio.exists():
             media.audio_path = fallback_audio
             logger.info("Recovered missing audio source from extraction tree: %s", fallback_audio)
@@ -1300,6 +1436,8 @@ class BatchInstallWorker(QObject):
         fetch_codenames: Optional[list[str]] = None,
         fetch_source: str = "jdu",
         force_unlock_locked_status: bool = False,
+        bundle_ipk: Optional[Path] = None,
+        bundlelogic_ipk: Optional[Path] = None,
         parent: Optional[QObject] = None,
     ) -> None:
         super().__init__(parent)
@@ -1310,6 +1448,8 @@ class BatchInstallWorker(QObject):
         self._fetch_codenames = [c.strip() for c in (fetch_codenames or []) if c and c.strip()]
         self._fetch_source = (fetch_source or "jdu").strip().lower() or "jdu"
         self._force_unlock_locked_status = force_unlock_locked_status
+        self._bundle_ipk = bundle_ipk
+        self._bundlelogic_ipk = bundlelogic_ipk
 
     def run(self) -> None:
         try:
@@ -1407,7 +1547,14 @@ class BatchInstallWorker(QObject):
             # When explicit fetch codenames are provided, treat this as a pure fetch batch.
             if self._source_dir and not self._fetch_codenames:
                 if self._source_dir.is_file() and self._source_dir.suffix.lower() == ".ipk":
-                    candidates.append({"kind": "ipk", "path": self._source_dir})
+                    candidates.append(
+                        {
+                            "kind": "ipk",
+                            "path": self._source_dir,
+                            "bundle": self._bundle_ipk,
+                            "bundlelogic": self._bundlelogic_ipk,
+                        }
+                    )
                 elif self._source_dir.is_dir():
                     root_asset, root_nohud = find_html_pair(self._source_dir)
                     root_source_game = detect_html_source_game(root_asset)
@@ -1566,6 +1713,7 @@ class BatchInstallWorker(QObject):
                     map_names_for_candidate: list[str] = []
                     is_candidate_ipk = str(candidate["kind"]) == "ipk"
                     is_candidate_fetch = str(candidate["kind"]) == "fetch"
+                    supplemental_roots: list[Path] = []
                     if is_candidate_fetch:
                         from jd2021_installer.extractors.web_playwright import WebPlaywrightExtractor
 
@@ -1604,6 +1752,28 @@ class BatchInstallWorker(QObject):
                         map_dir = extractor.extract(batch_cache)
                         extracted_maps = sorted(set(maps_in_ipk) | set(getattr(extractor, "bundle_maps", []) or []))
                         map_names_for_candidate = extracted_maps
+
+                        bundle_ipk = candidate.get("bundle")
+                        bundlelogic_ipk = candidate.get("bundlelogic")
+                        if bundle_ipk and not isinstance(bundle_ipk, Path):
+                            bundle_ipk = Path(str(bundle_ipk))
+                        if bundlelogic_ipk and not isinstance(bundlelogic_ipk, Path):
+                            bundlelogic_ipk = Path(str(bundlelogic_ipk))
+
+                        if not bundle_ipk or not bundlelogic_ipk:
+                            bundle_guess, bundlelogic_guess = find_bundle_ipks(cpath.parent, exclude=cpath)
+                            if not bundle_ipk:
+                                bundle_ipk = bundle_guess
+                            if not bundlelogic_ipk:
+                                bundlelogic_ipk = bundlelogic_guess
+
+                        supplemental_root = batch_cache / "_supplemental"
+                        bundle_root = _extract_supplemental_ipk(bundle_ipk, supplemental_root, "bundle")
+                        if bundle_root:
+                            supplemental_roots.append(bundle_root)
+                        bundlelogic_root = _extract_supplemental_ipk(bundlelogic_ipk, supplemental_root, "bundlelogic")
+                        if bundlelogic_root:
+                            supplemental_roots.append(bundlelogic_root)
                     
                     if not map_names_for_candidate:
                         songdescs = list(map_dir.rglob("*songdesc*.tpl.ckd"))
@@ -1625,7 +1795,12 @@ class BatchInstallWorker(QObject):
                             
                         self.status.emit(f"[{map_name}] Parsing CKDs and metadata...")
                         from jd2021_installer.parsers.normalizer import normalize
-                        map_data = normalize(map_dir, codename=map_name, search_root=map_dir)
+                        map_data = normalize(
+                            map_dir,
+                            codename=map_name,
+                            search_root=map_dir,
+                            supplemental_roots=supplemental_roots,
+                        )
                         setattr(map_data, "_is_ipk_source", is_candidate_ipk)
 
                         canonical_name = (map_data.codename or map_name).strip()

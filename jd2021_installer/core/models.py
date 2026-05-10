@@ -415,6 +415,40 @@ class MapSync:
     video_ms: float = 0.0
 
 
+@dataclass
+class AutodanceTemplate:
+    """Container for Autodance Component Template."""
+    map_name: str
+
+    def as_ubiart_dict(self) -> Dict[str, Any]:
+        return {
+            "__class": "Actor_Template",
+            "WIP": 0,
+            "LOWPATH": 0,
+            "COMPONENTS": [{
+                "__class": "AutodanceComponent_Template",
+                "mapName": self.map_name
+            }]
+        }
+
+
+@dataclass
+class SoundComponentTemplate:
+    """Container for Sound Component Template."""
+    sound_list: List[Dict[str, List[str]]]
+
+    def as_ubiart_dict(self) -> Dict[str, Any]:
+        return {
+            "__class": "Actor_Template",
+            "WIP": 0,
+            "LOWPATH": 0,
+            "COMPONENTS": [{
+                "__class": "SoundComponent_Template",
+                "soundList": self.sound_list
+            }]
+        }
+
+
 # ---------------------------------------------------------------------------
 # Top-level normalized model
 # ---------------------------------------------------------------------------
@@ -437,6 +471,7 @@ class NormalizedMapData:
     media: MapMedia = field(default_factory=MapMedia)
     sync: MapSync = field(default_factory=MapSync)
     source_dir: Optional[Path] = None
+    supplemental_roots: List[Path] = field(default_factory=list)
     is_html_source: bool = False
     is_jdnext_source: bool = False
     video_start_time_override: Optional[float] = None

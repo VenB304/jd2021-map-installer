@@ -142,8 +142,7 @@ def _filter_by_codename(
     cn_lower = codename.lower()
 
     def _path_has_codename_component(path_str: str) -> bool:
-        rel = (os.path.relpath(path_str, base_dir) if base_dir else path_str).replace("\\", "/").lower()
-        parts = [p for p in rel.split("/") if p]
+        parts = [p for p in path_str.replace("\\", "/").lower().split("/") if p]
         return cn_lower in parts
 
     def _filename_matches_codename(path_str: str) -> bool:
@@ -248,6 +247,37 @@ def _find_ckd_files(
     return result
 
 
+def _normalize_supplemental_roots(
+    supplemental_roots: Optional[List[str | Path]],
+    primary_root: Path,
+) -> List[str]:
+    if not supplemental_roots:
+        return []
+
+    primary_resolved = primary_root.resolve()
+    deduped: list[str] = []
+    seen: set[str] = set()
+
+    for root in supplemental_roots:
+        if not root:
+            continue
+        path = Path(root)
+        if not path.exists() or not path.is_dir():
+            continue
+        try:
+            if path.resolve() == primary_resolved:
+                continue
+        except OSError:
+            pass
+        key = str(path)
+        if key in seen:
+            continue
+        seen.add(key)
+        deduped.append(key)
+
+    return deduped
+
+
 def _infer_ckd_stem_alias(directory: str, codename: Optional[str]) -> Optional[str]:
     """Infer an alternate CKD stem when source filenames don't match codename.
 
@@ -316,16 +346,28 @@ def _has_scoped_ckd_candidates(directory: str, pattern: str, codename: Optional[
 # ---------------------------------------------------------------------------
 
 def _extract_music_track(
-    directory: str, codename: Optional[str] = None
+    directory: str,
+    codename: Optional[str] = None,
+    supplemental_roots: Optional[List[str]] = None,
 ) -> MusicTrackStructure:
     """Find and parse a musictrack CKD → MusicTrackStructure."""
     ckd_paths = _find_ckd_files(directory, "*musictrack*.tpl.ckd", codename)
+    if not ckd_paths and supplemental_roots:
+        for root in supplemental_roots:
+            ckd_paths = _find_ckd_files(root, "*musictrack*.tpl.ckd", codename)
+            if ckd_paths:
+                logger.info("Using supplemental musictrack from %s", root)
+                break
     if not ckd_paths:
         # V1 Parity: In Readjust mode, we might not have the original CKD, 
         # but we can still work with the .trk in normalization.
         return None
 
-    data = load_ckd(ckd_paths[0])
+    try:
+        data = load_ckd(ckd_paths[0])
+    except ParseError as exc:
+        logger.debug("musictrack CKD parse error: %s", exc)
+        data = None
 
     if isinstance(data, MusicTrackStructure):
         res = data
@@ -483,7 +525,9 @@ def _merge_preview_fields_from_trk(music_track: Optional[MusicTrackStructure], t
 
 
 def _extract_song_desc(
-    directory: str, codename: Optional[str] = None
+    directory: str,
+    codename: Optional[str] = None,
+    supplemental_roots: Optional[List[str]] = None,
 ) -> SongDescription:
     """Find and parse a songdesc CKD → SongDescription."""
     def _songdesc_from_map_json_fallback() -> Optional[SongDescription]:
@@ -585,6 +629,13 @@ def _extract_song_desc(
 
     ckd_paths = _find_ckd_files(directory, "*songdesc*.tpl.ckd", codename)
 
+    if not ckd_paths and supplemental_roots:
+        for root in supplemental_roots:
+            ckd_paths = _find_ckd_files(root, "*songdesc*.tpl.ckd", codename)
+            if ckd_paths:
+                logger.info("Using supplemental songdesc from %s", root)
+                break
+
     if not ckd_paths:
         map_json_songdesc = _songdesc_from_map_json_fallback()
         if map_json_songdesc is not None:
@@ -600,7 +651,12 @@ def _extract_song_desc(
         logger.debug("songdesc.tpl.ckd not found; using fallback metadata")
         return _songdesc_from_html_fallback()
 
-    data = load_ckd(ckd_paths[0])
+    try:
+        data = load_ckd(ckd_paths[0])
+    except ParseError as exc:
+        logger.debug("songdesc CKD parse error: %s", exc)
+        data = None
+
     if isinstance(data, SongDescription):
         return data
 
@@ -1111,16 +1167,30 @@ def _extract_cinematic_tape(
     )
 
 
-def _discover_media(directory: str, codename: Optional[str] = None, search_root: Optional[str] = None) -> MapMedia:
-    """Scan directory (and optional search_root) for media assets and populate MapMedia.
-    
+def _discover_media(
+    directory: str,
+    codename: Optional[str] = None,
+    search_roots: Optional[List[str | Path]] = None,
+) -> MapMedia:
+    """Scan directory (and optional search roots) for media assets and populate MapMedia.
+
     Ported from V1 source_analysis.py recursive picking logic.
     """
     media = MapMedia()
     dir_path = Path(directory)
-    # If search_root is provided (e.g. root of a bundle IPK), use it for recursive scans
-    bg_search_dir = Path(search_root) if search_root else dir_path
     codename_low = codename.lower() if codename else None
+
+    scan_roots: list[Path] = [dir_path]
+    if search_roots:
+        for root in search_roots:
+            if not root:
+                continue
+            path = Path(root)
+            if not path.exists() or not path.is_dir():
+                continue
+            if path == dir_path:
+                continue
+            scan_roots.append(path)
 
     def _path_has_codename_component(path: Path) -> bool:
         if not codename_low:
@@ -1136,9 +1206,9 @@ def _discover_media(directory: str, codename: Optional[str] = None, search_root:
     # 1. Video files (.webm)
     # V1 Parity: prioritize quality suffixes and codename match. Scan both local and search_root.
     SUPPORTED_QUALITIES = ["ULTRA_HD", "ULTRA", "HIGH_HD", "HIGH", "MID_HD", "MID", "LOW_HD", "LOW"]
-    webms = list(dir_path.rglob("*.webm"))
-    if search_root and bg_search_dir != dir_path:
-        webms.extend(list(bg_search_dir.rglob("*.webm")))
+    webms: list[Path] = []
+    for root in scan_roots:
+        webms.extend(list(root.rglob("*.webm")))
     
     if webms:
         main_videos = []
@@ -1192,12 +1262,12 @@ def _discover_media(directory: str, codename: Optional[str] = None, search_root:
                 return name[: -len(suffix)]
         return path.stem.lower()
 
-    for ext_pattern in ("*.ogg", "*.opus", "*.wav", "*.wav.ckd"):
+    for ext_pattern in ("*.ogg", "*.opus", "*.wav", "*.wav.ckd", "*.ogg.ckd", "*.opus.ckd"):
         if audio_found: break
         
-        candidates = list(dir_path.rglob(ext_pattern))
-        if search_root and bg_search_dir != dir_path:
-            candidates.extend(list(bg_search_dir.rglob(ext_pattern)))
+        candidates: list[Path] = []
+        for root in scan_roots:
+            candidates.extend(list(root.rglob(ext_pattern)))
         if candidates:
             # Keep first-seen order while de-duplicating between both scans.
             candidates = list(dict.fromkeys(candidates))
@@ -1261,9 +1331,8 @@ def _discover_media(directory: str, codename: Optional[str] = None, search_root:
     # otherwise actor files like "*_cover_generic.act.ckd" can be selected.
     all_media_files: List[Path] = []
     for ext in ("*.jpg", "*.jpeg", "*.png", "*.tga", "*.jpg.ckd", "*.jpeg.ckd", "*.png.ckd", "*.tga.ckd"):
-        all_media_files.extend(list(dir_path.rglob(ext)))
-        if search_root and bg_search_dir != dir_path:
-            all_media_files.extend(list(bg_search_dir.rglob(ext)))
+        for root in scan_roots:
+            all_media_files.extend(list(root.rglob(ext)))
     if all_media_files:
         # Preserve scan order while removing duplicates from merged roots.
         all_media_files = list(dict.fromkeys(all_media_files))
@@ -1380,11 +1449,9 @@ def _discover_media(directory: str, codename: Optional[str] = None, search_root:
     # 5. Pictogram directory
     # V1 Parity: strictly scope to codename if possible
     media.pictogram_dir = None
-    picto_candidates = [d for d in dir_path.rglob("*") if d.is_dir() and "picto" in d.name.lower()]
-    if search_root and bg_search_dir != dir_path:
-        picto_candidates.extend(
-            [d for d in bg_search_dir.rglob("*") if d.is_dir() and "picto" in d.name.lower()]
-        )
+    picto_candidates: list[Path] = []
+    for root in scan_roots:
+        picto_candidates.extend([d for d in root.rglob("*") if d.is_dir() and "picto" in d.name.lower()])
     if picto_candidates:
         picto_candidates = list(dict.fromkeys(picto_candidates))
     if codename_low:
@@ -1394,9 +1461,9 @@ def _discover_media(directory: str, codename: Optional[str] = None, search_root:
         media.pictogram_dir = picto_candidates[0]
     else:
         # Fallback: finding parent of any picto CKD
-        picto_files = list(dir_path.rglob("*picto*.ckd"))
-        if search_root and bg_search_dir != dir_path:
-            picto_files.extend(list(bg_search_dir.rglob("*picto*.ckd")))
+        picto_files: list[Path] = []
+        for root in scan_roots:
+            picto_files.extend(list(root.rglob("*picto*.ckd")))
         if picto_files:
             picto_files = list(dict.fromkeys(picto_files))
         if codename_low:
@@ -1406,11 +1473,9 @@ def _discover_media(directory: str, codename: Optional[str] = None, search_root:
 
     # 6. Moves directory
     media.moves_dir = None
-    move_candidates = [d for d in dir_path.rglob("*") if d.is_dir() and "moves" in d.name.lower()]
-    if search_root and bg_search_dir != dir_path:
-        move_candidates.extend(
-            [d for d in bg_search_dir.rglob("*") if d.is_dir() and "moves" in d.name.lower()]
-        )
+    move_candidates: list[Path] = []
+    for root in scan_roots:
+        move_candidates.extend([d for d in root.rglob("*") if d.is_dir() and "moves" in d.name.lower()])
     if move_candidates:
         move_candidates = list(dict.fromkeys(move_candidates))
     if codename_low:
@@ -1570,7 +1635,8 @@ def normalize_sync(
 def normalize(
     directory: str | Path,
     codename: Optional[str] = None,
-    search_root: Optional[str | Path] = None
+    search_root: Optional[str | Path] = None,
+    supplemental_roots: Optional[List[str | Path]] = None,
 ) -> NormalizedMapData:
     """Normalize an extracted directory into a canonical NormalizedMapData.
 
@@ -1582,6 +1648,7 @@ def normalize(
         directory:   Path to the directory containing extracted files.
         codename:    Optional map codename for filtering in bundle IPKs.
         search_root: Optional root directory to scan for media (videos/audio).
+        supplemental_roots: Optional list of extra roots for CKDs/media (bundle/bundlelogic).
 
     Returns:
         A fully-populated ``NormalizedMapData`` instance.
@@ -1594,6 +1661,8 @@ def normalize(
     source_root = Path(directory)
     source_root_str = str(source_root)
 
+    supplemental_root_strs = _normalize_supplemental_roots(supplemental_roots, source_root)
+
     # V1 parity: in extracted bundle roots, resolve to this map's subtree to avoid cross-map bleed.
     map_source_dir = _resolve_map_source_dir(source_root, codename)
     source_dir = map_source_dir
@@ -1601,6 +1670,11 @@ def normalize(
 
     # 1. & 2. Extract basic metadata
     ckd_alias = _infer_ckd_stem_alias(source_root_str, codename)
+    if ckd_alias is None and supplemental_root_strs:
+        for root in supplemental_root_strs:
+            ckd_alias = _infer_ckd_stem_alias(root, codename)
+            if ckd_alias is not None:
+                break
 
     preferred_ckd_key = codename
     if ckd_alias and codename and ckd_alias.lower() != codename.lower():
@@ -1623,13 +1697,25 @@ def normalize(
             )
 
     try:
-        music_track = _extract_music_track(source_root_str, preferred_ckd_key)
+        music_track = _extract_music_track(
+            source_root_str,
+            preferred_ckd_key,
+            supplemental_roots=supplemental_root_strs,
+        )
         if music_track is None and ckd_alias and preferred_ckd_key != ckd_alias:
-            music_track = _extract_music_track(source_root_str, ckd_alias)
+            music_track = _extract_music_track(
+                source_root_str,
+                ckd_alias,
+                supplemental_roots=supplemental_root_strs,
+            )
     except NormalizationError:
         music_track = None
 
-    song_desc = _extract_song_desc(source_root_str, codename)
+    song_desc = _extract_song_desc(
+        source_root_str,
+        codename,
+        supplemental_roots=supplemental_root_strs,
+    )
     effective_codename = codename or song_desc.map_name
     _apply_jdnext_metadata_songdesc_overrides(source_root_str, song_desc)
     dance_tape = _extract_dance_tape(source_root_str, preferred_ckd_key)
@@ -1646,13 +1732,19 @@ def normalize(
 
     # Media discovery uses the resolved map subtree first, with full extraction root
     # as search_root fallback for assets that live outside world/maps/<codename>.
+    media_search_roots: list[str] = []
     if search_root:
-        search_root_str = str(search_root)
+        media_search_roots.append(str(search_root))
     elif source_dir != source_root:
-        search_root_str = source_root_str
-    else:
-        search_root_str = None
-    media = _discover_media(source_dir_str, codename, search_root=search_root_str)
+        media_search_roots.append(source_root_str)
+    if supplemental_root_strs:
+        media_search_roots.extend(supplemental_root_strs)
+
+    media = _discover_media(
+        source_dir_str,
+        codename,
+        search_roots=media_search_roots or None,
+    )
 
     # Keep SongDesc coach metadata aligned with discovered media assets.
     inferred_coaches = _infer_coach_count_from_media(media)
@@ -1777,6 +1869,7 @@ def normalize(
         sync=sync_data,
         video_start_time_override=sync_data.video_ms / 1000.0,
         source_dir=source_root,
+        supplemental_roots=[Path(p) for p in supplemental_root_strs],
         is_html_source=is_html_source,
         is_jdnext_source=is_jdnext_source,
         has_autodance=has_autodance,
@@ -1784,11 +1877,11 @@ def normalize(
 
     # Validation
     if not result.music_track:
-        raise NormalizationError(f"Critical data (musictrack) for '{effective_codename}' is missing")
+        logger.warning("Critical data (musictrack) for '%s' is missing. Synthesizing empty track.", effective_codename)
+        result.music_track = MusicTrackStructure()
+        
     if not result.music_track.markers:
-        raise ValidationError(
-            f"MusicTrack for '{effective_codename}' has no beat markers"
-        )
+        logger.warning("MusicTrack for '%s' has no beat markers. Proceeding without beat synchronization.", effective_codename)
 
     logger.info(
         "Normalized '%s': %d markers, %d dance clips, %d karaoke clips",
