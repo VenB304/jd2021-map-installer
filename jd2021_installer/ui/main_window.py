@@ -2454,7 +2454,8 @@ class MainWindow(QMainWindow):
             self.append_log(
                 f"[{codename}] Opening AlbumCoach customizer (always_customize)."
             )
-            dlg = AlbumCoachCustomizerDialog(coach_images, parent=self)
+            dlg = AlbumCoachCustomizerDialog(coach_images, parent=self,
+                                              theme=getattr(self._config, "theme", "dark"))
             dlg.exec()
             result_image = dlg.result_image
             never_ask = False
@@ -2468,7 +2469,8 @@ class MainWindow(QMainWindow):
                 "Prompting user."
             )
             result_image, never_ask, new_behavior = AlbumCoachCustomizerDialog.prompt(
-                coach_images, parent=self
+                coach_images, parent=self,
+                theme=getattr(self._config, "theme", "dark"),
             )
 
         # Handle "never ask again" preference persistence.
