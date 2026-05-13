@@ -8,9 +8,10 @@ constraints to Kinect joint IDs in the Durango edge table.
 
 Architecture:
     Phase 1 - JDNext AST Decompiler: Structurally parses the Float64
-              bytecode using declared section descriptors, extracting
-              per-joint X/Y constraints tagged with their joint ID from
-              the JointsCameraGestureQuantifier enum.  Type B sections
+              bytecode using declared section descriptors and a fixed
+              112-float section payload, extracting per-joint X/Y
+              constraints tagged with their joint ID from the
+              JointsCameraGestureQuantifier enum.  Type B sections
               (112 constraints) are decomposed as 14 joints × 8 values.
     Phase 2 - Template Preparation: Reads the Durango little-endian
               template, locates the edge table, and calibrates the
@@ -209,6 +210,8 @@ _METADATA_THRESHOLD = 1.05
 #   Then state flags and tail
 
 _JDNEXT_HEADER_SIZE = 30  # Fixed header (opcode[0..29])
+_JDNEXT_SECTION_RAW_SIZE = 112
+_JDNEXT_TRAILER_SIZE = 15
 _JDNEXT_SECTION_A_XY = 88
 _JDNEXT_SECTION_A_TM = 7
 _JDNEXT_SECTION_B_XY = 112
@@ -279,33 +282,48 @@ def _decompile_jdnext(
         )
         return _decompile_jdnext_fallback(raw, gesture_path.name)
 
-    # Skip any remaining opcode-zone integers before the constraint zone
-    while idx < len(raw):
-        v = raw[idx]
-        if v == int(v) and abs(v) < 100_000:
-            idx += 1
-        else:
-            break
-
+    # The descriptor block is the boundary marker. Do not keep skipping
+    # integer-like values here, because valid constraint values can also be
+    # whole numbers and this heuristic can drift into the real data region.
     constraint_zone_start = idx
 
+    if declared_length and declared_length != len(raw):
+        logger.debug(
+            "JDNext gesture '%s': declared_length=%d, actual_floats=%d",
+            gesture_path.name, declared_length, len(raw),
+        )
+
     # --- Extract joint-tagged constraints and timing values ---
+    # The raw JDNext source keeps a fixed 112-float payload per section.
+    # The descriptor counts describe how to interpret that payload, not
+    # how far to advance through the file.
     joint_constraints: list[tuple[int, float]] = []
     timing_values: list[float] = []
     offset = constraint_zone_start
 
     for sec_idx, (c_count, t_count) in enumerate(sec_descs):
-        if offset + c_count + t_count > len(raw):
+        section_end = offset + _JDNEXT_SECTION_RAW_SIZE
+        if section_end > len(raw):
             logger.warning(
                 "JDNext gesture '%s': section %d overflows (offset=%d, "
                 "need=%d, have=%d)",
                 gesture_path.name, sec_idx, offset,
-                c_count + t_count, len(raw) - offset,
+                _JDNEXT_SECTION_RAW_SIZE, len(raw) - offset,
             )
             break
 
-        section_constraints = raw[offset:offset + c_count]
-        section_timing = raw[offset + c_count:offset + c_count + t_count]
+        section_raw = raw[offset:section_end]
+
+        if c_count == _JDNEXT_SECTION_A_XY and t_count == _JDNEXT_SECTION_A_TM:
+            section_constraints = section_raw[:_JDNEXT_SECTION_A_XY]
+            section_timing = section_raw[_JDNEXT_SECTION_A_XY:]
+        elif c_count == _JDNEXT_SECTION_B_XY and t_count == _JDNEXT_SECTION_B_TM:
+            section_constraints = section_raw[:_JDNEXT_SECTION_B_XY]
+            section_timing = section_raw[_JDNEXT_SECTION_B_XY:]
+        else:
+            constraint_len = min(c_count, len(section_raw))
+            section_constraints = section_raw[:constraint_len]
+            section_timing = section_raw[constraint_len:constraint_len + t_count]
 
         if c_count == _JDNEXT_SECTION_B_XY:
             # Type B section: 112 = 14 joints × 8 values each
@@ -323,7 +341,7 @@ def _decompile_jdnext(
             if abs(tv) > 0.001:
                 timing_values.append(tv)
 
-        offset += c_count + t_count
+        offset += _JDNEXT_SECTION_RAW_SIZE
 
     logger.debug(
         "JDNext decompile '%s': %d total floats, %d sections, "
@@ -418,7 +436,8 @@ def _decompile_jdnext_fallback(
     frac_run = 0
     for i in range(1, len(raw)):
         v = raw[i]
-        is_int = (v == int(v)) and abs(v) < 100_000
+        # Heuristic removed: treating all as non-integer to stop skip-behavior
+        is_int = False
         if not is_int:
             frac_run += 1
             if frac_run >= 3:
