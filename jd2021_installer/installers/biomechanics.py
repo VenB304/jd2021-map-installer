@@ -135,6 +135,12 @@ def synthesize_depth_analytical(X_phys: np.ndarray, Y_phys: np.ndarray, Z_global
         (10, 12), (12, 14)
     ]
     
+    # Determine facing direction per frame: Right Shoulder X (3) vs Left Shoulder X (2)
+    # If Right Shoulder has a larger X coordinate, the player is facing forward.
+    facing_forward = X_phys[:, 3] > X_phys[:, 2]
+    # direction array: 1.0 for facing forward, -1.0 for facing backward
+    direction = np.where(facing_forward, 1.0, -1.0)
+    
     for (p, c) in tree:
         if p < num_joints and c < num_joints:
             target_len = STANDARD_BONES.get((p, c), STANDARD_BONES.get((c, p), 0.2))
@@ -146,15 +152,14 @@ def synthesize_depth_analytical(X_phys: np.ndarray, Y_phys: np.ndarray, Z_global
             missing_sq = target_len**2 - (x_diff**2 + y_diff**2)
             z_diff = np.sqrt(np.maximum(0, missing_sq))
             
-            # Symmetrical Joint handling:
-            # If this is a right-side symmetrical joint (ShoulderRight, HipRight) whose parent is the center,
-            # push it BACKWARD (+z_diff) to balance the left-side joint which was pushed FORWARD (-z_diff).
-            # This prevents both shoulders/hips from projecting forward and forming a V-shape when sideways.
+            # Symmetrical Joint handling (180-Degree Spin Fix):
+            # Evaluate facing direction to prevent depth inversion when the player turns around.
             if c in (3, 10):  # ShoulderRight, HipRight
-                Z_opt[:, c] = Z_opt[:, p] + z_diff
+                Z_opt[:, c] = Z_opt[:, p] + (z_diff * direction)
             else:
                 # Assume limbs generally reach FORWARD (towards camera = negative Z direction)
-                Z_opt[:, c] = Z_opt[:, p] - z_diff
+                # If turned around, direction=-1 pushes limbs AWAY from camera (+Z)
+                Z_opt[:, c] = Z_opt[:, p] - (z_diff * direction)
             
     # Apply a light temporal smoothing to fix any popping from the distance clamps
     if num_frames >= 5:
@@ -220,21 +225,59 @@ def simulate_inverse_dynamics(X: np.ndarray, Y: np.ndarray, Z: np.ndarray,
     torque = np.zeros_like(X)
     muscle_force = np.zeros_like(X)
     
-    # Simplified approximation for compiler threshold passing:
-    # Torque is roughly proportional to moment arm * mass * pseudo-acceleration
-    # Since we need to trick the AdaBoost stumps, we synthesize a signal that scales
-    # strongly with explosive movements (high velocity & high positional spread).
+    # Define parent mapping for angular velocity calculation
+    # Parent mapping derived from the standard tree:
+    # 8(Root) -> 1, 9, 10. 1 -> 2, 3. 2 -> 4 -> 6. 3 -> 5 -> 7.
+    # 9 -> 11 -> 13. 10 -> 12 -> 14.
+    parent_map = {1:8, 9:8, 10:8, 2:1, 3:1, 4:2, 6:4, 5:3, 7:5, 11:9, 13:11, 12:10, 14:12}
+    
+    dt = 1.0 / 30.0  # Assuming 30 FPS for angular derivative
     
     for j in range(num_joints):
-        speed_3d = np.sqrt(Vx[:, j]**2 + Vy[:, j]**2 + Vz[:, j]**2)
+        # Determine parent joint to form a limb vector. If no parent, use root (8)
+        p = parent_map.get(j, 8)
         
-        # Pseudo-Lagrangian heuristic: kinetic energy metric
-        # Assuming an average segment mass of 2.0kg and moment arm 0.05m
+        if j == 8 or j == p:
+            # Root joint or no valid vector
+            torque[:, j] = 0.0
+            muscle_force[:, j] = 0.0
+            continue
+            
+        # Calculate limb vector
+        limb_vector = np.column_stack((X[:, j] - X[:, p], Y[:, j] - Y[:, p], Z[:, j] - Z[:, p]))
+        
+        # Normalize limb vector safely
+        norms = np.linalg.norm(limb_vector, axis=1, keepdims=True)
+        # Avoid division by zero
+        norms[norms == 0] = 1e-6
+        limb_vector_normalized = limb_vector / norms
+        
+        # Angular velocity via cross product of sequential frames
+        # Padded to maintain array shape
+        cross_prod = np.cross(limb_vector_normalized[:-1], limb_vector_normalized[1:])
+        ang_vel = np.zeros(num_frames)
+        ang_vel[1:] = np.linalg.norm(cross_prod, axis=1) / dt
+        ang_vel[0] = ang_vel[1] if num_frames > 1 else 0.0
+        
+        # Angular acceleration (1st derivative of angular velocity)
+        if num_frames >= 3:
+            ang_accel = np.gradient(ang_vel, dt)
+        else:
+            ang_accel = np.zeros(num_frames)
+        
+        # Biomechanical properties
         segment_mass = 2.0
         moment_arm = 0.05
         
-        # Synthesize a continuous torque signal
-        torque[:, j] = speed_3d * segment_mass * 9.81 * moment_arm
+        # Moment of Inertia for a point mass approximation: I = m * r^2
+        # We'll use a simplified scalar moment of inertia.
+        # Averaging limb length to avoid noisy inertia scaling
+        r_avg = np.mean(norms)
+        moment_of_inertia = segment_mass * (r_avg ** 2)
+        
+        # True torque approximation: Torque = I * angular_acceleration
+        # This prevents the "flail" exploit by requiring actual rotation.
+        torque[:, j] = moment_of_inertia * ang_accel
         
         # Muscle Force is proportional to Torque / Moment Arm
         muscle_force[:, j] = torque[:, j] / moment_arm
