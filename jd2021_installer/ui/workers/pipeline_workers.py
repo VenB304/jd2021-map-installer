@@ -1102,10 +1102,6 @@ def reprocess_audio(
         ):
             source_is_jdnext = True
 
-    # Preserve native IPK intro AMB assets when present; apply generated intro
-    # flow only for JDNext sources.
-    intro_amb_attempt_enabled = source_is_jdnext
-    
     media = map_data.media
 
     if (not media.audio_path or not media.audio_path.exists()) and map_data.source_dir:
@@ -1123,10 +1119,16 @@ def reprocess_audio(
 
     # Generates audio/<codename>.wav and .ogg
     convert_audio(media.audio_path, codename, target_dir, a_offset, config)
-    
+
     # Generates audio/amb/<intro>.wav/tpl/ilu and injects into audio ISC
     ogg_path = target_dir / "audio" / f"{codename}.ogg"
     v_override = map_data.effective_video_start_time
+
+    # Preserve native IPK intro AMB assets when present; apply generated intro
+    # flow for JDNext/HTML sources and any map with negative offsets.
+    intro_amb_attempt_enabled = (
+        source_is_jdnext or source_is_html or a_offset < 0 or (v_override is not None and v_override < 0)
+    )
     
     if intro_amb_attempt_enabled:
         # Use beat marker data if available for precise pre-roll
@@ -1222,8 +1224,10 @@ def reprocess_audio_readjust(
             source_is_jdnext = True
 
     # Preserve native IPK intro AMB assets when present; apply generated intro
-    # flow only for JDNext sources.
-    intro_amb_attempt_enabled = source_is_jdnext
+    # flow for JDNext/HTML sources and any map with negative offsets.
+    intro_amb_attempt_enabled = (
+        source_is_jdnext or source_is_html or a_offset < 0 or (v_override is not None and v_override < 0)
+    )
 
     codename = map_data.codename
     media = map_data.media
@@ -2459,7 +2463,7 @@ def install_map_to_game(
         if not source_is_html and map_data.source_dir and map_data.source_dir.exists():
             source_is_html = any(map_data.source_dir.glob("*.html")) or any(map_data.source_dir.glob("**/assets.html"))
 
-        normalize_intro_clip = source_is_jdnext
+        normalize_intro_clip = source_is_jdnext or source_is_html or initial_a_offset < 0
         if not normalize_intro_clip and not _mainsequence_has_any_clip_entries(map_target, codename):
             logger.warning(
                 "MainSequence has no clip entries for '%s'; enabling intro clip recovery injection.",

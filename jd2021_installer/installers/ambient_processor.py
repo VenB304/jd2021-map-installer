@@ -878,12 +878,13 @@ def process_ambient_directory(
                         logger.debug("Decoded AMB referenced audio: %s", target_wav.name)
                     else:
                         # Keep parity with V1: create a tiny silent fallback when referenced audio is missing.
+                        # Using stereo to match engine expectations for AMB clips.
                         with wave.open(str(target_wav), "w") as wf:
-                            wf.setnchannels(1)
+                            wf.setnchannels(2)
                             wf.setsampwidth(2)
                             wf.setframerate(48000)
-                            wf.writeframes(b"\x00\x00" * 4800)
-                        logger.debug("Created silent AMB placeholder: %s", target_wav.name)
+                            wf.writeframes(b"\x00\x00\x00\x00" * 12000)  # 0.25s
+                        logger.warning("Missing AMB audio: created silent fallback for %s", target_wav.name)
 
                 logger.debug("Processed AMB template: %s", ckd.name)
                 count += 1
