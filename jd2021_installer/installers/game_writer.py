@@ -1087,8 +1087,7 @@ def write_game_files(
         _write_main_scene_isc(target, name, map_data.has_autodance)
 
         # Autodance stubs (placeholder so recap screen doesn't crash)
-        if map_data.has_autodance:
-            _write_autodance_stubs(target, name, vst)
+        _write_autodance_stubs(target, name, vst)
 
         # Cinematics stubs (MainSequence tape + ISC)
         _write_cinematics_stubs(target, name)
