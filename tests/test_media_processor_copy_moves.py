@@ -155,3 +155,63 @@ def test_copy_moves_skip_gestures_synthesizes_to_durango(tmp_path: Path) -> None
     # Skipped gesture is still preserved in durango/ (canonical location)
     assert (durango_out / "ignored_when_skip_true.gesture").exists()
     assert copied >= 2
+
+
+def test_copy_moves_jdnext_prefer_discorope(tmp_path: Path) -> None:
+    # Test case 1: JDNext map without camera gestures (skip_gestures=False, source_is_jdnext=True)
+    # It must use discorope.gesture (24352 bytes)
+    src_no_gestures = tmp_path / "src_no_gestures"
+    src_no_gestures.mkdir()
+    
+    target_no_gestures = tmp_path / "target_no_gestures"
+    timeline_no_gestures = target_no_gestures / "timeline"
+    timeline_no_gestures.mkdir(parents=True)
+    
+    # We reference a missing gesture in dtape, triggering the recovery path
+    (timeline_no_gestures / "test_map_TML_Dance.dtape").write_text(
+        'params = { Tape = { Clips = {\n'
+        '  { MotionClip = { ClassifierPath = "world/maps/test_map/timeline/moves/test_gesture.gesture" } }\n'
+        '} } }',
+        encoding="utf-8",
+    )
+    
+    copied = copy_moves(src_no_gestures, target_no_gestures, skip_gestures=False, source_is_jdnext=True)
+    assert copied == 1
+    
+    dest_file = target_no_gestures / "timeline" / "moves" / "durango" / "test_gesture.gesture"
+    assert dest_file.exists()
+    # Check that it copied discorope.gesture (size 24352) rather than durango_template.gesture (size 24351)
+    assert dest_file.stat().st_size == 24352
+
+    # Test case 2: JDNext map with camera gestures (skip_gestures=True, source_is_jdnext=True)
+    # Existing source gestures are preserved, while any additional referenced gestures are synthesized from durango_template
+    src_with_gestures = tmp_path / "src_with_gestures"
+    durango_src = src_with_gestures / "durango"
+    durango_src.mkdir(parents=True)
+    _write_binary_gesture(durango_src / "test_gesture.gesture")
+    
+    target_with_gestures = tmp_path / "target_with_gestures"
+    timeline_with_gestures = target_with_gestures / "timeline"
+    timeline_with_gestures.mkdir(parents=True)
+    (timeline_with_gestures / "test_map_TML_Dance.dtape").write_text(
+        'params = { Tape = { Clips = {\n'
+        '  { MotionClip = { ClassifierPath = "world/maps/test_map/timeline/moves/test_gesture.gesture" } },\n'
+        '  { MotionClip = { ClassifierPath = "world/maps/test_map/timeline/moves/missing_gesture.gesture" } }\n'
+        '} } }',
+        encoding="utf-8",
+    )
+    
+    copied = copy_moves(src_with_gestures, target_with_gestures, skip_gestures=True, source_is_jdnext=True)
+    assert copied >= 2
+    
+    dest_file_existing = target_with_gestures / "timeline" / "moves" / "durango" / "test_gesture.gesture"
+    dest_file_missing = target_with_gestures / "timeline" / "moves" / "durango" / "missing_gesture.gesture"
+    
+    assert dest_file_existing.exists()
+    assert dest_file_missing.exists()
+    
+    # Original test_gesture.gesture from source should be preserved (512 bytes)
+    assert dest_file_existing.stat().st_size == 512
+    # Missing missing_gesture.gesture should be synthesized from durango_template.gesture (24351 bytes)
+    assert dest_file_missing.stat().st_size == 24351
+
