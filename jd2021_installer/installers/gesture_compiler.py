@@ -764,16 +764,16 @@ def _load_and_hybridize(
 
 def compile_hybrid_gesture(
     jdnext_src_path: Path,
-    template_path: Path,
+    template_path: Path | None,
     output_path: Path,
 ) -> bool:
-    """Compile a JDNext gesture into a Durango binary using direct ta/tb mapping.
+    """Compile a JDNext gesture into a Durango binary using dynamic HMM generation.
+
+    The template_path parameter is retained for API compatibility but is no longer
+    used — state tables and edges are now generated procedurally.
     """
     try:
         if not jdnext_src_path.exists():
-            return False
-
-        if not template_path.exists():
             return False
 
         # 1. Parse JDNext Data using existing robust parser
@@ -815,85 +815,31 @@ def compile_hybrid_gesture(
         if not rw_pairs:
             rw_pairs = [(0.5, 0.5)]
 
-        # 2. Parse Donor Template
-        template_data = bytearray(template_path.read_bytes())
+        # 2. Dynamically Generate State Graph (No Template Needed!)
+        from jd2021_installer.installers.hmm_generator import generate_state_table, build_gesture_binary
+        import struct
         
-        # Detect format properly to get correct edge sizes!
-        fmt_name, endian, edges_offset = _detect_template_format(template_data)
-        num_edges = struct.unpack_from(f"{endian}i", template_data, edges_offset)[0]
+        num_sections = max(1, len(joint_constraints) // 10)
+        num_jdnext_constraints = len(joint_constraints)
         
-        # FIX: Durango/X360 edges are 12 bytes! 40 bytes is the state record size.
-        edge_size = 12
-        edge_start = len(template_data) - (num_edges * edge_size)
+        logger.info("Generating dynamic HMM state table for %d constraints...", num_jdnext_constraints)
+        state_table, num_states, state_to_joint = generate_state_table(
+            num_sections, num_jdnext_constraints, None
+        )
         
-        if edge_start < 0 or edge_start >= len(template_data):
-            logger.error("Donor gesture has invalid edge table offset")
-            return False
-        
-        # Define early to support Zone B joint extraction
-        durango_to_jdnext = {v: k for k, v in _JDNEXT_TO_DURANGO_JOINT_MAP.items()}
-
-        # Define priority map for Durango joints to select the most specific/distal joint in Zone B
-        # 6: WristLeft, 10: WristRight, 14: AnkleLeft, 18: AnkleRight (distal tracking joints)
-        # 5: ElbowLeft, 9: ElbowRight, 13: KneeLeft, 17: KneeRight (mid limb joints)
-        # 4: ShoulderLeft, 8: ShoulderRight, 12: HipLeft, 16: HipRight (proximal limb joints)
-        # 20: SpineShoulder, 0: SpineBase (trunk joints)
-        JOINT_PRIORITY = {
-            6: 4, 10: 4, 14: 4, 18: 4,
-            5: 3, 9: 3, 13: 3, 17: 3,
-            4: 2, 8: 2, 12: 2, 16: 2,
-            20: 1, 0: 1
-        }
-
-        # Parse Zone A to build state_to_joint map
-        state_start = 59
-        off = 0
-        state_id_counter = 1
-        state_to_joint = {}
-        
-        while off + 20 <= len(template_data):
-            fields = struct.unpack_from(f'{endian}5i', template_data, state_start + off)
-            state_id, flag, joint_id, edge_group, padding = fields
-            if state_id == state_id_counter and flag in (0, 1) and 0 <= edge_group < 25:
-                state_to_joint[state_id] = joint_id
-                off += 20
-                state_id_counter += 1
-            else:
-                break # Reached Zone B
-                
-        # Parse Zone B to build state_to_type map and extract joints for state_to_joint
+        # Parse Zone A to build state_to_type map (sequential tracking to avoid Zone B bleed)
         state_to_type = {}
-        while off + 16 <= len(template_data):
-            rec_type = struct.unpack_from(f'{endian}i', template_data, state_start + off)[0]
-            if 3 <= rec_type <= 35:
-                # Zone B records start with: [type, state_id, ...]
-                sid = struct.unpack_from(f'{endian}i', template_data, state_start + off + 4)[0]
-                state_to_type[sid] = rec_type
-                
-                size = {3: 24, 9: 24, 10: 24, 18: 20, 19: 20, 20: 20, 29: 20}.get(rec_type, 16)
-                
-                # Extract joint fields (if any) from this Zone B state record to map it correctly
-                record_fields = struct.unpack_from(f'{endian}{size // 4}i', template_data, state_start + off)
-                best_joint = None
-                best_priority = -1
-                
-                for val in record_fields[2:]:
-                    if val in durango_to_jdnext:
-                        pri = JOINT_PRIORITY.get(val, 0)
-                        if pri > best_priority:
-                            best_priority = pri
-                            best_joint = val
-                
-                if best_joint is not None:
-                    state_to_joint[sid] = best_joint
-                else:
-                    state_to_joint[sid] = 10  # default to Right Wrist fallback
-                
-                off += size
+        off = 0
+        expected_sid = 1
+        while off + 20 <= len(state_table):
+            fields = struct.unpack_from('<5i', state_table, off)
+            if fields[0] == expected_sid:
+                state_to_type[fields[0]] = fields[3] # edge_group
+                off += 20
+                expected_sid += 1
             else:
-                break # End of State Table
+                break
                 
-        # 3. Biomechanical Pre-computation
         # 3. Biomechanical Pre-computation
         import math as _math
         import numpy as np
@@ -904,7 +850,8 @@ def compile_hybrid_gesture(
             simulate_inverse_dynamics
         )
         
-        num_states = len(state_to_joint)
+        durango_to_jdnext = {v: k for k, v in _JDNEXT_TO_DURANGO_JOINT_MAP.items()}
+        # num_states from generate_state_table already includes implicit state 0
         
         # Build 3D sequences
         num_frames = max((len(pairs) for pairs in joint_xy.values()), default=0)
@@ -970,36 +917,42 @@ def compile_hybrid_gesture(
             mean_variance + k_activity * std_variance
         )
         
-        # 4. AdaBoost Ensemble Weight Redistribution (Pass 1)
-        total_original_weight = 0.0
-        total_surviving_weight = 0.0
-        irrecoverable_types = {18, 19, 20, 21, 22, 23, 35}  # Optical flow, TimeSpaceAngles
+        # 4. Procedurally Generate Edges
+        # Real Kinect files consistently use 1000 edges. We match that.
+        # Types 21-23, 35 are optical-flow/TimeSpaceAngle features that cannot
+        # be derived from 2D camera data. Types 18-20 (torque) CAN now be
+        # computed by biomechanics.py, so they are no longer irrecoverable.
+        irrecoverable_types = {21, 22, 23, 35}  # Optical flow / TimeSpaceAngles only
         
         edge_data_cache = []
+        num_edges = 1000  # Match real Kinect gesture edge count
+        
+        import random as _random
+        rng = _random.Random(1337)
+        
         for e in range(num_edges):
-            eoff = edge_start + e * edge_size
-            ta, tb, sid = struct.unpack_from(f'{endian}ffi', template_data, eoff)
+            # Chronologically link edge to state
+            sid = max(1, min(int((e / num_edges) * num_states) + 1, num_states - 1))
             native_type = state_to_type.get(sid, 0)
-            is_gating = (abs(ta) > 10.0)
             
-            if not is_gating:
-                total_original_weight += abs(ta)
-                if native_type not in irrecoverable_types:
-                    total_surviving_weight += abs(ta)
+            # Initial ta direction: alternating positive/negative for balanced stumps
+            ta = rng.choice([-0.8, -0.6, -0.4, 0.4, 0.6, 0.8])
+            tb = 0.0
+            is_gating = False  # Adaptive gating will promote this later if needed
                     
             edge_data_cache.append({
-                'eoff': eoff, 'ta': ta, 'tb': tb, 'sid': sid,
+                'ta': ta, 'tb': tb, 'sid': sid,
                 'native_type': native_type, 'is_gating': is_gating
             })
-            
-        gamma = total_original_weight / max(total_surviving_weight, 1e-6)
-        logger.debug("AdaBoost weight redistribution: gamma multiplier = %.3f", gamma)
+        
+        # gamma is 1.0 for procedural edges (no pre-trained weights to redistribute)
+        gamma = 1.0
 
-        # 5. Inject synthesized constraints into Donor Edges (Pass 2)
-        rw_edge_count = 0
+        # 5. Inject synthesized constraints into Procedural Edges (Pass 2)
+        processed_edges = 0
+        final_edges = []
         
         for e_info in edge_data_cache:
-            eoff = e_info['eoff']
             ta = e_info['ta']
             tb = e_info['tb']
             sid = e_info['sid']
@@ -1135,13 +1088,16 @@ def compile_hybrid_gesture(
             else:
                 ta_val = ta
 
-            struct.pack_into(f'{endian}f', template_data, eoff, ta_val)
-            struct.pack_into(f'{endian}f', template_data, eoff + 4, tb_val)
-            rw_edge_count += 1
+            final_edges.append((ta_val, tb_val, sid))
+            processed_edges += 1
                     
+        # 6. Final Binary Assembly
+        padded_params = list(timing_values) + [0.0] * 13
+        final_binary = build_gesture_binary(state_table, num_states, padded_params[:13], final_edges)
+        
         output_path.parent.mkdir(parents=True, exist_ok=True)
-        output_path.write_bytes(template_data)
-        logger.info("Successfully compiled hybrid gesture with %d mapped Right Arm edges: %s", rw_edge_count, output_path.name)
+        output_path.write_bytes(final_binary)
+        logger.info("Successfully compiled dynamic hybrid gesture with %d mapped hybrid edges: %s", processed_edges, output_path.name)
         return True
         
     except Exception as e:
