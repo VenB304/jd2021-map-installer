@@ -2583,7 +2583,12 @@ def install_map_to_game(
             has_camera_gestures = bool(list(media.moves_dir.rglob("*.gesture")))
             should_skip_gestures = has_camera_gestures  # Skip copying only if we have source gestures to compile
         
-        copy_moves(media.moves_dir, map_target, skip_gestures=should_skip_gestures)
+        copy_moves(
+            media.moves_dir,
+            map_target,
+            skip_gestures=should_skip_gestures,
+            source_is_jdnext=source_is_jdnext,
+        )
 
     # 5a. JDNext gesture compilation / surrogate fallback
     #     copy_moves() above skips .gesture files for JDNext sources because
