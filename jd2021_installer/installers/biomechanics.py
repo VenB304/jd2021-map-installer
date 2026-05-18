@@ -136,8 +136,8 @@ def synthesize_depth_analytical(X_phys: np.ndarray, Y_phys: np.ndarray, Z_global
     ]
     
     # Determine facing direction per frame: Right Shoulder X (3) vs Left Shoulder X (2)
-    # If Right Shoulder has a larger X coordinate, the player is facing forward.
-    facing_forward = X_phys[:, 3] > X_phys[:, 2]
+    # If Left Shoulder has a larger X coordinate, the player is facing forward.
+    facing_forward = X_phys[:, 2] > X_phys[:, 3]
     # direction array: 1.0 for facing forward, -1.0 for facing backward
     direction = np.where(facing_forward, 1.0, -1.0)
     

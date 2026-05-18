@@ -830,6 +830,21 @@ def compile_hybrid_gesture(
             logger.error("Donor gesture has invalid edge table offset")
             return False
         
+        # Define early to support Zone B joint extraction
+        durango_to_jdnext = {v: k for k, v in _JDNEXT_TO_DURANGO_JOINT_MAP.items()}
+
+        # Define priority map for Durango joints to select the most specific/distal joint in Zone B
+        # 6: WristLeft, 10: WristRight, 14: AnkleLeft, 18: AnkleRight (distal tracking joints)
+        # 5: ElbowLeft, 9: ElbowRight, 13: KneeLeft, 17: KneeRight (mid limb joints)
+        # 4: ShoulderLeft, 8: ShoulderRight, 12: HipLeft, 16: HipRight (proximal limb joints)
+        # 20: SpineShoulder, 0: SpineBase (trunk joints)
+        JOINT_PRIORITY = {
+            6: 4, 10: 4, 14: 4, 18: 4,
+            5: 3, 9: 3, 13: 3, 17: 3,
+            4: 2, 8: 2, 12: 2, 16: 2,
+            20: 1, 0: 1
+        }
+
         # Parse Zone A to build state_to_joint map
         state_start = 59
         off = 0
@@ -846,7 +861,7 @@ def compile_hybrid_gesture(
             else:
                 break # Reached Zone B
                 
-        # Parse Zone B to build state_to_type map
+        # Parse Zone B to build state_to_type map and extract joints for state_to_joint
         state_to_type = {}
         while off + 16 <= len(template_data):
             rec_type = struct.unpack_from(f'{endian}i', template_data, state_start + off)[0]
@@ -855,8 +870,25 @@ def compile_hybrid_gesture(
                 sid = struct.unpack_from(f'{endian}i', template_data, state_start + off + 4)[0]
                 state_to_type[sid] = rec_type
                 
-                # Advance by record size
                 size = {3: 24, 9: 24, 10: 24, 18: 20, 19: 20, 20: 20, 29: 20}.get(rec_type, 16)
+                
+                # Extract joint fields (if any) from this Zone B state record to map it correctly
+                record_fields = struct.unpack_from(f'{endian}{size // 4}i', template_data, state_start + off)
+                best_joint = None
+                best_priority = -1
+                
+                for val in record_fields[2:]:
+                    if val in durango_to_jdnext:
+                        pri = JOINT_PRIORITY.get(val, 0)
+                        if pri > best_priority:
+                            best_priority = pri
+                            best_joint = val
+                
+                if best_joint is not None:
+                    state_to_joint[sid] = best_joint
+                else:
+                    state_to_joint[sid] = 10  # default to Right Wrist fallback
+                
                 off += size
             else:
                 break # End of State Table
@@ -872,7 +904,6 @@ def compile_hybrid_gesture(
             simulate_inverse_dynamics
         )
         
-        durango_to_jdnext = {v: k for k, v in _JDNEXT_TO_DURANGO_JOINT_MAP.items()}
         num_states = len(state_to_joint)
         
         # Build 3D sequences
