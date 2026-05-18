@@ -382,6 +382,17 @@ class SettingsDialog(QDialog):
         )
         general_layout.addWidget(self.cb_convert_jdnext_gestures)
 
+        # fetch_background_mode
+        self.cb_fetch_background = QCheckBox("Run Fetch browser in the background (off-screen)")
+        self.cb_fetch_background.setChecked(getattr(self._config, "fetch_background_mode", False))
+        self.cb_fetch_background.setToolTip(
+            "When enabled, the Chromium browser runs off-screen during Fetch mode\n"
+            "so it doesn't steal focus. Browser actions are logged to the console.\n\n"
+            "Keep this OFF if you need to manually intervene when the Discord bot\n"
+            "gets stuck. The browser will be brought on-screen if re-login is needed."
+        )
+        general_layout.addWidget(self.cb_fetch_background)
+
         # No strictness slider — hybrid gestures use synthesized gating edges
         # and donor templates. The checkbox above toggles conversion only.
 
@@ -402,6 +413,23 @@ class SettingsDialog(QDialog):
             "Always Default: use automatic compositing silently."
         )
         general_form.addRow("AlbumCoach compositing:", self.combo_albumcoach)
+
+        # jdnext_cover_behavior
+        self.combo_jdnext_cover = QComboBox()
+        self.combo_jdnext_cover.addItem("Ask per map (default)", "ask")
+        self.combo_jdnext_cover.addItem("Use Synthesized Cover (map background + Title)", "synthesized")
+        self.combo_jdnext_cover.addItem("Use Original Cover (may be squished)", "original")
+        self._set_combo_from_value(
+            self.combo_jdnext_cover,
+            getattr(self._config, "jdnext_cover_behavior", "ask"),
+        )
+        self.combo_jdnext_cover.setToolTip(
+            "Controls how cover art is generated for JDNext maps.\n"
+            "Synthesized: composites map_bkg + Title into a proper 1:1 square.\n"
+            "Original: uses the source cover as-is (may appear squished in-game).\n"
+            "Ask: prompt before each JDNext install."
+        )
+        general_form.addRow("JDNext cover art:", self.combo_jdnext_cover)
 
         self.combo_log_detail = QComboBox()
         self.combo_log_detail.addItem("Quiet (warnings and errors only)", "quiet")
@@ -954,7 +982,9 @@ class SettingsDialog(QDialog):
         self._config.show_install_summary_popup = self.cb_install_summary.isChecked()
         self._config.show_quickstart_on_launch = self.cb_quickstart.isChecked()
         self._config.convert_jdnext_gestures = self.cb_convert_jdnext_gestures.isChecked()
+        self._config.fetch_background_mode = self.cb_fetch_background.isChecked()
         self._config.albumcoach_behavior = self._combo_value(self.combo_albumcoach)
+        self._config.jdnext_cover_behavior = self._combo_value(self.combo_jdnext_cover)
         self._config.log_detail_level = self._combo_value(self.combo_log_detail)
         self._config.theme = self._combo_value(self.combo_theme)
         self._config.enforce_min_window_size = self.cb_enforce_min_size.isChecked()

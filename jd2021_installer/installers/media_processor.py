@@ -810,6 +810,71 @@ def generate_cover_tga(
     return res
 
 
+def synthesize_jdnext_cover_art(
+    map_bkg_path: Path,
+    title_path: Path,
+    canvas_size: tuple[int, int] = (1024, 1024),
+) -> "Image.Image":
+    """Composite a proper 1:1 cover from map_bkg and Title for JDNext maps.
+
+    Algorithm
+    ---------
+    - Layer 1 (map_bkg): scaled to fill the canvas height (aspect preserved,
+      horizontal overflow is simply clipped by alpha_composite).
+    - Layer 2 (Title): left/right transparent columns cropped via getbbox(),
+      then scaled so that the cropped width occupies 70 % of the canvas
+      (leaving 15 % margin on each side), centred both horizontally and
+      vertically.
+
+    Parameters
+    ----------
+    map_bkg_path:
+        Path to the map background image (any PIL-readable format).
+    title_path:
+        Path to the Title asset (transparent PNG expected).
+    canvas_size:
+        ``(W, H)`` of the output image. Default 1024×1024.
+
+    Returns
+    -------
+    PIL.Image.Image
+        RGBA composite ready to be saved as TGA.
+    """
+    try:
+        from PIL import Image as _Image
+    except ImportError:
+        raise MediaProcessingError("Pillow is not installed. Run: pip install Pillow")
+
+    W, H = canvas_size
+    canvas = _Image.new("RGBA", (W, H), (0, 0, 0, 255))
+
+    # --- Layer 1: map_bkg — scale to fill canvas height, center horizontally ---
+    bkg = _Image.open(map_bkg_path).convert("RGBA")
+    scale = H / bkg.height
+    bkg_w = int(bkg.width * scale)
+    bkg_resized = bkg.resize((bkg_w, H), _Image.Resampling.LANCZOS)
+    bkg_x = (W - bkg_w) // 2
+    canvas.alpha_composite(bkg_resized, (bkg_x, 0))
+
+    # --- Layer 2: Title — crop left/right transparency, scale to 70% width ---
+    title = _Image.open(title_path).convert("RGBA")
+    bbox = title.getbbox()
+    if bbox:
+        # Only crop horizontal transparency; preserve full vertical extent
+        title = title.crop((bbox[0], 0, bbox[2], title.height))
+
+    target_w = int(W * 0.70)
+    scale_t = target_w / title.width
+    title_h = int(title.height * scale_t)
+    title_resized = title.resize((target_w, title_h), _Image.Resampling.LANCZOS)
+
+    title_x = (W - target_w) // 2
+    title_y = (H - title_h) // 2
+    canvas.alpha_composite(title_resized, (title_x, title_y))
+
+    return canvas
+
+
 # ---------------------------------------------------------------------------
 # vgmstream — Xbox 360 XMA2 audio decoding
 # ---------------------------------------------------------------------------

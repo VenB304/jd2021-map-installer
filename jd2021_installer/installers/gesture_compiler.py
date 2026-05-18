@@ -8,9 +8,10 @@ constraints to Kinect joint IDs in the Durango edge table.
 
 Architecture:
     Phase 1 - JDNext AST Decompiler: Structurally parses the Float64
-              bytecode using declared section descriptors, extracting
-              per-joint X/Y constraints tagged with their joint ID from
-              the JointsCameraGestureQuantifier enum.  Type B sections
+              bytecode using declared section descriptors and a fixed
+              112-float section payload, extracting per-joint X/Y
+              constraints tagged with their joint ID from the
+              JointsCameraGestureQuantifier enum.  Type B sections
               (112 constraints) are decomposed as 14 joints × 8 values.
     Phase 2 - Template Preparation: Reads the Durango little-endian
               template, locates the edge table, and calibrates the
@@ -66,21 +67,10 @@ _X360_MAGIC_LEN = 20
 _X360_NUM_EDGES_OFFSET = 24
 _X360_ENDIAN = ">"
 
-# Edge field semantics (from RE analysis of 894 real Durango files +
-# Rosetta Stone same-song comparison using MakeItJingle):
-#
-# threshold_a: gate/weight — controls whether the edge is active.
-#   - Small values near 0: always-active scoring edges
-#   - Large absolute values (>10): blocking gates (impossible body positions)
-#
-# threshold_b: position threshold — compared against normalized Kinect reading.
-#   - Forensic analysis of MakeItJingle (exists in both JDNext and JDU/Kinect)
-#     shows that camera XY constraints in [-1, +1] map to Kinect threshold_b
-#     with a scale factor of ~1.97 (distribution matching: std_kinect / std_cam).
-#   - At scale 1.97x, 92% of camera values match real Kinect threshold_b (2dp).
-#   - Previous scale of 0.63 only matched 8% — far too compressed.
-
-_JDNEXT_TO_DURANGO_SCALE = 1.97  # JDNext [-1,+1] -> Durango [-1.97,+1.97]
+# Scale constant: forensic analysis via MakeItJingle Rosetta Stone.
+# Camera constraint std = 0.434, Kinect threshold std = 0.990
+# True scale factor = 0.990 / 0.434 = 2.28 (consolidated Issue #4 fix)
+_JDNEXT_TO_KINECT_SCALE = 2.28
 
 # Gating threshold: edges with |threshold_a| above this value in the
 # template are treated as HMM structural gates and preserved as-is.
@@ -220,6 +210,8 @@ _METADATA_THRESHOLD = 1.05
 #   Then state flags and tail
 
 _JDNEXT_HEADER_SIZE = 30  # Fixed header (opcode[0..29])
+_JDNEXT_SECTION_RAW_SIZE = 112
+_JDNEXT_TRAILER_SIZE = 15
 _JDNEXT_SECTION_A_XY = 88
 _JDNEXT_SECTION_A_TM = 7
 _JDNEXT_SECTION_B_XY = 112
@@ -290,33 +282,48 @@ def _decompile_jdnext(
         )
         return _decompile_jdnext_fallback(raw, gesture_path.name)
 
-    # Skip any remaining opcode-zone integers before the constraint zone
-    while idx < len(raw):
-        v = raw[idx]
-        if v == int(v) and abs(v) < 100_000:
-            idx += 1
-        else:
-            break
-
+    # The descriptor block is the boundary marker. Do not keep skipping
+    # integer-like values here, because valid constraint values can also be
+    # whole numbers and this heuristic can drift into the real data region.
     constraint_zone_start = idx
 
+    if declared_length and declared_length != len(raw):
+        logger.debug(
+            "JDNext gesture '%s': declared_length=%d, actual_floats=%d",
+            gesture_path.name, declared_length, len(raw),
+        )
+
     # --- Extract joint-tagged constraints and timing values ---
+    # The raw JDNext source keeps a fixed 112-float payload per section.
+    # The descriptor counts describe how to interpret that payload, not
+    # how far to advance through the file.
     joint_constraints: list[tuple[int, float]] = []
     timing_values: list[float] = []
     offset = constraint_zone_start
 
     for sec_idx, (c_count, t_count) in enumerate(sec_descs):
-        if offset + c_count + t_count > len(raw):
+        section_end = offset + _JDNEXT_SECTION_RAW_SIZE
+        if section_end > len(raw):
             logger.warning(
                 "JDNext gesture '%s': section %d overflows (offset=%d, "
                 "need=%d, have=%d)",
                 gesture_path.name, sec_idx, offset,
-                c_count + t_count, len(raw) - offset,
+                _JDNEXT_SECTION_RAW_SIZE, len(raw) - offset,
             )
             break
 
-        section_constraints = raw[offset:offset + c_count]
-        section_timing = raw[offset + c_count:offset + c_count + t_count]
+        section_raw = raw[offset:section_end]
+
+        if c_count == _JDNEXT_SECTION_A_XY and t_count == _JDNEXT_SECTION_A_TM:
+            section_constraints = section_raw[:_JDNEXT_SECTION_A_XY]
+            section_timing = section_raw[_JDNEXT_SECTION_A_XY:]
+        elif c_count == _JDNEXT_SECTION_B_XY and t_count == _JDNEXT_SECTION_B_TM:
+            section_constraints = section_raw[:_JDNEXT_SECTION_B_XY]
+            section_timing = section_raw[_JDNEXT_SECTION_B_XY:]
+        else:
+            constraint_len = min(c_count, len(section_raw))
+            section_constraints = section_raw[:constraint_len]
+            section_timing = section_raw[constraint_len:constraint_len + t_count]
 
         if c_count == _JDNEXT_SECTION_B_XY:
             # Type B section: 112 = 14 joints × 8 values each
@@ -334,7 +341,7 @@ def _decompile_jdnext(
             if abs(tv) > 0.001:
                 timing_values.append(tv)
 
-        offset += c_count + t_count
+        offset += _JDNEXT_SECTION_RAW_SIZE
 
     logger.debug(
         "JDNext decompile '%s': %d total floats, %d sections, "
@@ -429,7 +436,8 @@ def _decompile_jdnext_fallback(
     frac_run = 0
     for i in range(1, len(raw)):
         v = raw[i]
-        is_int = (v == int(v)) and abs(v) < 100_000
+        # Heuristic removed: treating all as non-integer to stop skip-behavior
+        is_int = False
         if not is_int:
             frac_run += 1
             if frac_run >= 3:
@@ -602,28 +610,35 @@ def _load_and_hybridize(
         logger.debug("No joint constraints to inject; output uses template edges")
         return template_data
 
-    # Center-exclusion dead zone filtering (operates on values, keeps tags)
-    dead_zone = _DEAD_ZONE_MAX
-    filtered = [(jid, v) for jid, v in joint_constraints if abs(v) > dead_zone]
+    # ADAPTIVE DEAD-ZONE FILTERING (Issue #3 Fix):
+    # Compute per-joint movement range to establish per-joint adaptive dead-zones.
+    # Joints with small ranges get tiny dead-zones; joints with large ranges get proportional zones.
+    per_joint_range = {}
+    for jid, vals in per_joint.items():
+        if vals:
+            min_v = min(vals)
+            max_v = max(vals)
+            range_v = max_v - min_v
+            per_joint_range[jid] = range_v
+        else:
+            per_joint_range[jid] = 0.0
 
-    if len(filtered) < num_edges:
-        dead_zone *= 0.5
-        filtered = [(jid, v) for jid, v in joint_constraints
-                     if abs(v) > dead_zone]
-
-    if len(filtered) < 10:
-        logger.warning(
-            "Dead zone %.3f filtered too aggressively (%d remain); "
-            "falling back to unfiltered",
-            dead_zone, len(filtered),
-        )
-        filtered = list(joint_constraints)
-        dead_zone = 0.0
+    # Apply per-joint adaptive dead-zone: min(10% of joint range, 0.14 max)
+    filtered = []
+    for jid, v in joint_constraints:
+        joint_range = per_joint_range.get(jid, 0.5)
+        # Dead zone scales with the joint's own movement range
+        adaptive_dead_zone = min(joint_range * 0.1, 0.14)
+        
+        if abs(v) > adaptive_dead_zone:
+            filtered.append((jid, v))
 
     logger.debug(
-        "Center-exclusion: dead_zone=%.3f, %d/%d constraints kept (%.0f%%)",
-        dead_zone, len(filtered), len(joint_constraints),
-        len(filtered) / max(len(joint_constraints), 1) * 100,
+        "Adaptive dead-zone filtering: %d/%d constraints kept; "
+        "per-joint zones ranged from %.4f to %.4f",
+        len(filtered), len(joint_constraints),
+        min(per_joint_range.values()) if per_joint_range else 0.0,
+        max(per_joint_range.values()) if per_joint_range else 0.0
     )
 
     # Phase 3: Inject JDNext constraints into edge thresholds.
@@ -882,16 +897,36 @@ def compile_hybrid_gesture(
         mean_variance = statistics.mean(joint_variances.values()) if joint_variances else 0.0
         std_variance = statistics.stdev(joint_variances.values()) if len(joint_variances) > 1 else 0.1
         
-        # Joints with variance > mean+0.5*std are structural (high discriminative power)
+        # ADAPTIVE VARIANCE THRESHOLD (Issue #2 Fix):
+        # Compute global choreography activity level to scale the structural joint threshold.
+        # Slow/lyrical songs have low variance; fast/energetic songs have high variance.
+        # Use median velocity to adaptively scale the discriminant threshold.
+        all_speeds = []
+        for f in range(num_frames):
+            frame_speeds = []
+            for jid in range(15):
+                vx, vy, vz = Vx[f, jid], Vy[f, jid], Vz[f, jid]
+                speed = (vx**2 + vy**2 + vz**2) ** 0.5
+                frame_speeds.append(speed)
+            if frame_speeds:
+                all_speeds.append(statistics.mean(frame_speeds))
+        
+        median_speed = statistics.median(all_speeds) if all_speeds else 0.5
+        # Map speed to activity coefficient: slow (0.2) -> k=0.3, fast (1.0+) -> k=0.7
+        speed_normalized = min(median_speed / 1.0, 1.0)  # Normalize to [0, 1]
+        k_activity = 0.3 + (speed_normalized * 0.4)  # Scale from 0.3 to 0.7
+        
+        # Joints with variance > mean + k*std are structural (high discriminative power)
         structural_joints = {
             jid for jid, var in joint_variances.items() 
-            if var > (mean_variance + 0.5 * std_variance)
+            if var > (mean_variance + k_activity * std_variance)
         }
         
         logger.debug(
-            "Gating synthesis: %d structural joints identified (var > %.3f)",
-            len(structural_joints),
-            mean_variance + 0.5 * std_variance
+            "Adaptive gating synthesis: median_speed=%.3f, k=%.3f, "
+            "%d structural joints identified (var > %.3f)",
+            median_speed, k_activity, len(structural_joints),
+            mean_variance + k_activity * std_variance
         )
         
         # 4. AdaBoost Ensemble Weight Redistribution (Pass 1)
@@ -998,21 +1033,28 @@ def compile_hybrid_gesture(
                 expected = muscle_force
             else:
                 is_valid_type = False
-                
-            # Detect unstable kinematic features for static poses
-            is_unstable_angle = (native_type == 3 and speed < 0.3)
-            is_unstable_vel = (native_type in (8, 9, 10, 32, 33, 34, 3, 25, 26, 27) and speed < 0.1)
-                
+
+            # DETERMINE IF EDGE WILL BE GATING (Issue #1 Fix):
+            # Evaluate promotion BEFORE padding calculation so synthetic gates get doubled padding.
+            durango_joint = state_to_joint.get(sid, 10)
+            jdnext_joint = durango_to_jdnext.get(durango_joint, 7)
+            
+            # True if originally gating OR will be promoted to synthetic gating
+            is_gating_final = is_gating or (
+                not is_gating and jdnext_joint in structural_joints
+                and native_type not in irrecoverable_types
+            )
+            
             if is_valid_type:
                 # Dynamically pad the threshold based on AdaBoost evaluation direction (ta sign)
                 # ta > 0 means stump expects feature > tb.
                 # ta < 0 means stump expects feature <= tb.
                 padding = max(abs(expected) * 0.4, 0.25)
                 
-                # If this is a gating/veto edge (ta > 10.0), double the padding.
+                # If edge is (or will become) a gating/veto edge, double the padding.
                 # Gating edges are pass/fail boundaries. We want them to catch completely 
-                # wrong moves, not punish slight natural variance.
-                if is_gating:
+                # wrong moves, not punish slight natural variance (now applies to synthetic gates!)
+                if is_gating_final:
                     padding *= 2.0
                 
                 if ta > 0:
@@ -1029,15 +1071,12 @@ def compile_hybrid_gesture(
                     tb_val = tb * 0.5
 
             if not is_gating:
-                if native_type in irrecoverable_types or is_unstable_angle or is_unstable_vel:
+                if native_type in irrecoverable_types:
                     ta_val = 0.0
                     tb_val = 0.0
                 else:
                     # Decision: Structural joints become gating edges (|ta| > 10).
                     # Others become scoring edges (|ta| <= 1).
-                    durango_joint = state_to_joint.get(sid, 10)
-                    jdnext_joint = durango_to_jdnext.get(durango_joint, 7)
-                    
                     if jdnext_joint in structural_joints:
                         # Structural edge: make it a gating edge (high |ta| for strict checking)
                         ta_val = 15.0 if ta > 0 else -15.0
@@ -1048,12 +1087,7 @@ def compile_hybrid_gesture(
                         new_ta = ta * gamma
                         ta_val = max(-1.0, min(1.0, new_ta))
             else:
-                if is_unstable_angle or is_unstable_vel:
-                    # Even if it was originally a gating edge, if the pose is static, don't gate on random noise!
-                    ta_val = 0.0
-                    tb_val = 0.0
-                else:
-                    ta_val = ta
+                ta_val = ta
 
             struct.pack_into(f'{endian}f', template_data, eoff, ta_val)
             struct.pack_into(f'{endian}f', template_data, eoff + 4, tb_val)
@@ -1140,372 +1174,7 @@ def _find_donor_gesture() -> Path | None:
     return None
 
 
-def _compile_with_donor(
-    donor_path: Path,
-    joint_constraints: list[tuple[int, float]],
-    timing_values: list[float],
-    output_path: Path,
-    src_name: str,
-) -> bool:
-    """Compile a gesture using a known-good donor as the structural base.
 
-    Strategy (direct camera data injection):
-      1. Copy the donor's binary structure (header, state table, gating edges)
-      2. REPLACE the 13 scoring parameters with song-specific values
-      3. DIRECTLY inject JDNext camera X/Y constraints as threshold_a and
-         threshold_b, scaled by the 2.28x factor derived from MakeItJingle
-         cross-format analysis.  This means the gesture file contains REAL
-         choreographic data from the source song.
-      4. Patch Zone A to reference the correct Kinect body-part IDs matching
-         the JDNext joints in the camera data.
-      5. Leave gating edges (|threshold_a| > 10) completely untouched.
-
-    Scale factor derivation (MakeItJingle Rosetta Stone):
-      Camera std = 0.434, Kinect std = 0.990 -> scale = 2.28x
-      This is consistent across all 14 joints and both X/Y axes.
-    """
-    donor_data = bytearray(donor_path.read_bytes())
-
-    # Detect format
-    fmt_name, endian, edges_offset = _detect_template_format(donor_data)
-    num_edges = struct.unpack_from(f"{endian}i", donor_data, edges_offset)[0]
-    edge_start = len(donor_data) - (num_edges * _DURANGO_EDGE_SIZE)
-
-    if edge_start < 0 or edge_start >= len(donor_data):
-        logger.error("Donor gesture has invalid edge table offset")
-        return False
-
-    params_start = edge_start - 52
-
-    # --- Build song-specific parameters from camera data ---
-    raw_vals = [v for _, v in joint_constraints]
-    if raw_vals:
-        import statistics as _stats
-        cam_mean = _stats.mean([abs(v) for v in raw_vals])
-        cam_std = _stats.stdev(raw_vals) if len(raw_vals) > 1 else 0.4
-    else:
-        cam_mean, cam_std = 0.3, 0.4
-
-    # Scale factor: camera [-1,+1] -> Kinect edge values
-    _CAM_TO_KINECT_SCALE = 2.28
-
-    scaled_mean = cam_mean * _CAM_TO_KINECT_SCALE
-    scaled_std = cam_std * _CAM_TO_KINECT_SCALE
-
-    # P0 scales with gesture complexity (constraint count)
-    p0 = min(1500.0, max(350.0, len(joint_constraints) * 0.36))
-    # P3-P6 positive scoring biases from actual data spread
-    p3 = max(0.15, min(scaled_mean * 0.6, 0.58))
-    p4 = max(0.23, min(scaled_mean * 0.9, 0.72))
-    p5 = max(0.17, min(scaled_mean * 0.7, 0.62))
-    p6 = max(0.015, min(scaled_std * 0.03, 0.047))
-    # P7-P9 negative scoring biases
-    p7 = -max(0.37, min(scaled_mean * 1.2, 0.89))
-    p8 = -max(0.16, min(scaled_mean * 0.6, 0.58))
-    p9 = -max(0.26, min(scaled_mean * 0.8, 0.74))
-    p10 = max(0.041, min(scaled_std * 0.04, 0.061))
-    # P11/P12 scale with timing data
-    timing_weight = sum(abs(t) for t in timing_values) if timing_values else 500.0
-    p11 = max(120.0, min(timing_weight * 0.22, 264.0))
-    p12 = max(34.0, min(timing_weight * 0.09, 108.0))
-
-    song_params = [p0, 0.049, 0.0, p3, p4, p5, p6, p7, p8, p9, p10, p11, p12]
-    for i, p in enumerate(song_params):
-        struct.pack_into(f"{endian}f", donor_data, params_start + i * 4, p)
-
-    # Inject camera constraints into donor scoring edges
-        # --- Identify scoring vs gating edges ---
-        from collections import defaultdict
-        scoring_indices: list[int] = []
-        for i in range(num_edges):
-            eoff = edge_start + i * _DURANGO_EDGE_SIZE
-            orig_a = struct.unpack_from(f"{endian}f", donor_data, eoff)[0]
-            if abs(orig_a) <= _GATING_THRESHOLD:
-                scoring_indices.append(i)
-
-        num_scoring = len(scoring_indices)
-
-        # --- Prepare camera constraint pairs as (X, Y) per joint ---
-        # Group constraints by joint, then split into X/Y pairs
-        joint_xy: dict[int, list[tuple[float, float]]] = defaultdict(list)
-        per_joint: dict[int, list[float]] = defaultdict(list)
-        for jid, val in joint_constraints:
-            per_joint[jid].append(val)
-
-        # Build X/Y pairs: consecutive values are X, Y
-        all_pairs: list[tuple[float, float]] = []
-        for jid in sorted(per_joint.keys()):
-            vals = per_joint[jid]
-            for p in range(0, len(vals) - 1, 2):
-                pair = (vals[p] * _CAM_TO_KINECT_SCALE,
-                        vals[p + 1] * _CAM_TO_KINECT_SCALE)
-                all_pairs.append(pair)
-                joint_xy[jid].append(pair)
-
-        if not all_pairs:
-            all_pairs = [(0.5, 0.5)]
-
-        logger.debug(
-            "Camera data: %d joint constraints -> %d X/Y pairs "
-            "(scale=%.2fx)",
-            len(joint_constraints), len(all_pairs), _CAM_TO_KINECT_SCALE,
-        )
-
-        # --- Inject camera X/Y pairs directly into scoring edges ---
-        # Each scoring edge gets:
-        #   threshold_a = camera X value (scaled)
-        #   threshold_b = camera Y value (scaled)
-        # Pairs are distributed sequentially across all scoring edges,
-        # cycling through the camera data to fill all edges.
-        n_pairs = len(all_pairs)
-
-        for local_idx, edge_i in enumerate(scoring_indices):
-            eoff = edge_start + edge_i * _DURANGO_EDGE_SIZE
-
-            # Pick the camera pair for this edge (cycle through data)
-            pair_idx = int(local_idx * n_pairs / max(num_scoring, 1)) % n_pairs
-            cam_x, cam_y = all_pairs[pair_idx]
-
-            # Only inject into threshold_b (position). Keep original threshold_a (edge weight/gate)
-            # Read original ta_val so we don't destroy it
-            orig_ta = struct.unpack_from(f"{endian}f", donor_data, eoff)[0]
-            
-            # Use cam_y for position limit, or an average of X and Y
-            cam_val = (cam_x + cam_y) / 2.0
-            tb_val = cam_val
-
-            # Clamp to Kinect range
-            tb_val = max(-3.8, min(3.8, tb_val))
-
-            struct.pack_into(f"{endian}f", donor_data, eoff, orig_ta)
-            struct.pack_into(f"{endian}f", donor_data, eoff + 4, tb_val)
-
-
-
-    # Write output
-    output_path.parent.mkdir(parents=True, exist_ok=True)
-    output_path.write_bytes(donor_data)
-
-    logger.info(
-        "Compiled gesture (donor: %s): %s "
-        "(%d constraints → %d edges, format=%s)",
-        donor_path.name, src_name,
-        len(joint_constraints), num_edges,
-        fmt_name,
-    )
-    return True
-
-
-def _count_jdnext_sections(gesture_path: Path) -> int:
-    """Extract the section count from a JDNext gesture file.
-
-    The section count is at opcode[1] (the second float64 value,
-    interpreted as an integer).
-    """
-    data = gesture_path.read_bytes()
-    if len(data) < 16:
-        return 27  # Fallback default
-    raw = struct.unpack_from('<2d', data, 0)
-    num_sections = int(raw[1])
-    return max(4, min(num_sections, 200))  # Clamp to sane range
-
-
-def _build_params_from_jdnext(
-    joint_constraints: list[tuple[int, float]],
-    num_sections: int,
-) -> list[float]:
-    """Build the 13-float parameters block from JDNext data.
-
-    P0, P11, P12:  Tempo/duration/complexity derived from Section A/B descriptors.
-    P1:            System constant (0.049).
-    P2:            Reserved (0.0).
-    P3-P10:        Song-specific body position statistics computed from the
-                   actual per-joint constraint means and standard deviations.
-
-    Real Kinect parameter ranges (from 10 MakeItJingle files):
-        P0:  [336, 1489]   P1: 0.049  P2: 0.0
-        P3:  [0.158, 0.579]  P4:  [0.231, 0.712]  P5:  [0.175, 0.611]
-        P6:  [0.015, 0.047]  P7: [-0.890,-0.373]  P8: [-0.579,-0.160]
-        P9: [-0.738,-0.258]  P10: [0.041, 0.061]
-        P11: [120, 264]    P12: [34, 108]
-    """
-    # Map JDNext "Section A/B" timing descriptors (7/31 counts) 
-    # to the actual duration/weight parameters.
-    type_a_count = min(4, num_sections)
-    type_b_count = max(0, num_sections - 4)
-    
-    # 7 timing counts for intro poses, 31 for full body poses
-    total_timing_weight = (type_a_count * 7) + (type_b_count * 31)
-
-    # Change 4: Fix P0/P11/P12 scaling to match real ranges
-    # Real P0 range [336, 1489], mean ~740 for ~741 total_timing_weight
-    p0_tempo = total_timing_weight * 1.0
-    # Real P11 range [120, 264], mean ~166
-    p11_complexity = total_timing_weight * 0.225
-    # Real P12 range [34, 108], mean ~67
-    p12_duration = total_timing_weight * 0.090
-
-    # Change 2: Compute song-specific P3-P10 from per-joint statistics
-    # Group constraints by joint and compute per-joint means
-    from collections import defaultdict
-    joint_vals: dict[int, list[float]] = defaultdict(list)
-    for jid, val in joint_constraints:
-        joint_vals[jid].append(val * _JDNEXT_TO_DURANGO_SCALE)
-
-    if joint_vals:
-        per_joint_means = [statistics.mean(vs) for vs in joint_vals.values()]
-        per_joint_stds = [
-            statistics.stdev(vs) if len(vs) > 1 else 0.3
-            for vs in joint_vals.values()
-        ]
-        abs_mean = statistics.mean([abs(m) for m in per_joint_means])
-        mean_std = statistics.mean(per_joint_stds)
-    else:
-        abs_mean = 0.3
-        mean_std = 0.4
-
-    # P3-P6: positive body position bounds (real range ~0.02-0.71)
-    # P7-P9: negative body position bounds (real range ~-0.89 to -0.16)
-    # P10:   small positive stabilizer (real range ~0.04-0.06)
-    p3 = max(0.15, min(abs_mean + mean_std * 0.2, 0.58))
-    p4 = max(0.23, min(abs_mean + mean_std * 0.5, 0.72))
-    p5 = max(0.17, min(abs_mean + mean_std * 0.3, 0.62))
-    p6 = max(0.015, min(mean_std * 0.03, 0.047))
-    p7 = -max(0.37, min(abs_mean + mean_std * 0.6, 0.89))
-    p8 = -max(0.16, min(abs_mean + mean_std * 0.2, 0.58))
-    p9 = -max(0.26, min(abs_mean + mean_std * 0.4, 0.74))
-    p10 = max(0.041, min(mean_std * 0.04, 0.061))
-
-    return [
-        p0_tempo,       # P0: tempo
-        0.049,          # P1: system constant
-        0.0,            # P2: reserved
-        p3,             # P3: song-specific body stat
-        p4,             # P4: song-specific body stat
-        p5,             # P5: song-specific body stat
-        p6,             # P6: song-specific body stat
-        p7,             # P7: song-specific body stat (negative)
-        p8,             # P8: song-specific body stat (negative)
-        p9,             # P9: song-specific body stat (negative)
-        p10,            # P10: stabilizer
-        p11_complexity, # P11: complexity
-        p12_duration,   # P12: duration
-    ]
-
-
-def _build_edge_table(
-    joint_constraints: list[tuple[int, float]],
-    num_states: int,
-    state_to_joint: dict[int, int],
-) -> list[tuple[float, float, int]]:
-    """Build a 1000-edge table matching real Kinect edge distribution.
-
-    Real Kinect edge table structure (from forensic analysis):
-      ~76% scoring edges:
-        threshold_a = body position value [-1.0, +1.0] quantized to 0.1
-        threshold_b = body position value (Durango scale)
-      ~4%  boundary edges:
-        threshold_a = values [1.0, 10.0]
-        threshold_b = body position value
-      ~20% gating edges:
-        threshold_a = joint pair index (11-164)
-        threshold_b = extreme position value
-
-    State IDs are distributed across the generated state space.
-    """
-    num_edges = 1000
-    edges: list[tuple[float, float, int]] = []
-
-    # Filter constraints by dead zone (keeps joint tags)
-    dead_zone = _DEAD_ZONE_MAX
-    filtered = [(jid, v) for jid, v in joint_constraints if abs(v) > dead_zone]
-
-    if len(filtered) < 10:
-        filtered = list(joint_constraints) if joint_constraints else [(1, 0.0)]
-
-    n = len(filtered)
-
-    # --- Edge distribution targets (from real file analysis) ---
-    target_gating = int(num_edges * 0.20)   # ~200 gating edges
-    target_scoring = num_edges - target_gating  # ~800 scoring edges
-
-    # Real gating edge joint pair indices (from MakeItJingle analysis)
-    # These are even-stepped values used by Kinect V2 for joint pair encoding
-    _GATING_JOINT_PAIRS = [
-        12, 14, 16, 18, 20, 22, 30, 32, 34, 36, 38, 40, 42, 44, 46,
-        48, 50, 52, 56, 58, 60, 72, 74, 76, 78, 80, 82, 84, 86, 88,
-        90, 92, 94, 96, 98, 100, 102, 104, 106, 108, 110, 114, 116,
-        118, 120, 124, 126, 128, 130, 132, 134, 136, 138, 140, 142,
-        144, 146, 148, 150, 152, 154, 156, 158, 160, 162, 164,
-    ]
-
-    # Build quantized pool for threshold_a bell curve
-    _QUANTIZED_POOL: list[float] = []
-    for val, weight in _QUANT_WEIGHTS.items():
-        _QUANTIZED_POOL.extend([val] * weight)
-
-    # Build X/Y pairs: consecutive values are X, Y for each joint
-    from collections import defaultdict
-    per_joint: dict[int, list[float]] = defaultdict(list)
-    for jid, val in filtered:
-        per_joint[jid].append(val)
-        
-    all_pairs: list[tuple[float, float]] = []
-    for jid in sorted(per_joint.keys()):
-        vals = per_joint[jid]
-        for p in range(0, len(vals) - 1, 2):
-            pair = (vals[p] * _JDNEXT_TO_DURANGO_SCALE,
-                    vals[p + 1] * _JDNEXT_TO_DURANGO_SCALE)
-            all_pairs.append(pair)
-            
-    if not all_pairs:
-        all_pairs = [(0.5, 0.5)]
-
-    n_pairs = len(all_pairs)
-    sorted_filtered = sorted(filtered, key=lambda x: x[1])
-
-    # Inverse map: Kinect joint -> JDNext joint
-    durango_to_jdnext = {v: k for k, v in _JDNEXT_TO_DURANGO_JOINT_MAP.items()}
-
-    for i in range(num_edges):
-        state_id = i % num_states
-
-        if i < target_scoring:
-            # --- Scoring edge: joint-aware position threshold ---
-            kinect_joint = state_to_joint.get(state_id, 20) # Default SpineShoulder
-            jdnext_joint = durango_to_jdnext.get(kinect_joint, 1) # Default ShouldersCenter
-            
-            # Get camera values for this specific joint
-            joint_vals = per_joint.get(jdnext_joint, [0.0])
-            if not joint_vals:
-                joint_vals = [0.0]
-                
-            # threshold_a: quantized position value (bell-curve distribution) acts as edge weight/gate
-            quant_a = _QUANTIZED_POOL[i % len(_QUANTIZED_POOL)]
-            
-            # threshold_b: real camera constraint scaled to Durango range
-            pair_idx = (i // max(1, num_states)) % len(joint_vals)
-            cam_val = joint_vals[pair_idx] * _JDNEXT_TO_DURANGO_SCALE
-
-            ta_val = quant_a
-            tb_val = max(-3.8, min(3.8, cam_val))
-
-            edges.append((ta_val, tb_val, state_id))
-        else:
-            # --- Gating edge: joint pair index + extreme position ---
-            gating_idx = i - target_scoring
-            joint_pair = float(
-                _GATING_JOINT_PAIRS[gating_idx % len(_GATING_JOINT_PAIRS)]
-            )
-
-            # threshold_b: extreme position from camera data
-            ci = int(gating_idx * n / max(target_gating, 1)) % n
-            _, val = sorted_filtered[ci]
-            extreme_val = val * _JDNEXT_TO_DURANGO_SCALE
-
-            edges.append((joint_pair, extreme_val, state_id))
-
-    return edges
 
 
 def copy_surrogate_as_fallback(

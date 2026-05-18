@@ -138,6 +138,7 @@ _SETTINGS_CHANGE_LABELS: dict[str, str] = {
     "assetstudio_cli_path": "AssetStudio CLI",
     "check_updates_on_launch": "Check updates on launch",
     "update_branch": "Update branch",
+    "fetch_background_mode": "Fetch background browser",
 }
 
 _SETTINGS_CHANGE_ORDER: tuple[str, ...] = (
@@ -179,6 +180,7 @@ _SETTINGS_CHANGE_ORDER: tuple[str, ...] = (
     "assetstudio_cli_path",
     "check_updates_on_launch",
     "update_branch",
+    "fetch_background_mode",
 )
 
 _READY_STATUS_VALUE = 3
@@ -1259,6 +1261,12 @@ class MainWindow(QMainWindow):
                 issues.append("Select an IPK archive first.")
             elif not Path(target).is_file():
                 issues.append(f"IPK file was not found: {target}")
+            bundle = str(ipk_fields.get("bundle", "")).strip()
+            if bundle and not Path(bundle).is_file():
+                issues.append(f"Bundle IPK file was not found: {bundle}")
+            bundlelogic = str(ipk_fields.get("bundlelogic", "")).strip()
+            if bundlelogic and not Path(bundlelogic).is_file():
+                issues.append(f"BundleLogic IPK file was not found: {bundlelogic}")
             else:
                 self._current_target = target
             return issues
@@ -2118,6 +2126,7 @@ class MainWindow(QMainWindow):
 
     def _on_install_requested(self) -> None:
         """Launch the Extract → Normalize → Install pipeline."""
+        self.append_log("Installation request received. Starting pre-flight checks...")
         if self._active_worker is not None:
             self._set_status("Please wait for the current operation to finish.")
             return
@@ -2227,10 +2236,20 @@ class MainWindow(QMainWindow):
                 selected_maps = BundleSelectDialog.show_dialog(Path(self._current_target).name, maps_found, self)
                 if not selected_maps:
                     return # User cancelled
+
+                bundle_ipk, bundlelogic_ipk = self._resolve_ipk_bundle_inputs(
+                    source_fields,
+                    Path(self._current_target),
+                )
                 
                 # Defer to batch installer to handle everything cleanly
                 self._sync_refinement.set_ipk_mode(is_ipk=True)
-                self._start_batch_install(selected_maps=set(selected_maps), map_names=sorted(list(selected_maps)))
+                self._start_batch_install(
+                    selected_maps=set(selected_maps),
+                    map_names=sorted(list(selected_maps)),
+                    bundle_ipk=bundle_ipk,
+                    bundlelogic_ipk=bundlelogic_ipk,
+                )
                 return
 
         # Resolve the correct extractor based on mode
@@ -2258,10 +2277,20 @@ class MainWindow(QMainWindow):
             if len(fetch_codenames) == 1:
                 worker_codename = fetch_codenames[0]
 
+        bundle_ipk: Optional[Path] = None
+        bundlelogic_ipk: Optional[Path] = None
+        if mode_index == MODE_IPK and Path(self._current_target).is_file():
+            bundle_ipk, bundlelogic_ipk = self._resolve_ipk_bundle_inputs(
+                source_fields,
+                Path(self._current_target),
+            )
+
         worker = ExtractAndNormalizeWorker(
             extractor=extractor,
             output_dir=self._config.temp_directory / "_extraction",
             codename=worker_codename,
+            bundle_ipk=bundle_ipk,
+            bundlelogic_ipk=bundlelogic_ipk,
         )
         thread = QThread()
         worker.moveToThread(thread)
@@ -2454,7 +2483,8 @@ class MainWindow(QMainWindow):
             self.append_log(
                 f"[{codename}] Opening AlbumCoach customizer (always_customize)."
             )
-            dlg = AlbumCoachCustomizerDialog(coach_images, parent=self)
+            dlg = AlbumCoachCustomizerDialog(coach_images, parent=self,
+                                              theme=getattr(self._config, "theme", "dark"))
             dlg.exec()
             result_image = dlg.result_image
             never_ask = False
@@ -2468,7 +2498,8 @@ class MainWindow(QMainWindow):
                 "Prompting user."
             )
             result_image, never_ask, new_behavior = AlbumCoachCustomizerDialog.prompt(
-                coach_images, parent=self
+                coach_images, parent=self,
+                theme=getattr(self._config, "theme", "dark"),
             )
 
         # Handle "never ask again" preference persistence.
@@ -3402,12 +3433,51 @@ class MainWindow(QMainWindow):
         )
         return None
 
+    def _resolve_ipk_bundle_inputs(
+        self,
+        source_fields: dict,
+        ipk_path: Optional[Path],
+    ) -> tuple[Optional[Path], Optional[Path]]:
+        if not ipk_path or not ipk_path.is_file():
+            return None, None
+
+        ipk_fields = source_fields.get("ipk", {}) if isinstance(source_fields, dict) else {}
+        raw_bundle = str(ipk_fields.get("bundle", "")).strip()
+        raw_bundlelogic = str(ipk_fields.get("bundlelogic", "")).strip()
+
+        bundle_path = Path(raw_bundle) if raw_bundle else None
+        bundlelogic_path = Path(raw_bundlelogic) if raw_bundlelogic else None
+
+        from jd2021_installer.extractors.archive_ipk import find_bundle_ipks
+
+        if not bundle_path or not bundlelogic_path:
+            bundle_guess, bundlelogic_guess = find_bundle_ipks(ipk_path.parent, exclude=ipk_path)
+            if not bundle_path:
+                bundle_path = bundle_guess
+            if not bundlelogic_path:
+                bundlelogic_path = bundlelogic_guess
+
+        ipk_resolved = ipk_path.resolve()
+        if bundle_path and bundle_path.exists() and bundle_path.resolve() == ipk_resolved:
+            bundle_path = None
+        if bundlelogic_path and bundlelogic_path.exists() and bundlelogic_path.resolve() == ipk_resolved:
+            bundlelogic_path = None
+
+        if bundle_path and not bundle_path.is_file():
+            bundle_path = None
+        if bundlelogic_path and not bundlelogic_path.is_file():
+            bundlelogic_path = None
+
+        return bundle_path, bundlelogic_path
+
     def _start_batch_install(
         self,
         selected_maps: set[str] | None = None,
         map_names: list[str] | None = None,
         fetch_codenames: list[str] | None = None,
         fetch_source: str = "jdu",
+        bundle_ipk: Optional[Path] = None,
+        bundlelogic_ipk: Optional[Path] = None,
     ) -> None:
         """Launches the dedicated Batch mode worker."""
         if not self._current_target:
@@ -3437,6 +3507,8 @@ class MainWindow(QMainWindow):
             fetch_codenames=fetch_codenames,
             fetch_source=fetch_source,
             force_unlock_locked_status=force_unlock_locked_status,
+            bundle_ipk=bundle_ipk,
+            bundlelogic_ipk=bundlelogic_ipk,
         )
         thread = QThread()
         worker.moveToThread(thread)

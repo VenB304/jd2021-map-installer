@@ -108,7 +108,7 @@ class TestBundleParity(unittest.TestCase):
         (pictos / "MapA_picto_001.png.ckd").touch()
         (moves / "MapA_move_001.gesture").touch()
 
-        media = _discover_media(map_subtree, codename="MapA", search_root=self.test_dir)
+        media = _discover_media(map_subtree, codename="MapA", search_roots=[self.test_dir])
 
         self.assertEqual(media.cover_generic_path, cover)
         self.assertIn(coach, media.coach_images)

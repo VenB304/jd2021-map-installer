@@ -52,6 +52,13 @@ class AppConfig(BaseModel):
     albumcoach_behavior: str = Field(
         default="ask", pattern=r"^(ask|always_customize|always_default)$"
     )
+    # Cover art synthesis behavior for JDNext maps:
+    # "synthesized" = always composite from map_bkg + Title asset
+    # "original"    = always use original cover art as-is (may be squished)
+    # "ask"         = prompt per map (default)
+    jdnext_cover_behavior: str = Field(
+        default="ask", pattern=r"^(ask|synthesized|original)$"
+    )
     # Scoring conversion behavior: handled via gesture template selection
 
     # Download settings
@@ -79,6 +86,7 @@ class AppConfig(BaseModel):
     browser_profile_dir: Path = Path("./.browser-profile")
     fetch_login_timeout_s: int = 300
     fetch_bot_response_timeout_s: int = 60
+    fetch_background_mode: bool = False
 
     # Update checker settings
     check_updates_on_launch: bool = True

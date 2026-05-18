@@ -36,6 +36,8 @@ from PyQt6.QtWidgets import (
     QWidget,
 )
 
+from jd2021_installer.extractors.archive_ipk import find_bundle_ipks
+
 logger = logging.getLogger("jd2021.ui.widgets.mode_selector")
 
 # Mode identifiers (indices match the combo-box order)
@@ -354,10 +356,54 @@ class ModeSelectorWidget(QWidget):
             file_filter="IPK Archives (*.ipk);;All Files (*.*)",
             placeholder="No IPK selected",
         )
-        row.path_changed.connect(lambda t: self.target_selected.emit(t))
         lay.addWidget(row)
 
+        bundle_row = FileRowWidget(
+            "Bundle IPK (optional):",
+            is_dir=False,
+            file_filter="IPK Archives (*.ipk);;All Files (*.*)",
+            placeholder="Auto-detected if available",
+        )
+        lay.addWidget(bundle_row)
+
+        bundlelogic_row = FileRowWidget(
+            "BundleLogic IPK (optional):",
+            is_dir=False,
+            file_filter="IPK Archives (*.ipk);;All Files (*.*)",
+            placeholder="Auto-detected if available",
+        )
+        lay.addWidget(bundlelogic_row)
+
         self.inputs["ipk"]["file"] = row.line_edit
+        self.inputs["ipk"]["bundle"] = bundle_row.line_edit
+        self.inputs["ipk"]["bundlelogic"] = bundlelogic_row.line_edit
+
+        def auto_detect_ipk_bundle(source_path: str) -> None:
+            if not source_path:
+                return
+            ipk_path = Path(source_path)
+            if not ipk_path.is_file():
+                return
+
+            bundle_guess, bundlelogic_guess = find_bundle_ipks(ipk_path.parent, exclude=ipk_path)
+
+            if bundle_guess:
+                current_bundle = self.inputs["ipk"]["bundle"].text().strip()
+                detected_bundle = str(bundle_guess)
+                if current_bundle != detected_bundle:
+                    self.inputs["ipk"]["bundle"].setText(detected_bundle)
+                    logger.info("Auto-detected Bundle IPK: %s", bundle_guess)
+
+            if bundlelogic_guess:
+                current_bundlelogic = self.inputs["ipk"]["bundlelogic"].text().strip()
+                detected_bundlelogic = str(bundlelogic_guess)
+                if current_bundlelogic != detected_bundlelogic:
+                    self.inputs["ipk"]["bundlelogic"].setText(detected_bundlelogic)
+                    logger.info("Auto-detected BundleLogic IPK: %s", bundlelogic_guess)
+
+            self.target_selected.emit(source_path)
+
+        row.path_changed.connect(auto_detect_ipk_bundle)
         return page
 
     def _build_batch_page(self) -> QWidget:
