@@ -830,30 +830,36 @@ def compile_hybrid_gesture(
             logger.error("Donor gesture has invalid edge table offset")
             return False
         
-        # Parse Zone A to build state_to_joint and state_to_type maps
+        # Parse Zone A to build state_to_joint map
         state_start = 59
         off = 0
         state_id_counter = 1
         state_to_joint = {}
-        state_to_type = {}
         
         while off + 20 <= len(template_data):
             fields = struct.unpack_from(f'{endian}5i', template_data, state_start + off)
-            if fields[0] == state_id_counter:
-                state_to_joint[fields[0]] = fields[2] # joint_pair_id
-                
-                # Capture the native edge_group_type
-                native_type = struct.unpack_from(f'{endian}i', template_data, state_start + off + 12)[0]
-                state_to_type[fields[0]] = native_type
-                
-                # We NO LONGER overwrite edge_group_type to 0!
-                # We preserve the native Velocity/Acceleration/Angle checks 
-                # to prevent the positional swaying exploit!
-                
+            state_id, flag, joint_id, edge_group, padding = fields
+            if state_id == state_id_counter and flag in (0, 1) and 0 <= edge_group < 25:
+                state_to_joint[state_id] = joint_id
                 off += 20
                 state_id_counter += 1
             else:
                 break # Reached Zone B
+                
+        # Parse Zone B to build state_to_type map
+        state_to_type = {}
+        while off + 16 <= len(template_data):
+            rec_type = struct.unpack_from(f'{endian}i', template_data, state_start + off)[0]
+            if 3 <= rec_type <= 35:
+                # Zone B records start with: [type, state_id, ...]
+                sid = struct.unpack_from(f'{endian}i', template_data, state_start + off + 4)[0]
+                state_to_type[sid] = rec_type
+                
+                # Advance by record size
+                size = {3: 24, 9: 24, 10: 24, 18: 20, 19: 20, 20: 20, 29: 20}.get(rec_type, 16)
+                off += size
+            else:
+                break # End of State Table
                 
         # 3. Biomechanical Pre-computation
         # 3. Biomechanical Pre-computation
