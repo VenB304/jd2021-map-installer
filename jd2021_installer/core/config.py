@@ -45,7 +45,8 @@ class AppConfig(BaseModel):
     show_window_size_overlay: bool = False
     style_debug_mode: bool = False
     window_size_overlay_timeout_ms: int = 1100
-    convert_jdnext_gestures: bool = True
+    # Converted gestures are still ass
+    convert_jdnext_gestures: bool = False 
     # AlbumCoach compositing behavior for JDNext multi-coach maps:
     # "ask" = prompt per map, "always_customize" = always show editor,
     # "always_default" = use automatic compositing silently.
