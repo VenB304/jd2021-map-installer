@@ -44,6 +44,7 @@ from PyQt6.QtWidgets import (
     QWidget,
     QLabel,
     QDialog,
+    QCheckBox,
     QListWidget,
     QListWidgetItem,
     QPushButton,
@@ -2561,6 +2562,7 @@ class MainWindow(QMainWindow):
             source_mode=self._current_mode,
             config=self._config,
         )
+        worker.jdnext_cover_prompt_requested.connect(self._on_jdnext_cover_prompt_requested)
         thread = QThread()
         worker.moveToThread(thread)
 
@@ -2577,6 +2579,76 @@ class MainWindow(QMainWindow):
         self._active_threads.add(thread)
         self._active_worker = worker
         thread.start()
+
+    def _on_jdnext_cover_prompt_requested(self, request: object) -> None:
+        if not isinstance(request, dict):
+            return
+
+        codename = str(request.get("codename") or "unknown")
+        event = request.get("event")
+        choice = "synthesized"
+        never_ask = False
+
+        try:
+            dlg_result: dict = {"choice": "synthesized"}
+
+            dlg = QDialog(self)
+            dlg.setWindowTitle("JDNext Cover Art")
+            dlg.setModal(True)
+            dlg.setFixedWidth(440)
+
+            root = QVBoxLayout(dlg)
+            root.setContentsMargins(20, 16, 20, 16)
+            root.setSpacing(12)
+
+            msg = QLabel(
+                f"<b>{codename}</b> is a JDNext map with a non-square cover.<br><br>"
+                "Would you like to synthesize a proper 1:1 cover from the map "
+                "background and Title assets?"
+            )
+            msg.setWordWrap(True)
+            root.addWidget(msg)
+
+            cb_never = QCheckBox("Remember my choice for all future maps")
+            cb_never.setToolTip(
+                "Saves your choice to Settings → JDNext cover art.\n"
+                "You can change it later."
+            )
+            root.addWidget(cb_never)
+
+            btn_row = QHBoxLayout()
+            btn_row.addStretch()
+
+            btn_synth = QPushButton("Use Synthesized Cover")
+            btn_synth.setMinimumWidth(160)
+            btn_synth.clicked.connect(
+                lambda: (dlg_result.__setitem__("choice", "synthesized"), dlg.accept())
+            )
+            btn_row.addWidget(btn_synth)
+
+            btn_orig = QPushButton("Use Original Cover")
+            btn_orig.setMinimumWidth(140)
+            btn_orig.clicked.connect(
+                lambda: (dlg_result.__setitem__("choice", "original"), dlg.accept())
+            )
+            btn_row.addWidget(btn_orig)
+
+            root.addLayout(btn_row)
+            dlg.exec()
+
+            choice = str(dlg_result.get("choice") or "synthesized")
+            never_ask = cb_never.isChecked()
+
+            if never_ask and choice in {"synthesized", "original"}:
+                self._config.jdnext_cover_behavior = choice
+                self._save_settings()
+        except Exception as exc:
+            self.append_log(f"[{codename}] JDNext cover prompt failed: {exc}")
+        finally:
+            request["choice"] = choice
+            request["never_ask"] = never_ask
+            if hasattr(event, "set"):
+                event.set()
 
     def _on_status_updated(self, msg: str) -> None:
         """Map backend status messages to checklist steps for visual feedback."""

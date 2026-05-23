@@ -22,6 +22,7 @@ import logging
 import os
 import re
 import shutil
+import threading
 import struct
 from pathlib import Path
 from typing import Callable, Optional
@@ -359,6 +360,7 @@ def _synthesize_jdnext_cover_if_needed(
     codename: str,
     map_data: "NormalizedMapData",
     config: Optional["AppConfig"],
+    prompt_callback: Optional[Callable[[str], tuple[str, bool]]] = None,
 ) -> bool:
     """Synthesize a 1:1 cover art for JDNext maps from map_bkg + Title assets.
 
@@ -417,71 +419,18 @@ def _synthesize_jdnext_cover_if_needed(
 
     # --- Ask dialog when behavior == "ask" ---
     if behavior == "ask":
-        try:
-            from PyQt6.QtWidgets import (
-                QApplication, QDialog, QHBoxLayout, QVBoxLayout,
-                QLabel, QPushButton, QCheckBox,
-            )
-            app = QApplication.instance()
-            if app is not None:
-                dlg_result: dict = {"choice": "synthesized", "never_ask": False}
-
-                dlg = QDialog()
-                dlg.setWindowTitle("JDNext Cover Art")
-                dlg.setModal(True)
-                dlg.setFixedWidth(440)
-
-                root = QVBoxLayout(dlg)
-                root.setContentsMargins(20, 16, 20, 16)
-                root.setSpacing(12)
-
-                msg = QLabel(
-                    f"<b>{codename}</b> is a JDNext map with a non-square cover.<br><br>"
-                    "Would you like to synthesize a proper 1:1 cover from the map "
-                    "background and Title assets?"
-                )
-                msg.setWordWrap(True)
-                root.addWidget(msg)
-
-                cb_never = QCheckBox("Remember my choice for all future maps")
-                cb_never.setToolTip(
-                    "Saves your choice to Settings → JDNext cover art.\n"
-                    "You can change it later."
-                )
-                root.addWidget(cb_never)
-
-                btn_row = QHBoxLayout()
-                btn_row.addStretch()
-
-                btn_synth = QPushButton("Use Synthesized Cover")
-                btn_synth.setMinimumWidth(160)
-                btn_synth.clicked.connect(
-                    lambda: (dlg_result.__setitem__("choice", "synthesized"), dlg.accept())
-                )
-                btn_row.addWidget(btn_synth)
-
-                btn_orig = QPushButton("Use Original Cover")
-                btn_orig.setMinimumWidth(140)
-                btn_orig.clicked.connect(
-                    lambda: (dlg_result.__setitem__("choice", "original"), dlg.accept())
-                )
-                btn_row.addWidget(btn_orig)
-
-                root.addLayout(btn_row)
-                dlg.exec()
-
-                dlg_result["never_ask"] = cb_never.isChecked()
-                if dlg_result["never_ask"] and config is not None:
+        if prompt_callback is not None:
+            try:
+                choice, never_ask = prompt_callback(codename)
+                if never_ask and config is not None:
                     try:
-                        config.jdnext_cover_behavior = dlg_result["choice"]
+                        config.jdnext_cover_behavior = choice
                     except Exception:
                         pass
-
-                if dlg_result["choice"] == "original":
+                if choice == "original":
                     return False
-            # No Qt app (headless/batch) — fall through to synthesize silently
-        except Exception as exc:
-            logger.debug("JDNext cover ask dialog failed (%s); defaulting to synthesized", exc)
+            except Exception as exc:
+                logger.debug("JDNext cover ask callback failed (%s); defaulting to synthesized", exc)
 
     # --- Composite ---
     try:
@@ -1017,6 +966,7 @@ class InstallMapWorker(QObject):
     status = pyqtSignal(str)
     error = pyqtSignal(str)
     finished = pyqtSignal(bool)         # success / failure
+    jdnext_cover_prompt_requested = pyqtSignal(object)
 
     def __init__(
         self,
@@ -1032,6 +982,17 @@ class InstallMapWorker(QObject):
         self._source_mode = source_mode
         self._config = config
 
+    def _ask_jdnext_cover_choice(self, codename: str) -> tuple[str, bool]:
+        request = {
+            "codename": codename,
+            "choice": "synthesized",
+            "never_ask": False,
+            "event": threading.Event(),
+        }
+        self.jdnext_cover_prompt_requested.emit(request)
+        request["event"].wait()
+        return str(request.get("choice") or "synthesized"), bool(request.get("never_ask"))
+
     def run(self) -> None:
         try:
             install_map_to_game(
@@ -1040,7 +1001,8 @@ class InstallMapWorker(QObject):
                 self._config,
                 source_mode=self._source_mode,
                 status_callback=self.status.emit,
-                progress_callback=self.progress.emit
+                progress_callback=self.progress.emit,
+                jdnext_cover_prompt_callback=self._ask_jdnext_cover_choice,
             )
             self.finished.emit(True)
 
@@ -2249,7 +2211,8 @@ def install_map_to_game(
     config: Optional[AppConfig],
     source_mode: str = "",
     status_callback: Optional[Callable[[str], None]] = None,
-    progress_callback: Optional[Callable[[int], None]] = None
+    progress_callback: Optional[Callable[[int], None]] = None,
+    jdnext_cover_prompt_callback: Optional[Callable[[str], tuple[str, bool]]] = None,
 ) -> None:
     """Core installation logic: files → game directory."""
     codename = map_data.codename
@@ -2518,7 +2481,13 @@ def install_map_to_game(
                     codename,
                 )
 
-            synthesized_cover = _synthesize_jdnext_cover_if_needed(map_target, codename, map_data, config)
+            synthesized_cover = _synthesize_jdnext_cover_if_needed(
+                map_target,
+                codename,
+                map_data,
+                config,
+                prompt_callback=jdnext_cover_prompt_callback,
+            )
             if synthesized_cover:
                 logger.debug(
                     "Synthesized JDNext 1:1 cover art for '%s'.",
