@@ -16,6 +16,8 @@ This document lists all external tools and libraries used by the JD2021 Map Inst
 
 All Python dependencies are listed in `requirements.txt` and installed via `pip install -r requirements.txt`.
 
+Supported runtime: Python 3.12 or newer. The current pinned and tested stack is based on Python 3.14.0.
+
 ### PyQt6
 
 **Purpose:** GUI framework. Provides the main window, widgets, layout managers, and the `QThread` / `QObject` concurrency model used for background processing.

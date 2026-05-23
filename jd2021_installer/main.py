@@ -10,6 +10,9 @@ import json
 import sys
 from pathlib import Path
 
+if sys.version_info < (3, 12):
+    raise SystemExit("JD2021 Map Installer requires Python 3.12 or newer.")
+
 from PyQt6.QtGui import QIcon
 from PyQt6.QtWidgets import QApplication
 
