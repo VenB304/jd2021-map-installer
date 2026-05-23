@@ -38,11 +38,11 @@ No manual file wrangling required.
 ## 📋 Prerequisites
 
 - **Windows 10/11** (64-bit)
-- **Python 3.10+** with `pip`
+- **Python 3.12+** with `pip` and a current tested stack on Python 3.14.0
 - **Git** (for first-time setup dependency cloning)
 - **Internet connection** (for Fetch modes and first-time tool downloads)
 
-> FFmpeg, vgmstream, Playwright Chromium, and AssetStudioModCLI are all installed automatically by `setup.bat`. You can also install them manually — see [Third-Party Tools](docs/04_reference/THIRD_PARTY_TOOLS.md).
+> `setup.bat` will provision a portable Python 3.14.0 runtime if no supported interpreter is found. FFmpeg, vgmstream, Playwright Chromium, and AssetStudioModCLI are all installed automatically by `setup.bat`. You can also install them manually — see [Third-Party Tools](docs/04_reference/THIRD_PARTY_TOOLS.md).
 
 ---
 
@@ -122,16 +122,6 @@ All documentation lives in the [`docs/`](docs/README.md) folder:
 - **[Manual JDU Porting](docs/05_guides/MANUAL_JDU_PORTING_GUIDE.md)** — Step-by-step manual JDU map porting
 - **[Manual IPK Porting](docs/05_guides/MANUAL_IPK_PORTING_GUIDE.md)** — Step-by-step manual IPK map porting
 - **[Third-Party Tools](docs/04_reference/THIRD_PARTY_TOOLS.md)** — External dependencies and community tools
-
----
-
-## ⚠️ Known Limitations
-
-- **JD2021 PC only** — installed maps target the PC development build and are not compatible with console versions.
-- **IPK video offset is approximate** — Xbox 360 binary CKDs store `videoStartTime = 0.0`; the pipeline synthesizes a default from musictrack markers, but manual sync tuning may be needed.
-- **JDNext extraction relies on third-party staging** — requires AssetStudioModCLI under `tools/`; `setup.bat` handles this automatically.
-- **JDHelper links expire quickly** — HTML mode files must be used within ~30 minutes of export from the JDHelper Discord bot. If files are already downloaded, ignore this warning.
-- **Toolchain completeness affects fidelity** — missing FFmpeg/FFprobe or vgmstream will degrade media conversion, previews, and fallback paths.
 
 ---
 

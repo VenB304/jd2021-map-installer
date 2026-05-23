@@ -12,6 +12,14 @@ if not exist tools mkdir tools
 :: Set local context for portable tools
 set "PATH=%~dp0tools\python\tools;%~dp0tools\python\tools\Scripts;%~dp0tools\git\cmd;%PATH%"
 
+call :ensure_supported_python
+if errorlevel 1 (
+	echo.
+	echo [ERROR] Python 3.12 or newer is required to install JD2021 Map Installer.
+	popd
+	exit /b 1
+)
+
 :: Ensure Portable Git is available
 git --version >nul 2>&1
 if errorlevel 1 (
@@ -24,16 +32,12 @@ if errorlevel 1 (
 	)
 )
 
-:: Ensure Portable Python is available
-python -c "import sys" >nul 2>&1
+:: Ensure Portable Python is available for supported versions
+call :ensure_supported_python
 if errorlevel 1 (
-	echo [INFO] Python is missing. Setting up Portable Python...
-	powershell -NoProfile -ExecutionPolicy Bypass -Command "$ErrorActionPreference='Stop'; $tmpZip='tools\python.zip'; Invoke-WebRequest -Uri 'https://www.nuget.org/api/v2/package/python/3.11.9' -OutFile $tmpZip; Expand-Archive -Path $tmpZip -DestinationPath 'tools\python' -Force; Remove-Item -Force $tmpZip"
-	if errorlevel 1 (
-		echo [ERROR] Failed to install Portable Python.
-		popd
-		exit /b 1
-	)
+	echo [ERROR] Failed to provision a supported Python runtime.
+	popd
+	exit /b 1
 )
 
 echo [1/7] Installing Python dependencies...
@@ -159,6 +163,30 @@ if exist "%CLI_EXE%" (
 	echo [OK] AssetStudioModCLI staged at %CLI_EXE%
 ) else (
 	echo [WARNING] AssetStudioModCLI setup completed but executable was not found.
+)
+
+exit /b 0
+
+:ensure_supported_python
+python -c "import sys; raise SystemExit(0 if sys.version_info >= (3, 12) else 1)" >nul 2>&1
+if not errorlevel 1 exit /b 0
+
+echo [INFO] Python 3.12+ is required. Setting up Portable Python 3.14.0...
+if exist "tools\python" (
+	echo [INFO] Replacing unsupported Portable Python in tools\python...
+	rmdir /s /q "tools\python"
+)
+
+powershell -NoProfile -ExecutionPolicy Bypass -Command "$ErrorActionPreference='Stop'; $tmpZip='tools\python.zip'; Invoke-WebRequest -Uri 'https://www.nuget.org/api/v2/package/python/3.14.0' -OutFile $tmpZip; Expand-Archive -Path $tmpZip -DestinationPath 'tools\python' -Force; Remove-Item -Force $tmpZip"
+if errorlevel 1 (
+	echo [ERROR] Failed to install Portable Python.
+	exit /b 1
+)
+
+python -c "import sys; raise SystemExit(0 if sys.version_info >= (3, 12) else 1)" >nul 2>&1
+if errorlevel 1 (
+	echo [ERROR] Python 3.12+ is still unavailable after portable setup.
+	exit /b 1
 )
 
 exit /b 0

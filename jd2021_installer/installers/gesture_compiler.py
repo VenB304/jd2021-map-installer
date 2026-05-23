@@ -624,11 +624,15 @@ def _load_and_hybridize(
             per_joint_range[jid] = 0.0
 
     # Apply per-joint adaptive dead-zone: min(10% of joint range, 0.14 max)
+    # MINIMUM_DEAD_ZONE ensures we don't pick up micro-jitter on stationary joints
+    MINIMUM_DEAD_ZONE = 0.03
     filtered = []
     for jid, v in joint_constraints:
         joint_range = per_joint_range.get(jid, 0.5)
         # Dead zone scales with the joint's own movement range
         adaptive_dead_zone = min(joint_range * 0.1, 0.14)
+        # Clamp to prevent tiny dead-zones from interpreting camera noise as choreographic data
+        adaptive_dead_zone = max(adaptive_dead_zone, MINIMUM_DEAD_ZONE)
         
         if abs(v) > adaptive_dead_zone:
             filtered.append((jid, v))
@@ -735,7 +739,7 @@ def _load_and_hybridize(
             struct.pack_into(f"{endian}f", template_data, eoff, ta_val)
 
             # threshold_b: body-part-specific Gaussian
-            effective_std = std * 2.0
+            effective_std = std  # Removed 2.0x artificial scoring leniency
             tb_val = rng.gauss(mean, effective_std)
 
             _MIN_ABS = 0.3
@@ -1051,11 +1055,16 @@ def compile_hybrid_gesture(
                 # ta < 0 means stump expects feature <= tb.
                 padding = max(abs(expected) * 0.4, 0.25)
                 
-                # If edge is (or will become) a gating/veto edge, double the padding.
+                # If edge is (or will become) a gating/veto edge, apply dynamic padding.
                 # Gating edges are pass/fail boundaries. We want them to catch completely 
                 # wrong moves, not punish slight natural variance (now applies to synthetic gates!)
                 if is_gating_final:
-                    padding *= 2.0
+                    # Dynamic padding: scale based on movement speed. Fast moves get more leeway
+                    # due to camera motion blur. Slow/static poses are enforced strictly.
+                    # NOTE: Revert to 'padding *= 2.0' if complaints about too many misses are raised.
+                    speed_factor = min(max(speed / 1.5, 0.0), 1.0) # 0.0 for static, 1.0 for fast
+                    dynamic_multiplier = 1.0 + (0.5 * speed_factor) # Scales from 1.0x to 1.5x
+                    padding *= dynamic_multiplier
                 
                 if ta > 0:
                     tb_val = expected - padding
