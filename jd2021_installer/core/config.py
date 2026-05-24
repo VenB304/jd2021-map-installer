@@ -89,6 +89,11 @@ class AppConfig(BaseModel):
     fetch_bot_response_timeout_s: int = 60
     fetch_background_mode: bool = False
 
+    # When True, allow using Chromecast / jdn-mp4 variants as a last-resort
+    # fallback for JDNow when no HLS or NOHUD gameplay video is available.
+    # Default: False (do not use Chromecast for gameplay).
+    jdnow_allow_chromecast_fallback: bool = False
+
     # Update checker settings
     check_updates_on_launch: bool = True
     update_branch: str = ""  # empty = auto-detect from git or state file

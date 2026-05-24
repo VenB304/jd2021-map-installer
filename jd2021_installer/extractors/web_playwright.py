@@ -29,7 +29,7 @@ import zipfile
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 from typing import Dict, List, Optional, Set, cast
-from urllib.parse import unquote, urlparse
+from urllib.parse import unquote, urlparse, urljoin
 from html import unescape
 
 from jd2021_installer.core.config import (
@@ -45,8 +45,11 @@ from jd2021_installer.extractors.jdnext_bundle_strategy import (
     _run_assetstudio_export,
     run_jdnext_bundle_strategy,
 )
+from jd2021_installer.installers.media_processor import run_ffmpeg
 
 logger = logging.getLogger("jd2021.extractors.web_playwright")
+
+_GLOBAL_JDNOW_COOKIES: Dict[str, str] = {}
 
 # SSL workaround for Ubisoft CDN
 ssl._create_default_https_context = ssl._create_unverified_context
@@ -82,6 +85,17 @@ def _is_browser_closed_error(exc: BaseException) -> bool:
 # URL extraction helpers
 # ---------------------------------------------------------------------------
 
+def _split_concatenated_url_tokens(token: str) -> List[str]:
+    parts = re.split(r'(?=https?://)', token)
+    return [part for part in parts if part]
+
+
+def get_filename_from_url(url: str) -> str:
+    path = unquote(urlparse(url).path)
+    name = Path(path).name
+    return name or url
+
+
 def extract_urls_from_html(html_content: str) -> List[str]:
     """Extract all URLs from HTML content, deduplicating.
     Finds links even outside of href attributes, useful for Discord embeds
@@ -90,32 +104,63 @@ def extract_urls_from_html(html_content: str) -> List[str]:
     urls = re.findall(r'(https?://[^\s<"\']+)', html_content)
     clean: Set[str] = set()
     for url in urls:
-        if "discordapp.net" in url:
+        # Some embeds concatenate adjacent URLs without whitespace which
+        # our loose regex can capture as a single token. Split any such
+        # concatenated runs into separate URLs before cleaning.
+        if not url:
             continue
-        # Strip trailing punctuation that might be captured from text around the URL
-        url = url.rstrip(").,!;?")
-        url = url.replace("&amp;", "&")
-        clean.add(url)
+        parts = _split_concatenated_url_tokens(url)
+
+        for part in parts:
+            if "discordapp.net" in part:
+                continue
+            # Strip trailing punctuation that might be captured from text around the URL
+            p = part.rstrip(").,!;?")
+            p = p.replace("&amp;", "&")
+            clean.add(p)
+
     return list(clean)
 
 
-def extract_urls_from_file(html_file: str | Path) -> List[str]:
-    """Read an HTML file and extract URLs."""
-    path = Path(html_file)
-    if not path.is_file():
-        raise FileNotFoundError(f"HTML file not found: {path}")
-    content = path.read_text(encoding="utf-8")
-    return extract_urls_from_html(content)
+def _is_hls_playlist_url(url: str) -> bool:
+    return url.lower().endswith(".m3u8")
 
 
-def get_filename_from_url(url: str) -> str:
-    """Extract the filename from a URL."""
-    parsed = urlparse(url)
-    path = unquote(parsed.path)
-    parts = path.split("/")
-    if len(parts) >= 2 and "." in parts[-2]:
-        return parts[-2]
-    return parts[-1]
+def _resolve_hls_variant_url(url: str, config: AppConfig) -> str:
+    """Return the highest-bandwidth rendition from an HLS master playlist."""
+    headers = {
+        "User-Agent": config.user_agent,
+        "Referer": "https://justdancenow.com/",
+    }
+
+    try:
+        with requests.get(url, timeout=config.download_timeout_s, headers=headers) as response:
+            response.raise_for_status()
+            playlist = response.text
+    except Exception:
+        return url
+
+    if "#EXT-X-STREAM-INF" not in playlist:
+        return url
+
+    best_bandwidth = -1
+    best_url = url
+    lines = [line.strip() for line in playlist.splitlines() if line.strip()]
+    for index, line in enumerate(lines):
+        if not line.startswith("#EXT-X-STREAM-INF"):
+            continue
+        match = re.search(r"BANDWIDTH=(\d+)", line)
+        if index + 1 >= len(lines):
+            continue
+        candidate = lines[index + 1]
+        if candidate.startswith("#"):
+            continue
+        bandwidth = int(match.group(1)) if match else 0
+        if bandwidth >= best_bandwidth:
+            best_bandwidth = bandwidth
+            best_url = urljoin(url, candidate)
+
+    return best_url
 
 
 def extract_codename_from_urls(urls: List[str]) -> Optional[str]:
@@ -673,12 +718,17 @@ def _classify_urls(
                 video_urls_by_quality[jdnext_q] = u
                 jdnext_variant_by_quality[jdnext_q] = jdnext_variant
 
+        if _is_hls_playlist_url(u):
+            video_urls_by_quality["ULTRA_HD"] = u
+
         # JDN video: Chromecast/SneakPeak video
+        # Treat chromecast/jdn-mp4 and sneakpeak variants as preview-only.
+        # They must not be used as the primary gameplay video. Preserve
+        # them in the "others" list so they remain available as previews
+        # but won't be selected for installation gameplay output.
         if "jdn-mp4" in u_low or "jdn-sneakpeak" in u_low or "chromecast" in u_low or "sneakpeak" in u_low:
-            if "jdn-mp4" in u_low or "chromecast" in u_low:
-                video_urls_by_quality["MID"] = u
-            else:
-                video_urls_by_quality["LOW"] = u
+            other_urls.append(u)
+            continue
 
         if (
             (
@@ -750,6 +800,25 @@ def _get_thread_session(config: AppConfig) -> requests.Session:
             "User-Agent": config.user_agent,
             "Referer": "https://discord.com/",
         })
+        # Allow external code to inject cookies/headers into the
+        # thread-local session by setting attributes on the module-level
+        # storage. This enables reusing Playwright's authenticated browser
+        # context for downloads that require the same auth cookies.
+        if getattr(_thread_local_sessions, "injected_headers", None):
+            try:
+                s.headers.update(_thread_local_sessions.injected_headers)
+            except Exception:
+                pass
+        if getattr(_thread_local_sessions, "injected_cookies", None):
+            try:
+                for c in _thread_local_sessions.injected_cookies:
+                    # cookie dicts from Playwright have 'name' and 'value'
+                    name = c.get("name")
+                    val = c.get("value")
+                    if name and val is not None:
+                        s.cookies.set(name, val)
+            except Exception:
+                pass
         _thread_local_sessions.session = s
     return _thread_local_sessions.session
 
@@ -768,6 +837,9 @@ def _download_url_worker(
     :class:`~concurrent.futures.ThreadPoolExecutor` without shared state.
     """
     fname = get_filename_from_url(url)
+    is_hls_video = _is_hls_playlist_url(url)
+    if is_hls_video:
+        fname = Path(fname).with_suffix(".mp4").name
     target = download_path / fname
     is_nohud_video = _is_nohud_video_url(url)
 
@@ -801,7 +873,7 @@ def _download_url_worker(
 
     # --- Primary: curl --resolve for known CDN mirror ---
     prefer_curl_resolve = "cdn-jdhelper.ramaprojects.ru" in url.lower()
-    if prefer_curl_resolve:
+    if prefer_curl_resolve and not is_hls_video:
         logger.debug("Using curl --resolve as primary downloader for %s", fname)
         if _download_with_curl_resolve(url, target, config.download_timeout_s):
             if is_nohud_video and not _is_valid_webm_file(target, config):
@@ -816,6 +888,87 @@ def _download_url_worker(
     success = False
     for attempt in range(1, config.max_retries + 1):
         try:
+            if is_hls_video:
+                if "justdancenow.com" in url.lower():
+                    # Check if we already have the injected cookies for this specific map
+                    has_hlscookie = False
+                    injected = getattr(_thread_local_sessions, "injected_cookies", None)
+                    url_map_folder = urlparse(url).path.split('/')[1]
+                    if injected:
+                        for c in injected:
+                            if c.get("name") == "hlscookie" and url_map_folder in c.get("value", ""):
+                                has_hlscookie = True
+                                break
+                    
+                    song_id = url_map_folder.split('_')[0]
+                    # Check if we cached the cookie during the scrape phase
+                    global _GLOBAL_JDNOW_COOKIES
+                    if not has_hlscookie and song_id in _GLOBAL_JDNOW_COOKIES:
+                        if not injected:
+                            injected = []
+                        injected = [c for c in injected if not (c.get("name") == "hlscookie" and url_map_folder in c.get("value", ""))]
+                        injected.append({"name": "hlscookie", "value": _GLOBAL_JDNOW_COOKIES[song_id]})
+                        _thread_local_sessions.injected_cookies = injected
+                        has_hlscookie = True
+
+                    if not has_hlscookie:
+                        from jd2021_installer.extractors.jdnow_ws_extractor import JDNowWSExtractor
+                        logger.info(f"Missing authorization for JDNow HLS stream. Launching manual interaction for {song_id}...")
+                        extractor = JDNowWSExtractor()
+                        try:
+                            # Run synchronously in this thread
+                            result = asyncio.run(extractor.get_hls_stream(song_id))
+                            if not injected:
+                                injected = []
+                            # Add the cookie, avoiding duplicates
+                            injected = [c for c in injected if not (c.get("name") == "hlscookie" and url_map_folder in c.get("value", ""))]
+                            injected.append({"name": "hlscookie", "value": result["cookie"]})
+                            _thread_local_sessions.injected_cookies = injected
+                            url = result["video_url"]
+                            logger.info(f"Successfully obtained JDNow authorization for {song_id}.")
+                        except Exception as e:
+                            logger.error(f"Manual JDNow interaction failed: {e}")
+
+                chosen_url = _resolve_hls_variant_url(url, config)
+                # Build ffmpeg headers, include any injected cookies from
+                # the Playwright context so private HLS masters can be
+                # accessed when required by the CDN.
+                ffmpeg_headers = f"User-Agent: {config.user_agent}\r\nReferer: https://justdancenow.com/\r\n"
+                ffmpeg_cookies = None
+                injected = getattr(_thread_local_sessions, "injected_cookies", None)
+                if injected:
+                    try:
+                        cookie_pairs = []
+                        for c in injected:
+                            n = c.get('name')
+                            v = c.get('value')
+                            if n and v is not None:
+                                cookie_pairs.append(f"{n}={v}")
+                        if cookie_pairs:
+                            ffmpeg_cookies = "; ".join(cookie_pairs)
+                    except Exception:
+                        pass
+                ffmpeg_args = ["-y"]
+                if ffmpeg_cookies:
+                    ffmpeg_args.extend(["-cookies", ffmpeg_cookies])
+                ffmpeg_args.extend([
+                    "-headers",
+                    ffmpeg_headers,
+                    "-i",
+                    chosen_url,
+                    "-c",
+                    "copy",
+                    "-movflags",
+                    "+faststart",
+                    str(target),
+                ])
+                run_ffmpeg(ffmpeg_args, config=config)
+                if target.stat().st_size > 1024:
+                    success = True
+                    break
+                logger.debug("HLS download produced empty file for %s", fname)
+                continue
+
             with session.get(url, stream=True, timeout=config.download_timeout_s) as r:
                 if r.status_code == 429:
                     retry_after = _parse_retry_after_seconds(
@@ -876,7 +1029,7 @@ def _download_url_worker(
         return fname, str(target)
 
     # --- Fallbacks for prefer_curl_resolve hosts ---
-    if prefer_curl_resolve:
+    if prefer_curl_resolve and not is_hls_video:
         logger.debug("Trying curl --resolve fallback download for %s", fname)
         if _download_with_curl_resolve(url, target, config.download_timeout_s):
             if is_nohud_video and not _is_valid_webm_file(target, config):
@@ -2004,7 +2157,34 @@ class WebPlaywrightExtractor(BaseExtractor):
             if not classified_required.get("audio"):
                 missing_required.append("audio (.mp3)")
             if not classified_required.get("video"):
-                missing_required.append("gameplay video (.mp4)")
+                # Dynamically fetch the HLS link from JDNow server interactively!
+                try:
+                    from jd2021_installer.extractors.jdnow_ws_extractor import JDNowWSExtractor
+                    song_id = self._codenames[0] if self._codenames else "unknown"
+                    logger.info(f"Missing video link for JDNow. Launching manual interaction for {song_id}...")
+                    extractor = JDNowWSExtractor()
+                    result = asyncio.run(extractor.get_hls_stream(song_id))
+                    
+                    # Add the URL to our pool and re-classify
+                    video_url = result["video_url"]
+                    if video_url:
+                        all_urls.append(video_url)
+                        # Re-run classification
+                        classified_required = _classify_urls(all_urls, self._quality, self._config)
+                        # We also want to store the cookie for the downloader thread.
+                        # It will be picked up by the downloader hook we added earlier if it's missing,
+                        # but we can also store it globally or let the hook handle it (the hook will prompt again though!).
+                        # So let's store it globally in thread local, and also ensure the downloader hook uses a global cache.
+                        # Actually, wait, the downloader hook is already implemented to launch JDNowWSExtractor
+                        # if the cookie is missing! But now we did it HERE.
+                        # To prevent asking twice, we should stash the cookie somewhere. 
+                        # We can just stash it in a global module variable.
+                        global _GLOBAL_JDNOW_COOKIES
+                        _GLOBAL_JDNOW_COOKIES[song_id] = result["cookie"]
+                        
+                except Exception as e:
+                    logger.error(f"Manual JDNow interaction failed: {e}")
+                    missing_required.append("gameplay video (.m3u8)")
         else:
             if not classified_required.get("mainscene"):
                 if self._source_game == "jdnext":
@@ -2103,6 +2283,40 @@ class WebPlaywrightExtractor(BaseExtractor):
                     fname = get_filename_from_url(url)
                     if fname not in downloaded:
                         still_missing.append(f"{key}:{fname}")
+
+        # JDNow fallback: if only preview/chromecast variants were present
+        # and the user explicitly allows chromecast fallback via config,
+        # try to download the chromecast MP4 as a last resort.
+        if still_missing:
+            if self._source_game == "jdnow" and getattr(self._config, "jdnow_allow_chromecast_fallback", False):
+                # Find a chromecast/jdn-mp4 candidate in all_urls
+                chromecast_candidate = None
+                for u in all_urls:
+                    low = (u or "").lower()
+                    if "jdn-mp4" in low or "chromecast" in low or "jdn-sneakpeak" in low or "sneakpeak" in low:
+                        chromecast_candidate = u
+                        break
+                if chromecast_candidate:
+                    logger.warning(
+                        "No HLS/NOHUD gameplay video found; jdnow_allow_chromecast_fallback=True so attempting chromecast fallback: %s",
+                        chromecast_candidate,
+                    )
+                    try:
+                        refreshed = download_files([chromecast_candidate], download_dir, self._quality, self._config)
+                        downloaded.update(refreshed)
+                    except Exception as exc:
+                        logger.debug("Chromecast fallback download failed: %s", exc)
+
+            # Re-evaluate missing critical files after any fallback attempts
+            still_missing = []
+            classified = _classify_urls(all_urls, self._quality, self._config)
+            for key in ("video", "audio", "mainscene"):
+                url = classified.get(key)
+                if not url:
+                    continue
+                fname = get_filename_from_url(url)
+                if fname not in downloaded:
+                    still_missing.append(f"{key}:{fname}")
 
         if still_missing:
             raise WebExtractionError(
@@ -2360,6 +2574,22 @@ class WebPlaywrightExtractor(BaseExtractor):
                 except Exception:
                     pass  # Channel might be empty
 
+                # Export cookies and any useful headers from the Playwright
+                # browser context so that downloader thread sessions can reuse
+                # authenticated cookies for subsequent requests (HLS/segments).
+                try:
+                    cookies = await context.cookies()
+                    # Store into module-level thread-local storage for pickup
+                    # by _get_thread_session
+                    _thread_local_sessions.injected_cookies = cookies
+                    # Optionally preserve common auth headers (e.g., Referer is set elsewhere)
+                    _thread_local_sessions.injected_headers = {
+                        "User-Agent": self._config.user_agent
+                    }
+                    logger.debug("Exported %d cookies from Playwright context for downloader reuse.", len(cookies))
+                except Exception as exc:
+                    logger.debug("Could not export Playwright cookies for downloader: %s", exc)
+
                 bot_timeout = self._config.fetch_bot_response_timeout_s
                 requester_handles = await _get_logged_in_requester_handles(page)
                 if requester_handles:
@@ -2462,6 +2692,96 @@ class WebPlaywrightExtractor(BaseExtractor):
                         encoding="utf-8",
                     )
                 _log("Saved HTML to %s", download_dir)
+                # Attempt to fetch any referenced JSON metadata (e.g. Espresso.json)
+                # Some JDN embeds only expose HLS/video links inside that JSON.
+                extra_urls: List[str] = []
+                try:
+                    urls_in_html = extract_urls_from_html(assets_html)
+                    # Prefer explicit href JSON links from the HTML (more robust
+                    # when URLs are concatenated in plain text). Fall back to
+                    # extracted URLs if needed.
+                    json_urls = []
+                    try:
+                        href_jsons = re.findall(r'href=["\']([^"\']+?\.json)["\']', assets_html, flags=re.IGNORECASE)
+                        for h in href_jsons:
+                            if h.startswith('/'):
+                                json_urls.append(urljoin('https://'+urlparse(self._config.discord_channel_url).hostname, h))
+                            else:
+                                json_urls.append(h)
+                    except Exception:
+                        pass
+                    # Add any absolute .json URLs found by the generic extractor
+                    for u in urls_in_html:
+                        if u.lower().endswith('.json') and u not in json_urls:
+                            json_urls.append(u)
+                    # If the embed references jdn-location song assets, construct
+                    # the canonical metadata.json and <codename>.json paths
+                    # (these are commonly present even when not directly linked).
+                    try:
+                        m = re.search(r'(https?://[^/]+/songs/[^/]+/)', assets_html)
+                        if m:
+                            base = m.group(1)
+                            meta_guess = urljoin(base, 'metadata.json')
+                            code_guess = urljoin(base, f'{codename}.json')
+                            if meta_guess not in json_urls:
+                                json_urls.append(meta_guess)
+                            if code_guess not in json_urls:
+                                json_urls.append(code_guess)
+                    except Exception:
+                        pass
+                    for jurl in json_urls:
+                        try:
+                            # Use thread-local requests.Session (applies injected cookies)
+                            def _fetch_json():
+                                sess = _get_thread_session(self._config)
+                                with sess.get(jurl, timeout=self._config.download_timeout_s, headers={"User-Agent": self._config.user_agent}) as r:
+                                    r.raise_for_status()
+                                    return r.text
+
+                            jtext = await asyncio.get_running_loop().run_in_executor(None, _fetch_json)
+                            # Save metadata.json next to assets.html for debugging
+                            try:
+                                fname = get_filename_from_url(jurl)
+                                (download_dir / fname).write_text(jtext, encoding='utf-8')
+                            except Exception:
+                                pass
+
+                            # Extract any URLs found inside JSON text (some fields embed CDN links)
+                            # Match absolute URLs and common relative media paths (e.g. /...m3u8).
+                            raw_found = re.findall(
+                                r'(https?://[^\s\"\']+)|(/[^\s\"\']\.(?:m3u8|mp4|json|mp3|ogg|opus|png|jpg))',
+                                jtext,
+                                flags=re.IGNORECASE,
+                            )
+                            for grp in raw_found:
+                                fu = grp[0] or grp[1]
+                                if not fu:
+                                    continue
+                                if fu.startswith('/'):
+                                    try:
+                                        absu = urljoin(jurl, fu)
+                                    except Exception:
+                                        absu = fu
+                                    # Heuristic fallback: some HLS masters are hosted
+                                    # under hls.justdancenow.com rather than the
+                                    # jdn-location host. Add an alternate candidate
+                                    # using that hostname so downstream resolution
+                                    # can try it if the jdn-location URL 404s.
+                                    if fu.lower().endswith('.m3u8'):
+                                        try:
+                                            alt = urljoin('https://hls.justdancenow.com', fu.lstrip('/'))
+                                            if alt not in extra_urls:
+                                                extra_urls.append(alt)
+                                        except Exception:
+                                            pass
+                                else:
+                                    absu = fu
+                                if absu not in extra_urls:
+                                    extra_urls.append(absu)
+                        except Exception as exc:
+                            logger.debug("Failed to fetch/parse metadata JSON %s: %s", jurl, exc)
+                except Exception:
+                    extra_urls = []
 
             finally:
                 try:
@@ -2470,10 +2790,13 @@ class WebPlaywrightExtractor(BaseExtractor):
                     # Context may already be closed if user manually closed browser.
                     pass
 
-        # Extract URLs from the fetched HTML payload(s)
+        # Extract URLs from the fetched HTML payload(s) and any metadata JSON we fetched
         all_urls = extract_urls_from_html(assets_html)
         if nohud_html is not None:
             all_urls += extract_urls_from_html(nohud_html)
+        # Append any URLs discovered inside JSON metadata (HLS links often hide here)
+        if 'extra_urls' in locals() and extra_urls:
+            all_urls += extra_urls
         self._codename = extract_codename_from_urls(all_urls) or codename
         return all_urls
 

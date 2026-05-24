@@ -8,6 +8,7 @@ from typing import cast
 from unittest.mock import MagicMock, patch
 from jd2021_installer.core.config import AppConfig
 from jd2021_installer.core.exceptions import WebExtractionError
+import jd2021_installer.extractors.web_playwright as web_playwright
 from jd2021_installer.extractors.web_playwright import (
     WebPlaywrightExtractor,
     _classify_urls,
@@ -655,3 +656,66 @@ def test_classify_urls_maps_jdnext_vp9_for_hd_fallback_search_order():
     # Request HIGH_HD when only HIGH_VP9 exists: should resolve to HIGH tier fallback.
     classified = _classify_urls(urls, "HIGH_HD")
     assert classified["video"] is None
+
+
+def test_classify_urls_prefers_hls_over_chromecast_mp4():
+    urls = [
+        "https://jdn-sneakpeak.justdancenow.com/sweetbutpsycho_preview.mp4",
+        "https://hls.justdancenow.com/365_3fee56bcf93cad7a/3fdeb5948b3d6b29.m3u8",
+        "https://jdn-mp4.justdancenow.com/sweetbutpsycho_9c00f9bc92f8e67ec9f75d823e2fdc9687dfc7cc_576p.mp4?hlscookie=token",
+    ]
+
+    classified = _classify_urls(urls, "ULTRA_HD")
+
+    assert classified["video"] is not None
+    assert str(classified["video"]).endswith("3fdeb5948b3d6b29.m3u8")
+
+
+def test_download_files_resolves_hls_master_to_best_variant(tmp_path, monkeypatch):
+    master_url = "https://hls.justdancenow.com/365_3fee56bcf93cad7a/3fdeb5948b3d6b29.m3u8"
+    playlist_text = "\n".join(
+        [
+            "#EXTM3U",
+            '#EXT-X-STREAM-INF:PROGRAM-ID=1,BANDWIDTH=1219000,RESOLUTION=416x234,CODECS="avc1.4d001f,mp4a.40.2"',
+            "1m.m3u8",
+            '#EXT-X-STREAM-INF:PROGRAM-ID=1,BANDWIDTH=2740000,RESOLUTION=848x476,CODECS="avc1.4d001f,mp4a.40.2"',
+            "2m.m3u8",
+            '#EXT-X-STREAM-INF:PROGRAM-ID=1,BANDWIDTH=5315000,RESOLUTION=1280x720,CODECS="avc1.4d001f,mp4a.40.2"',
+            "4m.m3u8",
+        ]
+    )
+
+    class FakeResponse:
+        def __init__(self, text):
+            self.text = text
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+        def raise_for_status(self):
+            return None
+
+    ffmpeg_calls = {}
+
+    def fake_get(url, timeout=None, headers=None):
+        assert url == master_url
+        return FakeResponse(playlist_text)
+
+    def fake_run_ffmpeg(args, config=None):
+        ffmpeg_calls["args"] = args
+        output_path = Path(args[-1])
+        output_path.write_bytes(b"\x00" * 2048)
+
+    monkeypatch.setattr(web_playwright.requests, "get", fake_get)
+    monkeypatch.setattr(web_playwright, "run_ffmpeg", fake_run_ffmpeg)
+    monkeypatch.setattr(web_playwright.time, "sleep", lambda *_: None)
+
+    cfg = AppConfig(max_retries=1, inter_request_delay_s=0.0)
+    downloaded = download_files([master_url], tmp_path, "ULTRA_HD", cfg)
+
+    assert any("4m.m3u8" in str(part) for part in ffmpeg_calls["args"])
+    assert "3fdeb5948b3d6b29.mp4" in downloaded
+    assert (tmp_path / "3fdeb5948b3d6b29.mp4").exists()
