@@ -109,9 +109,16 @@ def _is_jdnow_source(source_dir: Path, media: MapMedia) -> bool:
     if (source_dir / "pictos-atlas.json").exists() or (source_dir / "MusicTrack.json").exists():
         return True
 
+    # Check for gameplay JSON with JDN-specific structure (MapName + beats/pictos)
     for p in source_dir.glob("*.json"):
-        if p.name.lower() not in {"metadata.json", "pictos-atlas.json", "map.json", "songdesc.json", "musictrack.json", "jdnext_metadata.json"}:
-            return True
+        if p.name.lower() in {"metadata.json", "pictos-atlas.json", "map.json", "songdesc.json", "musictrack.json", "jdnext_metadata.json"}:
+            continue
+        try:
+            payload = json.loads(p.read_text(encoding="utf-8", errors="ignore"))
+            if isinstance(payload, dict) and "MapName" in payload and ("beats" in payload or "pictos" in payload):
+                return True
+        except Exception:
+            continue
 
     return False
 
@@ -1142,6 +1149,31 @@ def _apply_jdnext_songdb_cache_overrides(
         )
 
 
+_JDN_GAMEPLAY_JSON_SKIP = {"metadata.json", "pictos-atlas.json", "map.json", "songdesc.json", "musictrack.json", "jdnext_metadata.json"}
+
+
+def _find_jdn_gameplay_json(directory: str) -> Optional[Path]:
+    """Locate a JDN gameplay JSON by validating its content.
+
+    Returns the first JSON that contains JDN-specific keys
+    (``MapName`` + ``beats``/``pictos`` or ``DanceData``/``KaraokeData``).
+    """
+    for p in Path(directory).rglob("*.json"):
+        if p.name.lower() in _JDN_GAMEPLAY_JSON_SKIP:
+            continue
+        try:
+            payload = json.loads(p.read_text(encoding="utf-8", errors="ignore"))
+        except Exception:
+            continue
+        if not isinstance(payload, dict):
+            continue
+        has_jdn_keys = "MapName" in payload and ("beats" in payload or "pictos" in payload)
+        has_gameplay_data = "DanceData" in payload or "KaraokeData" in payload
+        if has_jdn_keys or has_gameplay_data:
+            return p
+    return None
+
+
 def _extract_dance_tape(
     directory: str, codename: Optional[str] = None
 ) -> Optional[DanceTape]:
@@ -1150,11 +1182,7 @@ def _extract_dance_tape(
     ckd_paths = _find_ckd_files(directory, "*dtape*ckd", codename)
     if not ckd_paths:
         # Check for JDN gameplay JSON
-        jdn_gp_path = None
-        for p in Path(directory).rglob("*.json"):
-            if p.name.lower() not in {"metadata.json", "pictos-atlas.json", "map.json", "songdesc.json", "musictrack.json", "jdnext_metadata.json"}:
-                jdn_gp_path = p
-                break
+        jdn_gp_path = _find_jdn_gameplay_json(directory)
         
         if jdn_gp_path:
             try:
@@ -1273,11 +1301,7 @@ def _extract_karaoke_tape(
     ckd_paths = _find_ckd_files(directory, "*ktape*ckd", codename)
     if not ckd_paths:
         # Check for JDN gameplay JSON
-        jdn_gp_path = None
-        for p in Path(directory).rglob("*.json"):
-            if p.name.lower() not in {"metadata.json", "pictos-atlas.json", "map.json", "songdesc.json", "musictrack.json", "jdnext_metadata.json"}:
-                jdn_gp_path = p
-                break
+        jdn_gp_path = _find_jdn_gameplay_json(directory)
         
         if jdn_gp_path:
             try:

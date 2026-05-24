@@ -2434,10 +2434,9 @@ def install_map_to_game(
 
         is_jdnow = getattr(map_data, "is_jdnow_source", False)
         if converted_tapes == 0 or is_jdnow:
-            from jd2021_installer.installers.tape_converter import json_to_lua
+            from jd2021_installer.installers.tape_converter import json_to_lua, _rewrite_tape_codename_refs
             if map_data.dance_tape:
                 dance_lua = json_to_lua(map_data.dance_tape.as_ubiart_dict())
-                from jd2021_installer.installers.tape_converter import _rewrite_tape_codename_refs
                 dance_lua = _rewrite_tape_codename_refs(dance_lua, codename)
                 
                 # Align all system paths with V1 lowercase conventions
@@ -2445,7 +2444,6 @@ def install_map_to_game(
                 dance_lua = dance_lua.replace('"Timeline/', '"timeline/')
                 
                 # Fix pictogram paths extension: png instead of ckd/tga
-                import re
                 dance_lua = re.sub(r'([Pp]ictos)/([^"]+)\.(ckd|tga)', r'pictos/\2.png', dance_lua)
                 dance_lua = dance_lua.replace('"Timeline/pictos/', '"timeline/pictos/')
                 
@@ -2456,7 +2454,6 @@ def install_map_to_game(
                 
             if map_data.karaoke_tape:
                 karaoke_lua = json_to_lua(map_data.karaoke_tape.as_ubiart_dict())
-                from jd2021_installer.installers.tape_converter import _rewrite_tape_codename_refs
                 karaoke_lua = _rewrite_tape_codename_refs(karaoke_lua, codename)
                 
                 # Align all system paths with V1 lowercase conventions
