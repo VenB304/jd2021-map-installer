@@ -1162,6 +1162,7 @@ def copy_moves(
     target_dir: str | Path,
     *,
     skip_gestures: bool = False,
+    is_jdnow: bool = False,
 ) -> int:
     """Extract and merge move files while preserving source platform layout.
 
@@ -1169,6 +1170,7 @@ def copy_moves(
         moves_src_dir: The extracted root 'moves' folder containing 'nx', 'durango', etc.
         target_dir: The map's root installation target directory.
         skip_gestures: When True, do not import any .gesture files.
+        is_jdnow: When True, always use discorope.gesture template for JDN maps.
 
     Returns:
         The number of valid move files copied.
@@ -1176,6 +1178,9 @@ def copy_moves(
     src_root = Path(moves_src_dir)
     if not src_root.is_dir():
         return 0
+
+    if is_jdnow:
+        skip_gestures = True
 
     def _is_probably_valid_kinect_gesture(gesture_path: Path) -> tuple[bool, str]:
         """Best-effort guard against non-Kinect or malformed gesture payloads.
@@ -1287,6 +1292,26 @@ def copy_moves(
 
     if skip_gestures:
         logger.debug("Gesture import disabled for this source; only .msm files will be copied.")
+
+    # Pass 0: Check for loose moves directly in src_root
+    for item in src_root.iterdir():
+        if item.is_file():
+            ext = item.suffix.lower()
+            if ext in (".gesture", ".msm"):
+                if skip_gestures and ext == ".gesture":
+                    skipped_gesture_names.add(item.name)
+                    continue
+                if ext == ".gesture":
+                    is_valid, reason = _is_probably_valid_kinect_gesture(item)
+                    if not is_valid:
+                        logger.warning(
+                            "Skipping incompatible loose gesture '%s': %s",
+                            item.name,
+                            reason,
+                        )
+                        continue
+                if _copy_to_canonical(item, "loose"):
+                    total_copied += 1
 
     # Pass 1: Keep original platform paths and mirror files into PC.
     for plat_dir in src_root.iterdir():

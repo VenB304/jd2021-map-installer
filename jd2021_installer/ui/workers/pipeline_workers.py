@@ -1456,6 +1456,8 @@ class BatchInstallWorker(QObject):
                     return "jdu"
                 if "/jdnext/maps/" in content or "server:jdnext" in content:
                     return "jdnext"
+                if "justdancenow.com" in content or "jdnow" in content or "songmetadata.zip" in content or "bundle.zip" in content:
+                    return "jdnow"
                 return "jdu"
 
             def looks_like_prepared_map_dir(folder: Path) -> bool:
@@ -1520,10 +1522,15 @@ class BatchInstallWorker(QObject):
                 elif self._source_dir.is_dir():
                     root_asset, root_nohud = find_html_pair(self._source_dir)
                     root_source_game = detect_html_source_game(root_asset)
-                    if root_asset and (root_nohud or root_source_game == "jdnext"):
+                    if root_asset and (root_nohud or root_source_game in ("jdnext", "jdnow")):
+                        kind = "html"
+                        if root_source_game == "jdnext":
+                            kind = "html_jdnext"
+                        elif root_source_game == "jdnow":
+                            kind = "html_jdnow"
                         candidates.append(
                             {
-                                "kind": "html_jdnext" if root_source_game == "jdnext" else "html",
+                                "kind": kind,
                                 "path": self._source_dir,
                                 "name": self._source_dir.name,
                                 "asset": root_asset,
@@ -1542,10 +1549,15 @@ class BatchInstallWorker(QObject):
 
                             asset_html, nohud_html = find_html_pair(path)
                             source_game = detect_html_source_game(asset_html)
-                            if asset_html and (nohud_html or source_game == "jdnext"):
+                            if asset_html and (nohud_html or source_game in ("jdnext", "jdnow")):
+                                kind = "html"
+                                if source_game == "jdnext":
+                                    kind = "html_jdnext"
+                                elif source_game == "jdnow":
+                                    kind = "html_jdnow"
                                 candidates.append(
                                     {
-                                        "kind": "html_jdnext" if source_game == "jdnext" else "html",
+                                        "kind": kind,
                                         "path": path,
                                         "name": path.name,
                                         "asset": asset_html,
@@ -1576,7 +1588,7 @@ class BatchInstallWorker(QObject):
                     from jd2021_installer.extractors.archive_ipk import inspect_ipk
                     maps_in_ipk = inspect_ipk(cpath)
                     map_names.extend(maps_in_ipk or [cpath.stem])
-                elif kind in {"html", "html_jdnext"}:
+                elif kind in {"html", "html_jdnext", "html_jdnow"}:
                     map_names.append(str(candidate.get("name") or cpath.name))
                 else:
                     map_names.append(cpath.name)
@@ -1620,7 +1632,7 @@ class BatchInstallWorker(QObject):
             html_candidates = [
                 c
                 for c in candidates
-                if str(c["kind"]) in {"html", "html_jdnext"}
+                if str(c["kind"]) in {"html", "html_jdnext", "html_jdnow"}
             ]
             if html_candidates:
                 self.status.emit("Phase 1/2: Preparing HTML-sourced batch maps...")
@@ -1660,7 +1672,7 @@ class BatchInstallWorker(QObject):
             process_candidates = [
                 c
                 for c in candidates
-                if str(c["kind"]) not in {"html", "html_jdnext"}
+                if str(c["kind"]) not in {"html", "html_jdnext", "html_jdnow"}
             ]
 
             self.status.emit("Phase 2/2: Installing prepared maps...")
@@ -1811,9 +1823,19 @@ class BatchInstallWorker(QObject):
                         self.status.emit(f"[{map_data.codename}] Installing map...")
                         install_source_mode = ""
                         if is_candidate_fetch:
-                            install_source_mode = "Fetch JDNext" if self._fetch_source == "jdnext" else "Fetch"
+                            if self._fetch_source == "jdnext":
+                                install_source_mode = "Fetch JDNext"
+                            elif self._fetch_source == "jdnow":
+                                install_source_mode = "Fetch JDNow"
+                            else:
+                                install_source_mode = "Fetch"
                         elif bool(getattr(map_data, "is_html_source", False)):
-                            install_source_mode = "HTML JDNext" if bool(getattr(map_data, "is_jdnext_source", False)) else "HTML"
+                            if bool(getattr(map_data, "is_jdnext_source", False)):
+                                install_source_mode = "HTML JDNext"
+                            elif bool(getattr(map_data, "is_jdnow_source", False)):
+                                install_source_mode = "HTML JDNow"
+                            else:
+                                install_source_mode = "HTML"
                         setattr(map_data, "_install_source_mode", install_source_mode)
                         self._install_map_synchronously(map_data)
                         emit_map_stage(2)
@@ -2408,7 +2430,43 @@ def install_map_to_game(
         if status_callback: status_callback("Converting dance tapes...")
         if progress_callback: progress_callback(60)
         from jd2021_installer.installers.tape_converter import auto_convert_tapes
-        auto_convert_tapes(map_data.source_dir, map_target, codename)
+        converted_tapes = auto_convert_tapes(map_data.source_dir, map_target, codename)
+
+        is_jdnow = getattr(map_data, "is_jdnow_source", False)
+        if converted_tapes == 0 or is_jdnow:
+            from jd2021_installer.installers.tape_converter import json_to_lua
+            if map_data.dance_tape:
+                dance_lua = json_to_lua(map_data.dance_tape.as_ubiart_dict())
+                from jd2021_installer.installers.tape_converter import _rewrite_tape_codename_refs
+                dance_lua = _rewrite_tape_codename_refs(dance_lua, codename)
+                
+                # Align all system paths with V1 lowercase conventions
+                dance_lua = dance_lua.replace('"World/MAPS/', '"world/maps/')
+                dance_lua = dance_lua.replace('"Timeline/', '"timeline/')
+                
+                # Fix pictogram paths extension: png instead of ckd/tga
+                import re
+                dance_lua = re.sub(r'([Pp]ictos)/([^"]+)\.(ckd|tga)', r'pictos/\2.png', dance_lua)
+                dance_lua = dance_lua.replace('"Timeline/pictos/', '"timeline/pictos/')
+                
+                dance_out = map_target / "timeline" / f"{codename}_TML_Dance.dtape"
+                dance_out.parent.mkdir(parents=True, exist_ok=True)
+                dance_out.write_text(dance_lua, encoding="utf-8")
+                logger.info("Successfully serialized and wrote synthesized JDN dance tape to %s", dance_out.name)
+                
+            if map_data.karaoke_tape:
+                karaoke_lua = json_to_lua(map_data.karaoke_tape.as_ubiart_dict())
+                from jd2021_installer.installers.tape_converter import _rewrite_tape_codename_refs
+                karaoke_lua = _rewrite_tape_codename_refs(karaoke_lua, codename)
+                
+                # Align all system paths with V1 lowercase conventions
+                karaoke_lua = karaoke_lua.replace('"World/MAPS/', '"world/maps/')
+                karaoke_lua = karaoke_lua.replace('"Timeline/', '"timeline/')
+                
+                karaoke_out = map_target / "timeline" / f"{codename}_TML_Karaoke.ktape"
+                karaoke_out.parent.mkdir(parents=True, exist_ok=True)
+                karaoke_out.write_text(karaoke_lua, encoding="utf-8")
+                logger.info("Successfully serialized and wrote synthesized JDN karaoke tape to %s", karaoke_out.name)
         
         # We don't have separate steps for Karaoke/Cinematic yet in logic, but status can reflect them
         if status_callback: status_callback("Converting karaoke tapes...")
@@ -2543,12 +2601,16 @@ def install_map_to_game(
         # For JDNext maps, only skip gestures if there actually are gesture files to process
         # If extraction didn't produce camera gesture files, copy what's there as fallback
         should_skip_gestures = False
+        is_jdnow = getattr(map_data, "is_jdnow_source", False)
         if _is_jdnext_source_map():
             # Check if camera gesture files actually exist in the source
             has_camera_gestures = bool(list(media.moves_dir.rglob("*.gesture")))
             should_skip_gestures = has_camera_gestures  # Skip copying only if we have source gestures to compile
+        elif is_jdnow:
+            # JDNow maps do not have kinect/gesture files, so always skip copying from source
+            should_skip_gestures = True
         
-        copy_moves(media.moves_dir, map_target, skip_gestures=should_skip_gestures)
+        copy_moves(media.moves_dir, map_target, skip_gestures=should_skip_gestures, is_jdnow=is_jdnow)
 
     # 5a. JDNext gesture compilation / surrogate fallback
     #     copy_moves() above skips .gesture files for JDNext sources because

@@ -474,6 +474,7 @@ class NormalizedMapData:
     supplemental_roots: List[Path] = field(default_factory=list)
     is_html_source: bool = False
     is_jdnext_source: bool = False
+    is_jdnow_source: bool = False
     video_start_time_override: Optional[float] = None
     has_autodance: bool = True
 

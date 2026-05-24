@@ -48,6 +48,8 @@ MODE_HTML_JDNEXT = 3
 MODE_IPK = 4
 MODE_BATCH = 5
 MODE_MANUAL = 6
+MODE_JDNOW = 7
+MODE_HTML_JDNOW = 8
 
 MODE_LABELS = [
     "Fetch JDU",
@@ -57,6 +59,8 @@ MODE_LABELS = [
     "IPK Archive",
     "Batch (Directory)",
     "Manual (Directory)",
+    "Fetch JDNow",
+    "HTML JDNow",
 ]
 
 MODE_KEYS = [
@@ -67,6 +71,8 @@ MODE_KEYS = [
     "ipk",
     "batch",
     "manual",
+    "jdnow",
+    "html_jdnow",
 ]
 
 
@@ -152,6 +158,8 @@ class ModeSelectorWidget(QWidget):
             "ipk": {},
             "batch": {},
             "manual": {},
+            "jdnow": {},
+            "html_jdnow": {},
         }
         self._build_ui()
 
@@ -192,6 +200,8 @@ class ModeSelectorWidget(QWidget):
         self._stack.addWidget(self._build_ipk_page())  # 4
         self._stack.addWidget(self._build_batch_page())  # 5
         self._stack.addWidget(self._build_manual_page())  # 6
+        self._stack.addWidget(self._build_jdnow_page())  # 7
+        self._stack.addWidget(self._build_html_jdnow_page())  # 8
         self._wire_state_signals()
         self._fit_current_page_height()
 
@@ -335,6 +345,41 @@ class ModeSelectorWidget(QWidget):
         lay.addWidget(asset_row)
 
         self.inputs["html_jdnext"]["asset"] = asset_row.line_edit
+        return page
+
+    def _build_jdnow_page(self) -> QWidget:
+        return self._build_codename_fetch_page(
+            input_key="jdnow",
+            warning_text=(
+                "Fetch automates acquiring the JDNow asset HTML file and downloads. "
+                "Make sure to set your Discord channel link that can access JDHelper."
+            ),
+            placeholder="e.g. SweetButPsycho",
+        )
+
+    def _build_html_jdnow_page(self) -> QWidget:
+        page = QWidget()
+        page.setObjectName("modePage")
+        lay = QVBoxLayout(page)
+        lay.setContentsMargins(0, 4, 0, 0)
+
+        warn = QLabel(
+            "⚠️ Asset links expire after ~30 minutes! Fetch fresh links if download fails. If the assets are already downloaded, ignore this warning."
+        )
+        warn.setObjectName("modeHtmlWarningLabel")
+        warn.setWordWrap(True)
+        lay.addWidget(warn)
+
+        asset_row = FileRowWidget(
+            "Asset HTML:",
+            is_dir=False,
+            file_filter="HTML Files (*.html *.htm)",
+            placeholder="No file selected",
+        )
+        asset_row.path_changed.connect(lambda t: self.target_selected.emit(t))
+        lay.addWidget(asset_row)
+
+        self.inputs["html_jdnow"]["asset"] = asset_row.line_edit
         return page
 
     def _build_ipk_page(self) -> QWidget:
@@ -898,9 +943,13 @@ class ModeSelectorWidget(QWidget):
             return fields.get("codenames", "").strip()
         if mode_key == "jdnext":
             return fields.get("codenames", "").strip()
+        if mode_key == "jdnow":
+            return fields.get("codenames", "").strip()
         if mode_key == "html":
             return fields.get("asset", "").strip() or fields.get("nohud", "").strip()
         if mode_key == "html_jdnext":
+            return fields.get("asset", "").strip()
+        if mode_key == "html_jdnow":
             return fields.get("asset", "").strip()
         if mode_key == "ipk":
             return fields.get("file", "").strip()

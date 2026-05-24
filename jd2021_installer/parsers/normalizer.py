@@ -95,6 +95,27 @@ def _is_jdnext_source(source_dir: Path, media: MapMedia) -> bool:
     return False
 
 
+def _is_jdnow_source(source_dir: Path, media: MapMedia) -> bool:
+    """Best-effort detection for JDNow-origin maps in normalized sources."""
+    if (source_dir / "metadata.json").exists():
+        try:
+            content = (source_dir / "metadata.json").read_text(encoding="utf-8", errors="ignore")
+            payload = json.loads(content)
+            if isinstance(payload, dict) and ("trackId" in payload or "jdn" in str(payload).lower()):
+                return True
+        except Exception:
+            pass
+
+    if (source_dir / "pictos-atlas.json").exists() or (source_dir / "MusicTrack.json").exists():
+        return True
+
+    for p in source_dir.glob("*.json"):
+        if p.name.lower() not in {"metadata.json", "pictos-atlas.json", "map.json", "songdesc.json", "musictrack.json", "jdnext_metadata.json"}:
+            return True
+
+    return False
+
+
 # ---------------------------------------------------------------------------
 # CKD file loading (JSON-first, binary fallback)
 # ---------------------------------------------------------------------------
@@ -351,6 +372,85 @@ def _extract_music_track(
     supplemental_roots: Optional[List[str]] = None,
 ) -> MusicTrackStructure:
     """Find and parse a musictrack CKD → MusicTrackStructure."""
+    # JDN support: look for MusicTrack.json
+    jdn_mt_path = None
+    for p in Path(directory).rglob("*"):
+        if p.name.lower() == "musictrack.json":
+            jdn_mt_path = p
+            break
+    if not jdn_mt_path and supplemental_roots:
+        for r in supplemental_roots:
+            for p in Path(r).rglob("*"):
+                if p.name.lower() == "musictrack.json":
+                    jdn_mt_path = p
+                    break
+            if jdn_mt_path:
+                break
+    
+    if jdn_mt_path:
+        try:
+            with open(jdn_mt_path, "r", encoding="utf-8") as f:
+                jdn_data = json.load(f)
+            struct_container = jdn_data.get("m_structure", {})
+            if "MusicTrackStructure" in struct_container:
+                s = struct_container["MusicTrackStructure"]
+            else:
+                s = struct_container
+            
+            raw_markers = s.get("markers", [])
+            markers = []
+            for m in raw_markers:
+                if isinstance(m, dict) and "VAL" in m:
+                    markers.append(int(m["VAL"]))
+                elif isinstance(m, (int, float)):
+                    markers.append(int(m))
+            
+            from jd2021_installer.core.models import MusicSignature, MusicSection
+            raw_sigs = s.get("signatures", [])
+            signatures = []
+            for sig in raw_sigs:
+                sig_data = sig.get("MusicSignature", sig) if isinstance(sig, dict) else {}
+                signatures.append(
+                    MusicSignature(
+                        beats=int(sig_data.get("beats", 4)),
+                        marker=int(float(sig_data.get("marker", 0)))
+                    )
+                )
+            
+            raw_secs = s.get("sections", [])
+            sections = []
+            for sec in raw_secs:
+                sec_data = sec.get("MusicSection", sec) if isinstance(sec, dict) else {}
+                sections.append(
+                    MusicSection(
+                        section_type=int(sec_data.get("sectionType", 0)),
+                        marker=int(float(sec_data.get("marker", 0)))
+                    )
+                )
+            
+            vst = s.get("videoStartTime", 0.0)
+            if abs(vst) > 1000:
+                vst /= 48000.0
+                
+            return MusicTrackStructure(
+                markers=markers,
+                signatures=signatures,
+                sections=sections,
+                start_beat=int(s.get("startBeat", 0)),
+                end_beat=int(s.get("endBeat", 0)),
+                video_start_time=float(vst),
+                preview_entry=float(s.get("previewEntry", 0)),
+                preview_loop_start=float(s.get("previewLoopStart", 0)),
+                preview_loop_end=float(s.get("previewLoopEnd", 0)),
+                volume=float(s.get("volume", 0)),
+                fade_in_duration=float(s.get("fadeInDuration", 0)),
+                fade_in_type=int(s.get("fadeInType", 0)),
+                fade_out_duration=float(s.get("fadeOutDuration", 0)),
+                fade_out_type=int(s.get("fadeOutType", 0)),
+            )
+        except Exception as exc:
+            logger.error("Failed to parse JDN MusicTrack.json: %s", exc)
+
     ckd_paths = _find_ckd_files(directory, "*musictrack*.tpl.ckd", codename)
     if not ckd_paths and supplemental_roots:
         for root in supplemental_roots:
@@ -530,6 +630,53 @@ def _extract_song_desc(
     supplemental_roots: Optional[List[str]] = None,
 ) -> SongDescription:
     """Find and parse a songdesc CKD → SongDescription."""
+    # JDN support: look for metadata.json
+    jdn_meta_path = None
+    for p in Path(directory).rglob("*"):
+        if p.name.lower() == "metadata.json":
+            jdn_meta_path = p
+            break
+    if not jdn_meta_path and supplemental_roots:
+        for r in supplemental_roots:
+            for p in Path(r).rglob("*"):
+                if p.name.lower() == "metadata.json":
+                    jdn_meta_path = p
+                    break
+            if jdn_meta_path:
+                break
+                
+    if jdn_meta_path:
+        try:
+            with open(jdn_meta_path, "r", encoding="utf-8") as f:
+                jdn_meta = json.load(f)
+            if isinstance(jdn_meta, dict):
+                title = jdn_meta.get("title", codename or "Unknown Title")
+                artist = jdn_meta.get("artist", "Unknown Artist")
+                dancer_name = jdn_meta.get("dancerName", "Unknown Dancer")
+                
+                # Check difficulty mapping
+                diff_val = jdn_meta.get("difficulty", 2)
+                if isinstance(diff_val, str):
+                    diff_val = 2
+                
+                dc = DefaultColors()
+                
+                return SongDescription(
+                    map_name=codename or "Unknown",
+                    title=str(title),
+                    artist=str(artist),
+                    dancer_name=str(dancer_name),
+                    credits=str(jdn_meta.get("credits", "")),
+                    num_coach=int(jdn_meta.get("numCoach", jdn_meta.get("coachCount", 1))),
+                    main_coach=int(jdn_meta.get("mainCoach", -1)),
+                    difficulty=int(diff_val),
+                    sweat_difficulty=int(jdn_meta.get("sweatDifficulty", 1)),
+                    jd_version=2021,
+                    original_jd_version=2021,
+                    default_colors=dc,
+                )
+        except Exception as exc:
+            logger.error("Failed to parse JDN metadata.json: %s", exc)
     def _songdesc_from_map_json_fallback() -> Optional[SongDescription]:
         """Best-effort SongDesc metadata from JDNext MonoBehaviour map.json."""
 
@@ -999,8 +1146,78 @@ def _extract_dance_tape(
     directory: str, codename: Optional[str] = None
 ) -> Optional[DanceTape]:
     """Find and parse a dtape CKD → DanceTape (or None)."""
+    from jd2021_installer.core.models import MotionClip, PictogramClip, GoldEffectClip
     ckd_paths = _find_ckd_files(directory, "*dtape*ckd", codename)
     if not ckd_paths:
+        # Check for JDN gameplay JSON
+        jdn_gp_path = None
+        for p in Path(directory).rglob("*.json"):
+            if p.name.lower() not in {"metadata.json", "pictos-atlas.json", "map.json", "songdesc.json", "musictrack.json", "jdnext_metadata.json"}:
+                jdn_gp_path = p
+                break
+        
+        if jdn_gp_path:
+            try:
+                with open(jdn_gp_path, "r", encoding="utf-8") as f:
+                    jdn_gp = json.load(f)
+                
+                dance_data = jdn_gp.get("DanceData", {})
+                if dance_data:
+                    clips = []
+                    
+                    # Motion Clips
+                    raw_motion = dance_data.get("MotionClips", [])
+                    for i, m_wrapper in enumerate(raw_motion):
+                        m = m_wrapper.get("MotionClip", m_wrapper) if isinstance(m_wrapper, dict) else {}
+                        move_name = m.get("MoveName", "")
+                        clips.append(
+                            MotionClip(
+                                id=int(m.get("Id", i)),
+                                track_id=int(m.get("TrackId", 0)),
+                                is_active=int(m.get("IsActive", 1)),
+                                start_time=int(m.get("StartTime", 0)),
+                                duration=int(m.get("Duration", 0)),
+                                classifier_path=move_name,
+                                gold_move=int(m.get("GoldMove", 0)),
+                                coach_id=int(m.get("CoachId", 0)),
+                                move_type=int(m.get("MoveType", 0)),
+                            )
+                        )
+                    
+                    # Pictogram Clips
+                    raw_picto = dance_data.get("PictoClips", [])
+                    for i, p_wrapper in enumerate(raw_picto):
+                        p_clip = p_wrapper.get("PictogramClip", p_wrapper) if isinstance(p_wrapper, dict) else {}
+                        clips.append(
+                            PictogramClip(
+                                id=int(p_clip.get("Id", i)),
+                                track_id=int(p_clip.get("TrackId", 0)),
+                                is_active=int(p_clip.get("IsActive", 1)),
+                                start_time=int(p_clip.get("StartTime", 0)),
+                                duration=int(p_clip.get("Duration", 0)),
+                                picto_path=str(p_clip.get("PictoPath", "")),
+                                coach_count=int(p_clip.get("CoachCount", 1)),
+                            )
+                        )
+                    
+                    # Gold Effect Clips
+                    raw_gold = dance_data.get("GoldEffectClips", [])
+                    for i, g_wrapper in enumerate(raw_gold):
+                        g = g_wrapper.get("GoldEffectClip", g_wrapper) if isinstance(g_wrapper, dict) else {}
+                        clips.append(
+                            GoldEffectClip(
+                                id=int(g.get("Id", i)),
+                                track_id=int(g.get("TrackId", 0)),
+                                is_active=int(g.get("IsActive", 1)),
+                                start_time=int(g.get("StartTime", 0)),
+                                duration=int(g.get("Duration", 0)),
+                                effect_type=int(g.get("EffectType", 0)),
+                            )
+                        )
+                    
+                    return DanceTape(clips=clips, map_name=codename or "Unknown")
+            except Exception as exc:
+                logger.error("Failed to parse JDN DanceData from %s: %s", jdn_gp_path.name, exc)
         return None
     data = load_ckd(ckd_paths[0])
     if isinstance(data, DanceTape):
@@ -1052,8 +1269,48 @@ def _extract_karaoke_tape(
     directory: str, codename: Optional[str] = None
 ) -> Optional[KaraokeTape]:
     """Find and parse a ktape CKD → KaraokeTape (or None)."""
+    from jd2021_installer.core.models import KaraokeClip
     ckd_paths = _find_ckd_files(directory, "*ktape*ckd", codename)
     if not ckd_paths:
+        # Check for JDN gameplay JSON
+        jdn_gp_path = None
+        for p in Path(directory).rglob("*.json"):
+            if p.name.lower() not in {"metadata.json", "pictos-atlas.json", "map.json", "songdesc.json", "musictrack.json", "jdnext_metadata.json"}:
+                jdn_gp_path = p
+                break
+        
+        if jdn_gp_path:
+            try:
+                with open(jdn_gp_path, "r", encoding="utf-8") as f:
+                    jdn_gp = json.load(f)
+                
+                karaoke_data = jdn_gp.get("KaraokeData", {})
+                if karaoke_data:
+                    clips = []
+                    
+                    raw_clips = karaoke_data.get("Clips", [])
+                    for i, k_wrapper in enumerate(raw_clips):
+                        k = k_wrapper.get("KaraokeClip", k_wrapper) if isinstance(k_wrapper, dict) else {}
+                        clips.append(
+                            KaraokeClip(
+                                id=int(k.get("Id", i)),
+                                track_id=int(k.get("TrackId", 0)),
+                                is_active=int(k.get("IsActive", 1)),
+                                start_time=int(k.get("StartTime", 0)),
+                                duration=int(k.get("Duration", 0)),
+                                pitch=float(k.get("Pitch", 0.0)),
+                                lyrics=str(k.get("Lyrics", "")),
+                                is_end_of_line=int(k.get("IsEndOfLine", 0)),
+                                content_type=int(k.get("ContentType", 0)),
+                                start_time_tolerance=int(k.get("StartTimeTolerance", 4)),
+                                end_time_tolerance=int(k.get("EndTimeTolerance", 4)),
+                                semitone_tolerance=float(k.get("SemitoneTolerance", 5.0)),
+                            )
+                        )
+                    
+                    return KaraokeTape(clips=clips, map_name=codename or "Unknown")
+            except Exception as exc:
+                logger.error("Failed to parse JDN KaraokeData from %s: %s", jdn_gp_path.name, exc)
         return None
     data = load_ckd(ckd_paths[0])
     if isinstance(data, KaraokeTape):
@@ -1203,12 +1460,12 @@ def _discover_media(
             return True
         return bool(re.match(rf"^{re.escape(codename_low)}(?:[^a-z0-9]|$)", path.name.lower()))
 
-    # 1. Video files (.webm)
+    # 1. Video files (.webm, .mp4)
     # V1 Parity: prioritize quality suffixes and codename match. Scan both local and search_root.
     SUPPORTED_QUALITIES = ["ULTRA_HD", "ULTRA", "HIGH_HD", "HIGH", "MID_HD", "MID", "LOW_HD", "LOW"]
     webms: list[Path] = []
     for root in scan_roots:
-        webms.extend(list(root.rglob("*.webm")))
+        webms.extend(list(root.rglob("*.webm")) + list(root.rglob("*.mp4")))
     
     if webms:
         main_videos = []
@@ -1241,9 +1498,11 @@ def _discover_media(
                 best_video = main_videos[0]
                 found_quality = False
                 for q in SUPPORTED_QUALITIES:
-                    suffix = f"_{q}.webm"
+                    suffix_webm = f"_{q}.webm"
+                    suffix_mp4 = f"_{q}.mp4"
                     for v in main_videos:
-                        if v.name.upper().endswith(suffix):
+                        v_name_upper = v.name.upper()
+                        if v_name_upper.endswith(suffix_webm) or v_name_upper.endswith(suffix_mp4):
                             best_video = v
                             found_quality = True
                             break
@@ -1251,18 +1510,18 @@ def _discover_media(
                 
                 media.video_path = best_video
 
-    # 2. Audio files (.ogg, .opus, .wav, .wav.ckd)
-    # V1 Priority extended for JDNext: .ogg > .opus > .wav > .wav.ckd
+    # 2. Audio files (.ogg, .opus, .wav, .mp3, .wav.ckd)
+    # V1 Priority extended for JDNext/JDN: .ogg > .opus > .wav > .mp3 > .wav.ckd
     audio_found = False
 
     def _audio_base_name(path: Path) -> str:
         name = path.name.lower()
-        for suffix in (".wav.ckd", ".ogg.ckd", ".opus.ckd", ".wav", ".ogg", ".opus", ".ckd"):
+        for suffix in (".wav.ckd", ".ogg.ckd", ".opus.ckd", ".wav", ".ogg", ".opus", ".mp3", ".ckd"):
             if name.endswith(suffix):
                 return name[: -len(suffix)]
         return path.stem.lower()
 
-    for ext_pattern in ("*.ogg", "*.opus", "*.wav", "*.wav.ckd", "*.ogg.ckd", "*.opus.ckd"):
+    for ext_pattern in ("*.ogg", "*.opus", "*.wav", "*.mp3", "*.wav.ckd", "*.ogg.ckd", "*.opus.ckd"):
         if audio_found: break
         
         candidates: list[Path] = []
@@ -1475,13 +1734,18 @@ def _discover_media(
     media.moves_dir = None
     move_candidates: list[Path] = []
     for root in scan_roots:
-        move_candidates.extend([d for d in root.rglob("*") if d.is_dir() and "moves" in d.name.lower()])
+        move_candidates.extend([d for d in root.rglob("*") if d.is_dir() and any(k in d.name.lower() for k in ("moves", "classifiers"))])
     if move_candidates:
         move_candidates = list(dict.fromkeys(move_candidates))
     if codename_low:
         move_candidates = [d for d in move_candidates if _path_has_codename_component(d)]
     if move_candidates:
         media.moves_dir = move_candidates[0]
+    else:
+        # Fallback: check for loose moves
+        loose_moves = list(Path(directory).glob("*.gesture")) + list(Path(directory).glob("*.msm"))
+        if loose_moves:
+            media.moves_dir = Path(directory)
 
     return media
 
@@ -1778,6 +2042,7 @@ def normalize(
 
     # 5. Calculate effective video start time (with V1-style fallbacks)
     is_jdnext_source = _is_jdnext_source(source_dir, media)
+    is_jdnow_source = _is_jdnow_source(source_dir, media)
     if is_jdnext_source:
         _apply_jdnext_songdb_cache_overrides(effective_codename, song_desc, music_track)
 
@@ -1785,7 +2050,7 @@ def normalize(
         music_track, 
         is_html_source=is_html_source,
         existing_trk_path=source_trk_path,
-        is_jdnext_source=is_jdnext_source,
+        is_jdnext_source=is_jdnext_source or is_jdnow_source,
     )
 
     # V1 Parity: Detect whether the source contains real autodance data.
@@ -1872,6 +2137,7 @@ def normalize(
         supplemental_roots=[Path(p) for p in supplemental_root_strs],
         is_html_source=is_html_source,
         is_jdnext_source=is_jdnext_source,
+        is_jdnow_source=is_jdnow_source,
         has_autodance=has_autodance,
     )
 

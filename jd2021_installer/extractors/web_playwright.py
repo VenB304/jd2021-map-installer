@@ -672,10 +672,19 @@ def _classify_urls(
                 # Prefer .hd when both .hd and .vp8 are present for the HD slot.
                 video_urls_by_quality[jdnext_q] = u
                 jdnext_variant_by_quality[jdnext_q] = jdnext_variant
+
+        # JDN video: Chromecast/SneakPeak video
+        if "jdn-mp4" in u_low or "jdn-sneakpeak" in u_low or "chromecast" in u_low or "sneakpeak" in u_low:
+            if "jdn-mp4" in u_low or "chromecast" in u_low:
+                video_urls_by_quality["MID"] = u
+            else:
+                video_urls_by_quality["LOW"] = u
+
         if (
             (
                 ".ogg" in u
                 or ".opus" in u
+                or ".mp3" in u
             )
             and "audiopreview" not in u.lower()
         ):
@@ -687,8 +696,10 @@ def _classify_urls(
                     break
         elif "mappackage" in u.lower() and ".bundle" in u.lower():
             scene_zips["MAP_PACKAGE"] = u
-        elif any(ext in u.lower() for ext in (".ckd", ".jpg", ".jpeg", ".png", ".ad", ".bundle", ".opus")):
-            if ".ckd" in u.lower() or ".ad" in u.lower() or ("discordapp.net" not in u):
+        elif "bundle.zip" in u_low:
+            scene_zips["JDN_BUNDLE"] = u
+        elif any(ext in u.lower() for ext in (".ckd", ".jpg", ".jpeg", ".png", ".ad", ".bundle", ".opus", ".zip", ".json")):
+            if ".ckd" in u.lower() or ".ad" in u.lower() or ".json" in u.lower() or ".zip" in u.lower() or ("discordapp.net" not in u):
                 other_urls.append(u)
 
     # Select best video using the promoted quality-search-order helper.
@@ -707,6 +718,8 @@ def _classify_urls(
             break
     if not main_scene_url and "MAP_PACKAGE" in scene_zips:
         main_scene_url = scene_zips["MAP_PACKAGE"]
+    if not main_scene_url and "JDN_BUNDLE" in scene_zips:
+        main_scene_url = scene_zips["JDN_BUNDLE"]
     if not main_scene_url and scene_zips:
         main_scene_url = next(iter(scene_zips.values()))
 
@@ -1297,12 +1310,15 @@ async def _extract_embed_html(page, accessory_id: str) -> str:
 
 
 def _has_valid_cdn_links(html: str) -> bool:
-    """Return True if embed contains valid Ubisoft map CDN links.
+    """Return True if embed contains valid Ubisoft map CDN links or JDN links.
 
-    Supports both legacy/public and newer/private hosts used by NOHUD.
+    Supports both legacy/public and newer/private hosts used by NOHUD, as well as Just Dance Now CDNs.
     """
     for url in extract_urls_from_html(html):
         if _MAP_PATH_PATTERN.search(url):
+            return True
+        url_low = url.lower()
+        if "justdancenow.com" in url_low or "jdn-location" in url_low or "jdn-mp4" in url_low or "jdn-sneakpeak" in url_low:
             return True
     return False
 
@@ -1949,6 +1965,8 @@ class WebPlaywrightExtractor(BaseExtractor):
 
     def _download_group(self) -> str:
         """Return the mapDownloads subgroup name for the active source game."""
+        if self._source_game == "jdnow":
+            return "jdnow"
         return "jdnext" if self._source_game == "jdnext" else "jdu"
 
     def _download_dir_for_codename(self, codename: str) -> Path:
@@ -1980,18 +1998,26 @@ class WebPlaywrightExtractor(BaseExtractor):
         # V1-style guardrails: fail fast if key media links are missing.
         classified_required = _classify_urls(all_urls, self._quality, self._config)
         missing_required: list[str] = []
-        if not classified_required.get("mainscene"):
-            if self._source_game == "jdnext":
-                missing_required.append("mapPackage bundle")
-            else:
-                missing_required.append("MAIN_SCENE zip")
-        if not classified_required.get("audio"):
-            if self._source_game == "jdnext":
-                missing_required.append("full audio (.opus/.ogg)")
-            else:
-                missing_required.append("full audio (.ogg)")
-        if not classified_required.get("video"):
-            missing_required.append("gameplay video (.webm)")
+        if self._source_game == "jdnow":
+            if not classified_required.get("mainscene"):
+                missing_required.append("bundle.zip")
+            if not classified_required.get("audio"):
+                missing_required.append("audio (.mp3)")
+            if not classified_required.get("video"):
+                missing_required.append("gameplay video (.mp4)")
+        else:
+            if not classified_required.get("mainscene"):
+                if self._source_game == "jdnext":
+                    missing_required.append("mapPackage bundle")
+                else:
+                    missing_required.append("MAIN_SCENE zip")
+            if not classified_required.get("audio"):
+                if self._source_game == "jdnext":
+                    missing_required.append("full audio (.opus/.ogg)")
+                else:
+                    missing_required.append("full audio (.ogg)")
+            if not classified_required.get("video"):
+                missing_required.append("gameplay video (.webm)")
 
         if missing_required:
             raise WebExtractionError(
@@ -2128,7 +2154,16 @@ class WebPlaywrightExtractor(BaseExtractor):
                         logger.debug("JDNext auxiliary texture extraction failed: %s", exc)
         
         # Post-download: extract MAIN_SCENE_*.zip from download_dir into extract_dir
-        self._extract_scene_zips(download_dir, extract_dir)
+        if self._source_game == "jdnow":
+            # Extract JDN zips (bundle.zip and songMetadata.zip)
+            for zip_name in ("bundle.zip", "songMetadata.zip"):
+                zip_path = download_dir / zip_name
+                if zip_path.exists():
+                    logger.debug("Extracting JDN zip: %s", zip_name)
+                    with zipfile.ZipFile(zip_path, "r") as z:
+                        z.extractall(extract_dir)
+        else:
+            self._extract_scene_zips(download_dir, extract_dir)
         
         # Copy non-extracted assets (e.g. video, audio) to extract_dir for normalizer
         for f in os.listdir(download_dir):
@@ -2334,7 +2369,21 @@ class WebPlaywrightExtractor(BaseExtractor):
 
                 nohud_html: Optional[str] = None
                 jdnext_metadata_payloads: Dict[str, Dict[str, str]] = {}
-                if self._source_game == "jdnext":
+                if self._source_game == "jdnow":
+                    _log("[1/1] Sending /asset jdnow %s", codename)
+                    assets_html = await _fetch_command_with_retry(
+                        page,
+                        command="asset",
+                        choices=["jdnow"],
+                        codename=codename,
+                        label="asset",
+                        bot_timeout_s=bot_timeout,
+                        require_gameplay_video=False,
+                        allow_textual_codename_fallback=True,
+                        requester_handles=requester_handles,
+                    )
+                    _log("Received /asset response for %s.", codename)
+                elif self._source_game == "jdnext":
                     _log("[1/1] Sending /asset server:jdnext %s", codename)
                     assets_html = await _fetch_command_with_retry(
                         page,

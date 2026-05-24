@@ -1203,8 +1203,10 @@ class MainWindow(QMainWindow):
         from jd2021_installer.ui.widgets.mode_selector import (
             MODE_FETCH,
             MODE_JDNEXT,
+            MODE_JDNOW,
             MODE_HTML,
             MODE_HTML_JDNEXT,
+            MODE_HTML_JDNOW,
             MODE_IPK,
             MODE_BATCH,
             MODE_MANUAL,
@@ -1214,14 +1216,21 @@ class MainWindow(QMainWindow):
         idx = int(source_state.get("mode_index", MODE_FETCH))
         fields = source_state.get("fields", {})
 
-        if idx in (MODE_FETCH, MODE_JDNEXT):
-            fetch_mode_key = "jdnext" if idx == MODE_JDNEXT else "fetch"
+        if idx in (MODE_FETCH, MODE_JDNEXT, MODE_JDNOW):
+            if idx == MODE_JDNEXT:
+                fetch_mode_key = "jdnext"
+            elif idx == MODE_JDNOW:
+                fetch_mode_key = "jdnow"
+            else:
+                fetch_mode_key = "fetch"
             fetch_fields = fields.get(fetch_mode_key, {}) if isinstance(fields, dict) else {}
             raw = str(fetch_fields.get("codenames", "")).strip()
             codenames = [c.strip() for c in raw.split(",") if c.strip()]
             if not codenames:
                 if idx == MODE_JDNEXT:
                     issues.append("Enter at least one codename for Fetch JDNext mode.")
+                elif idx == MODE_JDNOW:
+                    issues.append("Enter at least one codename for Fetch JDNow mode.")
                 else:
                     issues.append("Enter at least one codename for Fetch JDU mode.")
             else:
@@ -1248,6 +1257,18 @@ class MainWindow(QMainWindow):
             asset_html = str(html_jdnext_fields.get("asset", "")).strip()
             if not asset_html:
                 issues.append("Asset HTML file is required for HTML JDNext mode.")
+                return issues
+            if not Path(asset_html).is_file():
+                issues.append(f"Asset HTML file was not found: {asset_html}")
+            if not issues:
+                self._current_target = asset_html
+            return issues
+
+        if idx == MODE_HTML_JDNOW:
+            html_jdnow_fields = fields.get("html_jdnow", {}) if isinstance(fields, dict) else {}
+            asset_html = str(html_jdnow_fields.get("asset", "")).strip()
+            if not asset_html:
+                issues.append("Asset HTML file is required for HTML JDNow mode.")
                 return issues
             if not Path(asset_html).is_file():
                 issues.append(f"Asset HTML file was not found: {asset_html}")
@@ -1333,9 +1354,9 @@ class MainWindow(QMainWindow):
             self._set_status("Pre-flight failed")
             return
 
-        from jd2021_installer.ui.widgets.mode_selector import MODE_FETCH, MODE_JDNEXT
+        from jd2021_installer.ui.widgets.mode_selector import MODE_FETCH, MODE_JDNEXT, MODE_JDNOW
         source_state = self._mode_selector.get_current_state()
-        include_fetch_checks = int(source_state.get("mode_index", -1)) in (MODE_FETCH, MODE_JDNEXT)
+        include_fetch_checks = int(source_state.get("mode_index", -1)) in (MODE_FETCH, MODE_JDNEXT, MODE_JDNOW)
         if not self._ensure_runtime_dependencies(include_fetch_checks=include_fetch_checks):
             self._set_status("Pre-flight failed")
             return
@@ -2141,12 +2162,17 @@ class MainWindow(QMainWindow):
             return
 
         # v1 parity: codename whitespace sanitization prompt before fetch scrape starts.
-        from jd2021_installer.ui.widgets.mode_selector import MODE_FETCH, MODE_JDNEXT
+        from jd2021_installer.ui.widgets.mode_selector import MODE_FETCH, MODE_JDNEXT, MODE_JDNOW
         source_state = self._mode_selector.get_current_state()
         source_fields = source_state.get("fields", {})
         mode_index = int(source_state.get("mode_index", -1))
-        if mode_index in (MODE_FETCH, MODE_JDNEXT):
-            fetch_mode_key = "jdnext" if mode_index == MODE_JDNEXT else "fetch"
+        if mode_index in (MODE_FETCH, MODE_JDNEXT, MODE_JDNOW):
+            if mode_index == MODE_JDNEXT:
+                fetch_mode_key = "jdnext"
+            elif mode_index == MODE_JDNOW:
+                fetch_mode_key = "jdnow"
+            else:
+                fetch_mode_key = "fetch"
             fetch_fields = source_fields.get(fetch_mode_key, {}) if isinstance(source_fields, dict) else {}
             raw_value = str(fetch_fields.get("codenames", ""))
             if re.search(r"\s", raw_value):
@@ -2182,10 +2208,10 @@ class MainWindow(QMainWindow):
                 "\n".join(f"• {w}" for w in game_warnings),
             )
 
-        from jd2021_installer.ui.widgets.mode_selector import MODE_FETCH, MODE_JDNEXT
+        from jd2021_installer.ui.widgets.mode_selector import MODE_FETCH, MODE_JDNEXT, MODE_JDNOW
         source_state = self._mode_selector.get_current_state()
         mode_index = int(source_state.get("mode_index", -1))
-        include_fetch_checks = mode_index in (MODE_FETCH, MODE_JDNEXT)
+        include_fetch_checks = mode_index in (MODE_FETCH, MODE_JDNEXT, MODE_JDNOW)
         if not self._ensure_runtime_dependencies(include_fetch_checks=include_fetch_checks):
             return
 
@@ -2203,10 +2229,17 @@ class MainWindow(QMainWindow):
             return
 
         # Multi-codename Fetch should use the same multi-map review/apply flow as Batch/IPK bundle.
-        from jd2021_installer.ui.widgets.mode_selector import MODE_FETCH, MODE_JDNEXT
-        if mode_index in (MODE_FETCH, MODE_JDNEXT):
-            fetch_mode_key = "jdnext" if mode_index == MODE_JDNEXT else "fetch"
-            fetch_source = "jdnext" if mode_index == MODE_JDNEXT else "jdu"
+        from jd2021_installer.ui.widgets.mode_selector import MODE_FETCH, MODE_JDNEXT, MODE_JDNOW
+        if mode_index in (MODE_FETCH, MODE_JDNEXT, MODE_JDNOW):
+            if mode_index == MODE_JDNEXT:
+                fetch_mode_key = "jdnext"
+                fetch_source = "jdnext"
+            elif mode_index == MODE_JDNOW:
+                fetch_mode_key = "jdnow"
+                fetch_source = "jdnow"
+            else:
+                fetch_mode_key = "fetch"
+                fetch_source = "jdu"
             fetch_fields = source_fields.get(fetch_mode_key, {}) if isinstance(source_fields, dict) else {}
             raw_fetch = str(fetch_fields.get("codenames", "")).strip()
             fetch_codenames = [c.strip() for c in raw_fetch.split(",") if c.strip()]
@@ -2270,8 +2303,13 @@ class MainWindow(QMainWindow):
 
         # Create worker + thread
         worker_codename: str | None = None
-        if mode_index in (MODE_FETCH, MODE_JDNEXT):
-            fetch_mode_key = "jdnext" if mode_index == MODE_JDNEXT else "fetch"
+        if mode_index in (MODE_FETCH, MODE_JDNEXT, MODE_JDNOW):
+            if mode_index == MODE_JDNEXT:
+                fetch_mode_key = "jdnext"
+            elif mode_index == MODE_JDNOW:
+                fetch_mode_key = "jdnow"
+            else:
+                fetch_mode_key = "fetch"
             fetch_fields = source_fields.get(fetch_mode_key, {}) if isinstance(source_fields, dict) else {}
             raw_codenames = str(fetch_fields.get("codenames", "")).strip()
             fetch_codenames = [c.strip() for c in raw_codenames.split(",") if c.strip()]
@@ -2902,6 +2940,12 @@ class MainWindow(QMainWindow):
             return "HTML JDNext"
         if "jdnext" in mode_low:
             return "JDNext"
+        if "jdnow" in mode_low and "fetch" in mode_low:
+            return "Fetch JDNow"
+        if "jdnow" in mode_low and "html" in mode_low:
+            return "HTML JDNow"
+        if "jdnow" in mode_low:
+            return "JDNow"
         if "fetch" in mode_low:
             return "Fetch"
         if "html" in mode_low:
@@ -2923,9 +2967,17 @@ class MainWindow(QMainWindow):
         mode_low = (self._current_mode or "").lower()
 
         if "fetch" in mode_low or "html" in mode_low:
-            candidate = (self._config.download_root / map_data.codename).resolve()
+            group = "jdu"
+            if "jdnext" in mode_low:
+                group = "jdnext"
+            elif "jdnow" in mode_low:
+                group = "jdnow"
+            candidate = (self._config.download_root / group / map_data.codename).resolve()
             if candidate.is_dir():
                 return candidate
+            candidate_legacy = (self._config.download_root / map_data.codename).resolve()
+            if candidate_legacy.is_dir():
+                return candidate_legacy
 
         if map_data.source_dir and map_data.source_dir.exists():
             src = map_data.source_dir.resolve()
@@ -3375,8 +3427,10 @@ class MainWindow(QMainWindow):
         from jd2021_installer.ui.widgets.mode_selector import (
             MODE_FETCH,
             MODE_JDNEXT,
+            MODE_JDNOW,
             MODE_HTML,
             MODE_HTML_JDNEXT,
+            MODE_HTML_JDNOW,
             MODE_IPK,
             MODE_BATCH,
             MODE_MANUAL,
@@ -3403,10 +3457,17 @@ class MainWindow(QMainWindow):
             )
             return ArchiveIPKExtractor(ipk_path, desired_codename=desired_codename)
 
-        if idx in (MODE_FETCH, MODE_JDNEXT):
+        if idx in (MODE_FETCH, MODE_JDNEXT, MODE_JDNOW):
             from jd2021_installer.extractors.web_playwright import WebPlaywrightExtractor
-            fetch_mode_key = "jdnext" if idx == MODE_JDNEXT else "fetch"
-            fetch_source = "jdnext" if idx == MODE_JDNEXT else "jdu"
+            if idx == MODE_JDNEXT:
+                fetch_mode_key = "jdnext"
+                fetch_source = "jdnext"
+            elif idx == MODE_JDNOW:
+                fetch_mode_key = "jdnow"
+                fetch_source = "jdnow"
+            else:
+                fetch_mode_key = "fetch"
+                fetch_source = "jdu"
             fetch_fields = source_fields.get(fetch_mode_key, {}) if isinstance(source_fields, dict) else {}
             raw_codenames = str(fetch_fields.get("codenames", "")).strip()
             codenames = [c.strip() for c in raw_codenames.split(",") if c.strip()]
@@ -3451,6 +3512,24 @@ class MainWindow(QMainWindow):
                 asset_html=asset_html,
                 nohud_html=None,
                 source_game="jdnext",
+                config=self._config,
+                quality=self._config.video_quality,
+            )
+
+        if idx == MODE_HTML_JDNOW:
+            from jd2021_installer.extractors.web_playwright import WebPlaywrightExtractor
+
+            html_jdnow_fields = source_fields.get("html_jdnow", {}) if isinstance(source_fields, dict) else {}
+            asset_html = str(html_jdnow_fields.get("asset", ""))
+
+            if not asset_html:
+                QMessageBox.warning(self, "Missing File", "Please select the JDNow Asset HTML file.")
+                return None
+
+            return WebPlaywrightExtractor(
+                asset_html=asset_html,
+                nohud_html=None,
+                source_game="jdnow",
                 config=self._config,
                 quality=self._config.video_quality,
             )
