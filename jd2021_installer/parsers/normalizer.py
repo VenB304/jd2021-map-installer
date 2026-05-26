@@ -859,6 +859,28 @@ def _apply_jdlo_metadata_songdesc_overrides(
         if isinstance(tags, list):
             song_desc.tags = [str(t) for t in tags]
 
+    # Map JDU Colors
+    lyrics_color = str(metadata.get("lyricsColor", "")).strip()
+    if lyrics_color:
+        parsed = _parse_jdnext_lyrics_color(lyrics_color)
+        if parsed:
+            song_desc.default_colors.lyrics = parsed
+
+    song_colors = metadata.get("songColors")
+    if isinstance(song_colors, dict):
+        mapping = {
+            "songColor_1A": "song_color_1a",
+            "songColor_1B": "song_color_1b",
+            "songColor_2A": "song_color_2a",
+            "songColor_2B": "song_color_2b",
+        }
+        for jdu_key, attr in mapping.items():
+            val = str(song_colors.get(jdu_key, "")).strip()
+            if val:
+                parsed = _parse_jdnext_lyrics_color(val)
+                if parsed:
+                    setattr(song_desc.default_colors, attr, parsed)
+
 
 def _parse_jdnext_lyrics_color(hex_str: str) -> Optional[List[float]]:
     """Parse a JDNext ``#RRGGBBAA`` or ``#RRGGBB`` lyrics color into ``[R, G, B, A]`` floats.
