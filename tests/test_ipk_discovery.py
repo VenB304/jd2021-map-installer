@@ -150,7 +150,7 @@ def test_extract_ipk_allows_no_materialized_files_for_parity(tmp_path: Path) -> 
     _build_fake_ipk_raw(traversal_only_ipk, [(b"safe.bin", b"/blocked")])
 
     out_dir = tmp_path / "out"
-    result = extract_ipk(traversal_only_ipk, out_dir)
+    result, codenames = extract_ipk(traversal_only_ipk, out_dir)
 
     assert result == out_dir
     assert out_dir.exists()
@@ -163,7 +163,7 @@ def test_archive_ipk_extractor_prefers_requested_codename(monkeypatch: pytest.Mo
     ipk_path = tmp_path / "bundle_pc.ipk"
     ipk_path.write_bytes(b"\x50\xEC\x12\xBA")
 
-    monkeypatch.setattr(archive_ipk, "extract_ipk", lambda *_args, **_kwargs: tmp_path / "out")
+    monkeypatch.setattr(archive_ipk, "extract_ipk", lambda *_args, **_kwargs: (tmp_path / "out", ["MapA", "MapB"]))
     monkeypatch.setattr(archive_ipk, "_detect_maps_in_dir", lambda _dir: ["MapA", "MapB"])
     monkeypatch.setattr(archive_ipk, "inspect_ipk", lambda _target: ["MapA", "MapB"])
 

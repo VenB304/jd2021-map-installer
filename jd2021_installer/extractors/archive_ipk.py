@@ -501,7 +501,7 @@ class ArchiveIPKExtractor(BaseExtractor):
             # Try to match the codename from the IPK filename
             base = self._ipk_path.stem
             stem = re.sub(
-                r"_(x360|durango|scarlett|nx|orbis|prospero|pc)$",
+                r"_(x360|durango|scarlett|nx|orbis|prospero|pc|ps3|wiiu)$",
                 "",
                 base,
                 flags=re.IGNORECASE,
@@ -518,7 +518,7 @@ class ArchiveIPKExtractor(BaseExtractor):
             # Fallback to filename inference if no maps found in structure
             base = self._ipk_path.stem
             stem = re.sub(
-                r"_(x360|durango|scarlett|nx|orbis|prospero|pc)$",
+                r"_(x360|durango|scarlett|nx|orbis|prospero|pc|ps3|wiiu)$",
                 "",
                 base,
                 flags=re.IGNORECASE,

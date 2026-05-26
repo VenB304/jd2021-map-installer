@@ -3396,7 +3396,7 @@ class MainWindow(QMainWindow):
 
             # Provide a codename hint for bundle selection parity when available.
             desired_codename = re.sub(
-                r"_(x360|durango|scarlett|nx|orbis|prospero|pc)$",
+                r"_(x360|durango|scarlett|nx|orbis|prospero|pc|ps3|wiiu)$",
                 "",
                 ipk_path.stem,
                 flags=re.IGNORECASE,
