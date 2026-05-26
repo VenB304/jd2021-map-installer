@@ -171,3 +171,33 @@ def test_archive_ipk_extractor_prefers_requested_codename(monkeypatch: pytest.Mo
     extractor.extract(tmp_path / "out")
 
     assert extractor.get_codename() == "MapB"
+
+
+def test_find_bundle_ipks_prioritizes_unnumbered_bundle(tmp_path: Path) -> None:
+    from jd2021_installer.extractors.archive_ipk import find_bundle_ipks
+
+    folder = tmp_path / "content"
+    folder.mkdir()
+
+    bundle_0 = folder / "Bundle_0_WIIU.ipk"
+    bundle_0.touch()
+    bundle_1 = folder / "Bundle_1_WIIU.ipk"
+    bundle_1.touch()
+    bundle_2 = folder / "Bundle_2_WIIU.ipk"
+    bundle_2.touch()
+    bundle_main = folder / "Bundle_WIIU.ipk"
+    bundle_main.touch()
+    bundlelogic = folder / "BundleLogic_WIIU.ipk"
+    bundlelogic.touch()
+
+    # Case 1: Exclude Bundle_0_WIIU.ipk.
+    # It should correctly pick Bundle_WIIU.ipk as bundle_ipk, and BundleLogic_WIIU.ipk as bundlelogic_ipk.
+    b_guess, bl_guess = find_bundle_ipks(folder, exclude=bundle_0)
+    assert b_guess == bundle_main
+    assert bl_guess == bundlelogic
+
+    # Case 2: Exclude Bundle_WIIU.ipk itself.
+    # It should fall back to a chunk bundle (since the main bundle is excluded), e.g. Bundle_0_WIIU.ipk.
+    b_guess, bl_guess = find_bundle_ipks(folder, exclude=bundle_main)
+    assert b_guess == bundle_0
+    assert bl_guess == bundlelogic
