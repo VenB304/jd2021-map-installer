@@ -92,6 +92,9 @@ class AppConfig(BaseModel):
     # Update checker settings
     check_updates_on_launch: bool = True
     update_branch: str = ""  # empty = auto-detect from git or state file
+    
+    # JDLO Integration
+    jdlo_auth_path: Optional[Path] = None
 
     # FFmpeg configuration
     ffmpeg_path: str = "ffmpeg"

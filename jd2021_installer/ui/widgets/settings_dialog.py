@@ -238,6 +238,7 @@ class SettingsDialog(QDialog):
         *,
         browse_title: str,
         select_directory: bool = False,
+        file_filter: str = "Executables (*.exe);;All Files (*)",
     ) -> QWidget:
         row = QWidget()
         row_layout = QHBoxLayout(row)
@@ -263,7 +264,7 @@ class SettingsDialog(QDialog):
                 self,
                 browse_title,
                 str(Path.cwd()),
-                "Executables (*.exe);;All Files (*)",
+                file_filter,
             )
             if selected:
                 line_edit.setText(selected)
@@ -802,6 +803,25 @@ class SettingsDialog(QDialog):
             "Copy from your browser's address bar while in the channel."
         )
         integrations_form.addRow("Discord channel URL:", self.txt_discord_url)
+        
+        self.txt_jdlo_auth = QLineEdit()
+        jdlo_auth_val = str(getattr(self._config, "jdlo_auth_path", "")) if getattr(self._config, "jdlo_auth_path", None) else ""
+        self.txt_jdlo_auth.setText(jdlo_auth_val)
+        self.txt_jdlo_auth.setPlaceholderText("Select jdlo_auth.ini")
+        self.txt_jdlo_auth.setToolTip(
+            "The path to your jdlo_auth.ini file (from JD2017 PC).\n"
+            "Required for JDLO Fetch modes."
+        )
+        integrations_form.addRow(
+            "JDLO Auth File:", 
+            self._make_path_picker_row(
+                self.txt_jdlo_auth,
+                browse_title="Select jdlo_auth.ini",
+                select_directory=False,
+                file_filter="INI Files (*.ini);;All Files (*)",
+            )
+        )
+        
         integrations_layout.addLayout(integrations_form)
 
         localization_row = QHBoxLayout()
@@ -997,6 +1017,9 @@ class SettingsDialog(QDialog):
         self._config.vp9_handling_mode = str(self.combo_vp9_mode.currentData())
         self._config.preview_video_mode = self._combo_value(self.combo_preview_mode)
         self._config.discord_channel_url = self.txt_discord_url.text().strip()
+        
+        jdlo_path = self.txt_jdlo_auth.text().strip()
+        self._config.jdlo_auth_path = Path(jdlo_path) if jdlo_path else None
         self._config.ffmpeg_path = self.txt_ffmpeg_path.text().strip() or "ffmpeg"
         self._config.ffprobe_path = self.txt_ffprobe_path.text().strip() or "ffprobe"
         self._config.vgmstream_path = self.txt_vgmstream_path.text().strip() or None

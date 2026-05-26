@@ -805,6 +805,60 @@ def _apply_jdnext_metadata_songdesc_overrides(
     if coach_count is not None and coach_count > 0 and coach_count > song_desc.num_coach:
         song_desc.num_coach = coach_count
 
+def _apply_jdlo_metadata_songdesc_overrides(
+    directory: str,
+    song_desc: SongDescription,
+) -> None:
+    """Overlay JDLO metadata onto SongDescription when available."""
+    root = Path(directory)
+    candidates = sorted(root.rglob("jdlo_metadata.json"))
+    if not candidates:
+        return
+
+    metadata: Optional[dict] = None
+    for path in candidates:
+        try:
+            payload = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            continue
+        if isinstance(payload, dict):
+            metadata = payload
+            break
+
+    if not metadata:
+        return
+
+    mapped_title = str(metadata.get("title", "") or "").strip()
+    if mapped_title and (
+        _is_effectively_missing_text(song_desc.title)
+        or str(song_desc.title or "").strip().lower() == str(song_desc.map_name or "").strip().lower()
+    ):
+        song_desc.title = mapped_title
+        
+    mapped_artist = str(metadata.get("artist", "") or "").strip()
+    if mapped_artist and _is_effectively_missing_text(song_desc.artist):
+        song_desc.artist = mapped_artist
+        
+    if metadata.get("credits") and _is_effectively_missing_text(song_desc.credits):
+        song_desc.credits = str(metadata["credits"])
+        
+    if metadata.get("difficulty") is not None:
+        song_desc.difficulty = metadata["difficulty"]
+        
+    if metadata.get("sweatDifficulty") is not None:
+        song_desc.sweat_difficulty = metadata["sweatDifficulty"]
+        
+    if metadata.get("coachCount") is not None:
+        song_desc.num_coach = metadata["coachCount"]
+        
+    if metadata.get("originalJDVersion") is not None:
+        song_desc.original_jd_version = metadata["originalJDVersion"]
+        
+    if metadata.get("tags"):
+        tags = metadata["tags"]
+        if isinstance(tags, list):
+            song_desc.tags = [str(t) for t in tags]
+
 
 def _parse_jdnext_lyrics_color(hex_str: str) -> Optional[List[float]]:
     """Parse a JDNext ``#RRGGBBAA`` or ``#RRGGBB`` lyrics color into ``[R, G, B, A]`` floats.
@@ -1718,6 +1772,7 @@ def normalize(
     )
     effective_codename = codename or song_desc.map_name
     _apply_jdnext_metadata_songdesc_overrides(source_root_str, song_desc)
+    _apply_jdlo_metadata_songdesc_overrides(source_root_str, song_desc)
     dance_tape = _extract_dance_tape(source_root_str, preferred_ckd_key)
     if dance_tape is None and ckd_alias and preferred_ckd_key != ckd_alias:
         dance_tape = _extract_dance_tape(source_root_str, ckd_alias)
