@@ -1,6 +1,8 @@
 import base64
 import json
 import logging
+import platform
+import subprocess
 import time
 from pathlib import Path
 from typing import Dict, Optional, Tuple, Any
@@ -11,12 +13,33 @@ from jd2021_installer.core.config import AppConfig
 
 logger = logging.getLogger("jd2021.core.jdlo_client")
 
+def _get_dynamic_user_agent() -> str:
+    commit_hash = "zip-build"
+    try:
+        kwargs = {}
+        if platform.system() == "Windows":
+            kwargs["creationflags"] = subprocess.CREATE_NO_WINDOW
+            
+        result = subprocess.run(
+            ["git", "rev-parse", "--short", "HEAD"], 
+            capture_output=True, 
+            text=True, 
+            check=True,
+            **kwargs
+        )
+        commit_hash = result.stdout.strip()
+    except Exception:
+        pass
+        
+    os_info = f"{platform.system()} {platform.release()}; {platform.machine()}"
+    return f"JD2021MapInstaller/{commit_hash} ({os_info}) (+https://github.com/VenB304/jd2021-map-installer; ventralberry@gmail.com)"
+
 class JDLOClient:
     """Client for interacting with JDLO's CDN and APIs."""
     
     BASE_URL = "https://jdlo.ovosimpatico.com"
     USER_AGENT_API = "UbiServices_SDK_2020.Release.17_PC64_ansi_static"
-    USER_AGENT_DOWNLOAD = "jd2021-map-installer/1.0.0 (+https://github.com/VenB304/jd2021-map-installer)"
+    USER_AGENT_DOWNLOAD = _get_dynamic_user_agent()
     
     def __init__(self, config: AppConfig):
         self.config = config
