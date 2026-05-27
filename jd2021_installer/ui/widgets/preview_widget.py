@@ -600,9 +600,9 @@ class PreviewWidget(QWidget):
                 worker.frame_ready.disconnect()
                 worker.position_updated.disconnect()
                 worker.playback_ended.disconnect()
-            except TypeError:
+                worker.request_stop()
+            except (TypeError, RuntimeError):
                 pass
-            worker.request_stop()
         
         # Guard against RuntimeError if the C++ object was already deleted
         if thread is not None:

@@ -9,11 +9,12 @@ from typing import Optional
 
 from jd2021_installer.core.config import AppConfig
 from jd2021_installer.core.jdlo_client import JDLOClient
+from jd2021_installer.core.exceptions import ExtractionError
 from jd2021_installer.extractors.base import BaseExtractor
 
 logger = logging.getLogger("jd2021.extractors.jdlo")
 
-class JDLOExtractorError(Exception):
+class JDLOExtractorError(ExtractionError):
     pass
 
 class JDLOOfflineExtractor(BaseExtractor):
