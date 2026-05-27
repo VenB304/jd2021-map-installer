@@ -166,6 +166,7 @@ class JDLOClient:
         with open(cache_file, "w", encoding="utf-8") as f:
             json.dump(data, f)
             
+        self._update_last_fetched("songs")
         return data
 
     def fetch_sku_packages(self, force_refresh: bool = False) -> Dict[str, Any]:
@@ -207,6 +208,7 @@ class JDLOClient:
         with open(cache_file, "w", encoding="utf-8") as f:
             json.dump(merged_packages, f)
             
+        self._update_last_fetched("sku_packages")
         return merged_packages
 
     def get_content_authorization(self, codename: str) -> Dict[str, str]:
@@ -236,3 +238,50 @@ class JDLOClient:
             f"jmcs://jd-contents/{codename}/{codename}_LOW.webm": f"https://cdn.ovosimpatico.com/jdlo/maps/{codename}/{codename}_LOW.webm",
             f"jmcs://jd-contents/{codename}/{codename}.ogg": f"https://cdn.ovosimpatico.com/jdlo/maps/{codename}/{codename}.ogg",
         }
+
+    def extend_cache(self):
+        "Touches cache files to extend their 24h lifespan."
+        for file in ['songs.json', 'sku-packages.json']:
+            path = self.cache_dir / file
+            if path.exists():
+                import os
+                os.utime(path, None)
+
+    def invalidate_cache(self):
+        "Deletes cache files to force refresh on next run."
+        for file in ['songs.json', 'sku-packages.json', 'cache_meta.json']:
+            path = self.cache_dir / file
+            if path.exists():
+                try:
+                    path.unlink()
+                except Exception:
+                    pass
+
+    def _update_last_fetched(self, key: str):
+        """Updates the last fetched timestamp for a given database key in cache_meta.json."""
+        meta_file = self.cache_dir / "cache_meta.json"
+        data = {}
+        if meta_file.exists():
+            try:
+                with open(meta_file, "r", encoding="utf-8") as f:
+                    data = json.load(f)
+            except Exception:
+                pass
+        data[key] = time.time()
+        try:
+            with open(meta_file, "w", encoding="utf-8") as f:
+                json.dump(data, f)
+        except Exception:
+            pass
+
+    def get_last_fetched(self, key: str) -> float:
+        """Retrieves the last fetched timestamp for a given database key from cache_meta.json."""
+        meta_file = self.cache_dir / "cache_meta.json"
+        if meta_file.exists():
+            try:
+                with open(meta_file, "r", encoding="utf-8") as f:
+                    data = json.load(f)
+                    return float(data.get(key, 0.0))
+            except Exception:
+                pass
+        return 0.0

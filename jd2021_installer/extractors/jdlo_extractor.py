@@ -2,6 +2,8 @@ import logging
 import os
 import shutil
 import zipfile
+import time
+import requests
 from pathlib import Path
 from typing import Optional
 
@@ -140,6 +142,32 @@ class JDLOExtractor(BaseExtractor):
                 break
                 
         if not song_entry:
+            songs_last_fetched = self._client.get_last_fetched("songs")
+            time_since_fetch = time.time() - songs_last_fetched
+            
+            if songs_last_fetched > 0 and time_since_fetch < 3600:
+                minutes_ago = int(time_since_fetch / 60)
+                raise JDLOExtractorError(
+                    f"Map '{codename}' not found in the JDLO database. "
+                    f"The database cache was updated {minutes_ago} minutes ago. "
+                    f"To prevent overloading the CDN, automated database refresh is disabled for another "
+                    f"{60 - minutes_ago} minutes. Please check for typos in the codename."
+                )
+                
+            logger.info(f"Map '{codename}' not found in cache and cooldown has expired (last fetched {int(time_since_fetch / 60)}m ago). Forcing JDLO refresh...")
+            try:
+                songs_db = self._client.fetch_songs_db(force_refresh=True)
+                packages_db = self._client.fetch_sku_packages(force_refresh=True)
+            except Exception as e:
+                raise JDLOExtractorError(f"Failed to refresh JDLO databases: {e}")
+                
+            for k, v in songs_db.items():
+                if k.lower() == codename.lower():
+                    song_entry = v
+                    codename = k
+                    break
+                    
+        if not song_entry:
             raise JDLOExtractorError(f"Map '{codename}' not found in JDLO songs database.")
             
         pkg_name = f"{codename}_mapContent"
@@ -193,27 +221,150 @@ class JDLOExtractor(BaseExtractor):
                     break
                     
         # 3. Download files
-        pkg_dest = self._download_dir / f"{codename}_MAIN_SCENE.zip"
-        if not pkg_dest.exists():
-            self._download_file(package_url, pkg_dest)
-            
-        if audio_url:
-            audio_dest = self._download_dir / f"{codename}.ogg"
-            if not audio_dest.exists():
-                self._download_file(audio_url, audio_dest)
+        try:
+            pkg_dest = self._download_dir / f"{codename}_MAIN_SCENE.zip"
+            if not pkg_dest.exists():
+                self._download_file(package_url, pkg_dest)
                 
-        if video_url:
-            # We must use the exact filename expected by normalizer, or just copy it with the correct suffix.
-            # Normalizer expects something like {codename}_ULTRA.hd.webm or similar, but the actual URL might be lower quality.
-            # Let's save it as the chosen suffix.
-            # Wait, normalizer looks for .webm and picks it up.
-            video_name = video_url.split("/")[-1].split("?")[0]
-            video_dest = self._download_dir / video_name
-            if not video_dest.exists():
-                self._download_file(video_url, video_dest)
+            if audio_url:
+                audio_dest = self._download_dir / f"{codename}.ogg"
+                if not audio_dest.exists():
+                    self._download_file(audio_url, audio_dest)
+                    
+            if video_url:
+                video_name = video_url.split("/")[-1].split("?")[0]
+                video_dest = self._download_dir / video_name
+                if not video_dest.exists():
+                    self._download_file(video_url, video_dest)
+        except Exception as e:
+            is_http_missing = False
+            status_code = None
+            if hasattr(e, "response") and e.response is not None:
+                status_code = e.response.status_code
+                if status_code in (404, 403):
+                    is_http_missing = True
+                    
+            if is_http_missing:
+                songs_last_fetched = self._client.get_last_fetched("songs")
+                time_since_fetch = time.time() - songs_last_fetched
+                
+                if songs_last_fetched > 0 and time_since_fetch < 3600:
+                    minutes_ago = int(time_since_fetch / 60)
+                    logger.warning(
+                        f"Required download failed with {status_code}. "
+                        f"Database was refreshed recently ({minutes_ago} minutes ago). "
+                        f"Skipping database refresh/invalidation to avoid hammering the CDN. "
+                        f"This map is likely permanently broken or incomplete on the server."
+                    )
+                    raise JDLOExtractorError(f"Failed to download required map assets (Permanently broken 404/403): {e}")
+                else:
+                    logger.info(
+                        f"Required download failed with {status_code} and cache is older than 1 hour "
+                        f"({int(time_since_fetch / 3600)}h ago). Attempting inline database refresh to check for updated URLs..."
+                    )
+                    try:
+                        # Fetch the fresh databases
+                        new_songs_db = self._client.fetch_songs_db(force_refresh=True)
+                        new_packages_db = self._client.fetch_sku_packages(force_refresh=True)
+                        
+                        # Find the entry in the updated databases
+                        new_song_entry = None
+                        for k, v in new_songs_db.items():
+                            if k.lower() == codename.lower():
+                                new_song_entry = v
+                                break
+                                
+                        new_pkg_entry = None
+                        new_pkg_name = f"{codename}_mapContent"
+                        for k, v in new_packages_db.items():
+                            if k.lower() == new_pkg_name.lower():
+                                new_pkg_entry = v
+                                break
+                                
+                        # Get new URLs
+                        new_package_url = new_pkg_entry.get("url") if new_pkg_entry else None
+                        
+                        new_urls_map = self._client.get_content_authorization(codename)
+                        new_audio_url = None
+                        if new_urls_map:
+                            for k, v in new_urls_map.items():
+                                if k.lower().endswith(".ogg"):
+                                    new_audio_url = v
+                                    break
+                                    
+                        new_video_url = None
+                        if new_urls_map:
+                            for q in fallback_order:
+                                suffix = QUALITY_PATTERNS.get(q)
+                                if not suffix:
+                                    continue
+                                for k, v in new_urls_map.items():
+                                    if k.lower().endswith(suffix.lower()):
+                                        new_video_url = v
+                                        break
+                                if new_video_url:
+                                    break
+                            if not new_video_url:
+                                for k, v in new_urls_map.items():
+                                    if ".webm" in k.lower():
+                                        new_video_url = v
+                                        break
+                                        
+                        # Check if any URL actually changed
+                        url_changed = (
+                            (new_package_url != package_url) or
+                            (new_audio_url != audio_url) or
+                            (new_video_url != video_url)
+                        )
+                        
+                        if url_changed:
+                            logger.info("URLs updated in the refreshed database! Retrying downloads with the updated URLs...")
+                            # Clean up any partially downloaded/failed files
+                            pkg_dest.unlink(missing_ok=True)
+                            if audio_url:
+                                (self._download_dir / f"{codename}.ogg").unlink(missing_ok=True)
+                            if video_url:
+                                (self._download_dir / video_name).unlink(missing_ok=True)
+                                
+                            # Re-run download steps with new URLs
+                            if new_package_url:
+                                self._download_file(new_package_url, pkg_dest)
+                            if new_audio_url:
+                                audio_dest = self._download_dir / f"{codename}.ogg"
+                                self._download_file(new_audio_url, audio_dest)
+                            if new_video_url:
+                                new_video_name = new_video_url.split("/")[-1].split("?")[0]
+                                video_dest = self._download_dir / new_video_name
+                                self._download_file(new_video_url, video_dest)
+                                
+                            logger.info("Successfully downloaded required assets using updated URLs after cache refresh!")
+                            # Update main scope bindings
+                            if new_video_url:
+                                video_name = new_video_name
+                            package_url = new_package_url
+                            audio_url = new_audio_url
+                            video_url = new_video_url
+                            song_entry = new_song_entry
+                        else:
+                            logger.warning(
+                                "Database refreshed, but URLs did not change. "
+                                "This indicates the map is truly broken/missing on the CDN. "
+                                "Raising error without further action."
+                            )
+                            raise JDLOExtractorError(f"Failed to download required map assets (URLs unchanged after DB refresh): {e}")
+                    except JDLOExtractorError:
+                        raise
+                    except Exception as refresh_error:
+                        logger.error(f"Error during cache refresh and retry: {refresh_error}")
+                        raise JDLOExtractorError(f"Failed to download required map assets and database refresh failed: {refresh_error}")
+            else:
+                logger.warning(f"Required download failed due to network/server issue. Keeping cache intact: {e}")
+                raise JDLOExtractorError(f"Failed to download required map assets: {e}")
                 
         # 3.5 Download assets (art)
         assets = song_entry.get("assets", {})
+        total_links = 0
+        failed_links = 0
         for asset_key, asset_url in assets.items():
             if not asset_url:
                 continue
@@ -222,13 +373,18 @@ class JDLOExtractor(BaseExtractor):
                 continue
             asset_name = asset_url.split("/")[-1].split("?")[0]
             if asset_name.endswith((".tga.ckd", ".png", ".jpg")):
+                total_links += 1
                 asset_dest = self._download_dir / asset_name
                 if not asset_dest.exists():
                     try:
                         self._download_file(asset_url, asset_dest)
                     except Exception as e:
+                        failed_links += 1
                         logger.warning(f"Failed to download optional asset {asset_name}: {e}")
-
+                        
+        if total_links > 0 and (failed_links / total_links) < 0.5:
+            logger.info("Majority of map links successful. Extending JDLO cache lifespan...")
+            self._client.extend_cache()
         # 4. Extract zip to extract_dir
         logger.info(f"Extracting {pkg_dest.name}...")
         try:
