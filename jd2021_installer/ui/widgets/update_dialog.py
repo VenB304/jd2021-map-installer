@@ -333,7 +333,13 @@ class UpdateResultDialog(QDialog):
         # regardless of whether argv[0] is a script path or a module flag.
         restart_args = [python, "-m", "jd2021_installer.main"]
         try:
-            subprocess.Popen(restart_args)
+            import os
+            # Use CREATE_BREAKAWAY_FROM_JOB so the new app instance isn't killed
+            # when the current app closes its Job Object.
+            CREATE_BREAKAWAY_FROM_JOB = 0x01000000
+            CREATE_NEW_CONSOLE = 0x00000010
+            cflags = CREATE_BREAKAWAY_FROM_JOB | CREATE_NEW_CONSOLE if os.name == "nt" else 0
+            subprocess.Popen(restart_args, creationflags=cflags)
         except Exception as exc:
             logger.error("Failed to restart: %s", exc)
             QMessageBox.warning(
