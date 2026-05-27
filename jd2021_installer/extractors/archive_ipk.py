@@ -458,8 +458,14 @@ def find_bundle_ipks(
                 bundlelogic_ipk = path
             continue
         if "bundle" in name:
+            is_chunk = bool(re.search(r"bundle_\d+(_|\.ipk)", name))
             if bundle_ipk is None:
                 bundle_ipk = path
+            elif not is_chunk:
+                existing_name = bundle_ipk.name.lower()
+                existing_is_chunk = bool(re.search(r"bundle_\d+(_|\.ipk)", existing_name))
+                if existing_is_chunk:
+                    bundle_ipk = path
 
     return bundle_ipk, bundlelogic_ipk
 
@@ -501,7 +507,7 @@ class ArchiveIPKExtractor(BaseExtractor):
             # Try to match the codename from the IPK filename
             base = self._ipk_path.stem
             stem = re.sub(
-                r"_(x360|durango|scarlett|nx|orbis|prospero|pc)$",
+                r"_(x360|durango|scarlett|nx|orbis|prospero|pc|ps3|wiiu)$",
                 "",
                 base,
                 flags=re.IGNORECASE,
@@ -518,7 +524,7 @@ class ArchiveIPKExtractor(BaseExtractor):
             # Fallback to filename inference if no maps found in structure
             base = self._ipk_path.stem
             stem = re.sub(
-                r"_(x360|durango|scarlett|nx|orbis|prospero|pc)$",
+                r"_(x360|durango|scarlett|nx|orbis|prospero|pc|ps3|wiiu)$",
                 "",
                 base,
                 flags=re.IGNORECASE,
