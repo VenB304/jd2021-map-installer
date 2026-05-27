@@ -1139,10 +1139,6 @@ class MainWindow(QMainWindow):
             return
 
         self._current_target = normalized_target or None
-        if normalized_target:
-            logger.debug("Target selected: %s", normalized_target)
-        elif previous_target:
-            logger.debug("Target cleared")
         self._set_preview_controls_ready(False)
 
     def _on_game_dir_changed(self, path: str) -> None:

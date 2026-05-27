@@ -13,7 +13,7 @@ from jd2021_installer.core.config import AppConfig
 
 logger = logging.getLogger("jd2021.core.jdlo_client")
 
-def _get_dynamic_user_agent() -> str:
+def _get_dynamic_user_agent(username: str = None) -> str:
     commit_hash = "zip-build"
     try:
         kwargs = {}
@@ -32,14 +32,16 @@ def _get_dynamic_user_agent() -> str:
         pass
         
     os_info = f"{platform.system()} {platform.release()}; {platform.machine()}"
-    return f"JD2021MapInstaller/{commit_hash} ({os_info}) (+https://github.com/VenB304/jd2021-map-installer; ventralberry@gmail.com)"
+    base = f"JD2021MapInstaller/{commit_hash} ({os_info}) (+https://github.com/VenB304/jd2021-map-installer; ventralberry@gmail.com)"
+    if username:
+        return f"{base} User/{username}"
+    return base
 
 class JDLOClient:
     """Client for interacting with JDLO's CDN and APIs."""
     
     BASE_URL = "https://jdlo.ovosimpatico.com"
     USER_AGENT_API = "UbiServices_SDK_2020.Release.17_PC64_ansi_static"
-    USER_AGENT_DOWNLOAD = _get_dynamic_user_agent()
     
     _mem_cache_songs = None
     _mem_cache_songs_time = 0
@@ -50,6 +52,23 @@ class JDLOClient:
         self.config = config
         self.cache_dir = config.cache_directory / "jdlo"
         self.cache_dir.mkdir(parents=True, exist_ok=True)
+        
+        username = None
+        try:
+            if self.config.jdlo_auth_path and self.config.jdlo_auth_path.exists():
+                with open(self.config.jdlo_auth_path, "r", encoding="utf-8") as f:
+                    ini_content = f.read().strip()
+                decoded = base64.b64decode(ini_content).decode("utf-8")
+                for line in decoded.strip().split("\n"):
+                    if "=" in line:
+                        k, v = line.split("=", 1)
+                        if k.strip().lower() == "username":
+                            username = v.strip()
+                            break
+        except Exception:
+            pass
+            
+        self.USER_AGENT_DOWNLOAD = _get_dynamic_user_agent(username)
 
     def get_auth_token(self) -> str:
         """Reads and decodes the TickedId from jdlo_auth.ini."""
