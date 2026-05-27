@@ -3676,7 +3676,8 @@ class MainWindow(QMainWindow):
         logger.debug("Thread cleaned up: %s", label)
         if thread in self._active_threads:
             self._active_threads.remove(thread)
-        self._active_worker = None
+        if not self._active_threads:
+            self._active_worker = None
 
     def _start_file_logging(self, current_target: str, mode_name: str = "", action: str = "install") -> None:
         """Starts a dynamic FileHandler log for this installation."""
