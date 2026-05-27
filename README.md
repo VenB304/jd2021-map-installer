@@ -141,7 +141,7 @@ This project builds on the work of the Just Dance modding community:
 - **[AssetStudioMod](https://github.com/aelurum/AssetStudio)** / **AssetStudioModCLI** — Unity bundle extraction for JDNext maps
 - **[Unity2UbiArt](https://github.com/Itaybl14/Unity2UbiArt)** — Unity-to-UbiArt conversion workflow
 - **[UnityPy](https://github.com/K0lb3/UnityPy)** — Python Unity asset parsing for JDNext bundle inspection
-- **[JDLO](https://jdlo.ovosimpatico.com/)** — This installer pulls maps from the Just Dance Legacy Online (JDLO) CDN. Special Thanks to Ovo and the JDLO Team for this integration.
+- **[JDLO](https://jdlo.ovosimpatico.com/)** — This installer pulls maps from the Just Dance Legacy Online (JDLO) CDN. Special Thanks to Ovo and the JDLO Team for making this integration possible.
 
 Special thanks to the authors and contributors of these tools for making Just Dance modding possible.
 
