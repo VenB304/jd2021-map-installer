@@ -210,3 +210,9 @@ class ActionWidget(QWidget):
             self._btn_reset,
         ):
             btn.setEnabled(enabled)
+
+    def set_readjust_visible(self, visible: bool) -> None:
+        """Show or hide the readjust offset button based on config."""
+        self._btn_readjust.setVisible(visible)
+        # Force layout update for heights if visibility changes
+        QTimer.singleShot(0, self._sync_button_row_heights)

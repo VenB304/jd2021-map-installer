@@ -1082,6 +1082,22 @@ class MainWindow(QMainWindow):
 
         self._config_panel.set_video_quality(self._config.video_quality)
         self._set_preview_controls_ready(False)
+        self._update_legacy_sync_visibility()
+
+    def _update_legacy_sync_visibility(self) -> None:
+        """Toggle visibility of legacy sync refinement UI based on config."""
+        show_legacy = getattr(self._config, "enable_legacy_sync_refinement", False)
+        self._sync_hint_label.setVisible(show_legacy)
+        self._sync_refinement.setVisible(show_legacy)
+        self._action_panel.set_readjust_visible(show_legacy)
+        
+        # If the log console isn't expanding properly, we might need to adjust stretch here,
+        # but the layout was defined with stretch=0 for sync and stretch=0 for log console.
+        # Wait, if both are stretch=0, hiding one will let the stretch=1 preview widget expand.
+        # Let's dynamically set stretch so log console expands if legacy sync is hidden.
+        right_layout = self._log_console.parentWidget().layout()
+        if isinstance(right_layout, QVBoxLayout):
+            right_layout.setStretchFactor(self._log_console, 1 if not show_legacy else 0)
 
     # ==================================================================
     # SIGNAL / SLOT WIRING  (Phase 4)
@@ -1667,6 +1683,7 @@ class MainWindow(QMainWindow):
             self._apply_theme()
             self._refresh_media_tool_configuration(persist=True)
             self._save_settings()
+            self._update_legacy_sync_visibility()
             if not getattr(self._config, "show_window_size_overlay", True):
                 self._hide_size_overlay()
             self._config_panel.set_video_quality(self._config.video_quality)

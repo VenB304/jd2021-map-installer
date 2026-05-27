@@ -854,6 +854,21 @@ class SettingsDialog(QDialog):
 
         advanced_layout.addLayout(network_form)
 
+        # ----- Legacy Features section -----
+        legacy_section_label = QLabel("Legacy Features")
+        legacy_section_label.setStyleSheet("font-weight: bold; margin-top: 8px;")
+        advanced_layout.addWidget(legacy_section_label)
+
+        self.cb_legacy_sync = QCheckBox("Enable Legacy Sync Refinement")
+        self.cb_legacy_sync.setChecked(
+            getattr(self._config, "enable_legacy_sync_refinement", False)
+        )
+        self.cb_legacy_sync.setToolTip(
+            "Shows the 'Readjust Offset' button and Sync Refinement section in the main window.\n"
+            "This is generally not needed anymore as most modes have correct syncing."
+        )
+        advanced_layout.addWidget(self.cb_legacy_sync)
+
         # ----- Developer section -----
         dev_section_label = QLabel("Developer")
         dev_section_label.setStyleSheet("font-weight: bold; margin-top: 8px;")
@@ -1104,6 +1119,7 @@ class SettingsDialog(QDialog):
 
     def _on_save(self) -> None:
         self._config.skip_preflight = self.cb_skip_preflight.isChecked()
+        self._config.enable_legacy_sync_refinement = self.cb_legacy_sync.isChecked()
         self._config.suppress_offset_notification = self.cb_suppress.isChecked()
         self._config.cleanup_behavior = self._combo_value(self.combo_cleanup)
         self._config.locked_status_behavior = self._combo_value(self.combo_locked_status)

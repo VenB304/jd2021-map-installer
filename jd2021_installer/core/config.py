@@ -29,6 +29,7 @@ class AppConfig(BaseModel):
     )
 
     # UI/UX settings
+    enable_legacy_sync_refinement: bool = False
     skip_preflight: bool = False
     suppress_offset_notification: bool = False
     cleanup_behavior: str = Field(default="ask", pattern=r"^(ask|delete|keep|aggressive)$")
