@@ -111,6 +111,9 @@ class JDLOExtractor(BaseExtractor):
         dest.parent.mkdir(parents=True, exist_ok=True)
         with open(dest, "wb") as f:
             for chunk in resp.iter_content(chunk_size=1024 * 64):
+                from PyQt6.QtCore import QThread
+                if QThread.currentThread().isInterruptionRequested():
+                    raise JDLOExtractorError("Download interrupted by user.")
                 if chunk:
                     f.write(chunk)
 

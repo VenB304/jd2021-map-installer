@@ -305,8 +305,12 @@ class MainWindow(QMainWindow):
         # Give threads a moment to finish, but don't hang if they are stuck
         for thread in list(self._active_threads):
             if thread.isRunning():
+                thread.requestInterruption()
                 thread.quit()
                 thread.wait(1000)
+                if thread.isRunning():
+                    logger.warning("Forcefully terminating stuck thread.")
+                    thread.terminate()
         
         self._save_settings()
         event.accept()
