@@ -334,6 +334,7 @@ QTextEdit#logConsoleTextEdit {
 	background-color: #14171d;
 	color: #d3d8e5;
 	border: 1px solid #2c3342;
+	border-radius: 6px;
 	font-family: "Cascadia Mono", "Consolas", monospace;
 	font-size: 9pt;
 }

@@ -126,10 +126,7 @@ class JDLOExtractor(BaseExtractor):
         
         # Determine directories
         self._download_dir = self._config.download_root / "jdlo" / codename
-        self._download_dir.mkdir(parents=True, exist_ok=True)
-        
         extract_dir = output_dir / codename
-        extract_dir.mkdir(parents=True, exist_ok=True)
         
         # 1. Fetch metadata
         try:
@@ -424,6 +421,7 @@ class JDLOExtractor(BaseExtractor):
             self._client.extend_cache()
         # 4. Extract zip to extract_dir
         logger.info(f"Extracting {pkg_dest.name}...")
+        extract_dir.mkdir(parents=True, exist_ok=True)
         try:
             with zipfile.ZipFile(pkg_dest, "r") as z:
                 z.extractall(extract_dir)
