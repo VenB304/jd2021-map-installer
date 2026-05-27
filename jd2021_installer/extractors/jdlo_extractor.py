@@ -59,14 +59,41 @@ class JDLOOfflineExtractor(BaseExtractor):
             raise JDLOExtractorError(f"Failed to extract ZIP package: {e}")
             
         from jd2021_installer.extractors.archive_ipk import ArchiveIPKExtractor
-        for ipk_file in extract_dir.rglob("*.ipk"):
-            logger.info(f"Extracting bundled IPK {ipk_file.name}...")
-            try:
-                ipk_ext = ArchiveIPKExtractor(ipk_file, desired_codename=self._codename)
-                ipk_ext.extract(extract_dir)
+        ipk_files = list(extract_dir.rglob("*.ipk"))
+        if ipk_files:
+            import re
+            platforms_found = set()
+            platform_regex = re.compile(r"_(x360|durango|scarlett|nx|orbis|prospero|pc|ps3|wiiu)\.ipk$", re.IGNORECASE)
+            for p in ipk_files:
+                match = platform_regex.search(p.name)
+                if match:
+                    platforms_found.add(match.group(1).lower())
+            
+            best_platform = None
+            for pref in ["pc", "nx", "orbis", "durango", "scarlett", "prospero", "x360", "wiiu", "ps3"]:
+                if pref in platforms_found:
+                    best_platform = pref
+                    break
+                    
+            ipks_to_extract = []
+            for p in ipk_files:
+                match = platform_regex.search(p.name)
+                if match:
+                    if match.group(1).lower() == best_platform:
+                        ipks_to_extract.append(p)
+                else:
+                    ipks_to_extract.append(p)
+
+            for ipk_file in ipks_to_extract:
+                logger.info(f"Extracting bundled IPK {ipk_file.name}...")
+                try:
+                    ipk_ext = ArchiveIPKExtractor(ipk_file, desired_codename=self._codename)
+                    ipk_ext.extract(extract_dir)
+                except Exception as e:
+                    logger.warning(f"Failed to extract bundled IPK {ipk_file.name}: {e}")
+                    
+            for ipk_file in ipk_files:
                 ipk_file.unlink(missing_ok=True)
-            except Exception as e:
-                logger.warning(f"Failed to extract bundled IPK {ipk_file.name}: {e}")
                 
         for f in os.listdir(self._download_dir):
             if f.endswith(".zip"):
@@ -429,14 +456,41 @@ class JDLOExtractor(BaseExtractor):
             raise JDLOExtractorError(f"Failed to extract ZIP package: {e}")
             
         from jd2021_installer.extractors.archive_ipk import ArchiveIPKExtractor
-        for ipk_file in extract_dir.rglob("*.ipk"):
-            logger.info(f"Extracting bundled IPK {ipk_file.name}...")
-            try:
-                ipk_ext = ArchiveIPKExtractor(ipk_file, desired_codename=codename)
-                ipk_ext.extract(extract_dir)
+        ipk_files = list(extract_dir.rglob("*.ipk"))
+        if ipk_files:
+            import re
+            platforms_found = set()
+            platform_regex = re.compile(r"_(x360|durango|scarlett|nx|orbis|prospero|pc|ps3|wiiu)\.ipk$", re.IGNORECASE)
+            for p in ipk_files:
+                match = platform_regex.search(p.name)
+                if match:
+                    platforms_found.add(match.group(1).lower())
+            
+            best_platform = None
+            for pref in ["pc", "nx", "orbis", "durango", "scarlett", "prospero", "x360", "wiiu", "ps3"]:
+                if pref in platforms_found:
+                    best_platform = pref
+                    break
+                    
+            ipks_to_extract = []
+            for p in ipk_files:
+                match = platform_regex.search(p.name)
+                if match:
+                    if match.group(1).lower() == best_platform:
+                        ipks_to_extract.append(p)
+                else:
+                    ipks_to_extract.append(p)
+
+            for ipk_file in ipks_to_extract:
+                logger.info(f"Extracting bundled IPK {ipk_file.name}...")
+                try:
+                    ipk_ext = ArchiveIPKExtractor(ipk_file, desired_codename=codename)
+                    ipk_ext.extract(extract_dir)
+                except Exception as e:
+                    logger.warning(f"Failed to extract bundled IPK {ipk_file.name}: {e}")
+                    
+            for ipk_file in ipk_files:
                 ipk_file.unlink(missing_ok=True)
-            except Exception as e:
-                logger.warning(f"Failed to extract bundled IPK {ipk_file.name}: {e}")
             
         # 5. Copy media to extract_dir for the normalizer
         for f in os.listdir(self._download_dir):

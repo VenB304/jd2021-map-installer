@@ -2147,6 +2147,8 @@ class MainWindow(QMainWindow):
         self._preview_widget.reset()
         self._set_preview_controls_ready(False)
         self._feedback_panel.reset()
+        if hasattr(self, "_log_console") and self._log_console is not None:
+            self._log_console.clear()
         self._set_status("State reset.")
 
     # ==================================================================
