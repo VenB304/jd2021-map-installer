@@ -1592,6 +1592,7 @@ class MainWindow(QMainWindow):
         self._feedback_panel.set_checklist_steps(selected_codes)
         self._feedback_panel.set_progress(0)
         self._set_status("Uninstalling selected maps...")
+        self._start_file_logging(",".join(selected_codes), action="uninstall")
         self.append_log(f"Starting uninstall for {len(selected_codes)} map(s)...")
 
         worker = UninstallMapsWorker(
@@ -2209,7 +2210,7 @@ class MainWindow(QMainWindow):
                 "\n".join(f"• {w}" for w in game_warnings),
             )
 
-        from jd2021_installer.ui.widgets.mode_selector import MODE_FETCH, MODE_JDNEXT, MODE_FETCH_JDLO
+        from jd2021_installer.ui.widgets.mode_selector import MODE_FETCH, MODE_JDNEXT, MODE_FETCH_JDLO, MODE_LABELS
         source_state = self._mode_selector.get_current_state()
         mode_index = int(source_state.get("mode_index", -1))
         include_fetch_checks = mode_index in (MODE_FETCH, MODE_JDNEXT, MODE_FETCH_JDLO)
@@ -2221,7 +2222,8 @@ class MainWindow(QMainWindow):
         self._clear_offset_review_state()
 
         # Start dynamic per-map logging immediately if target is available
-        self._start_file_logging(self._current_target)
+        mode_label = MODE_LABELS[mode_index] if 0 <= mode_index < len(MODE_LABELS) else ""
+        self._start_file_logging(self._current_target, mode_name=mode_label)
 
         # Intercept batch mode - it has a completely different pipeline structure
         from jd2021_installer.ui.widgets.mode_selector import MODE_BATCH
@@ -2355,15 +2357,12 @@ class MainWindow(QMainWindow):
         if map_data is None:
             return  # error already handled
 
+        self._rename_log_file_with_codename(map_data.codename)
         self._current_map = map_data
         self._completed_install_maps = [map_data]
         self._feedback_panel.update_checklist_step("Extracting map data...", StepStatus.DONE)
         self._feedback_panel.update_checklist_step("Parsing CKDs and metadata...", StepStatus.DONE)
         self._feedback_panel.update_checklist_step("Normalizing assets...", StepStatus.DONE)
-        self._feedback_panel.update_checklist_step(
-            "Decoding XMA2 audio...", StepStatus.IN_PROGRESS
-        )
-
         # Update UI offsets from calculated normalization data
         logger.info("Setting UI offsets from normalization: audio=%.1f ms, video=%.1f ms", 
                     map_data.sync.audio_ms, map_data.sync.video_ms)
@@ -2386,6 +2385,10 @@ class MainWindow(QMainWindow):
             self._lock_ui(False)
             self._stop_file_logging()
             return
+
+        self._feedback_panel.update_checklist_step(
+            "Decoding XMA2 audio...", StepStatus.IN_PROGRESS
+        )
 
         # Pre-install AlbumCoach customization for JDNext multi-coach maps.
         self._apply_albumcoach_customization(map_data)
@@ -2928,12 +2931,16 @@ class MainWindow(QMainWindow):
             return "Fetch JDNext"
         if "jdnext" in mode_low and "html" in mode_low:
             return "HTML JDNext"
+        if "jdlo" in mode_low and "fetch" in mode_low:
+            return "Fetch JDLO"
+        if "jdlo" in mode_low and "html" in mode_low:
+            return "HTML JDLO"
         if "jdnext" in mode_low:
             return "JDNext"
         if "fetch" in mode_low:
-            return "Fetch"
+            return "Fetch JDU"
         if "html" in mode_low:
-            return "HTML"
+            return "HTML JDU"
         if "ipk" in mode_low:
             return "IPK Archive"
         if "batch" in mode_low:
@@ -3671,7 +3678,7 @@ class MainWindow(QMainWindow):
             self._active_threads.remove(thread)
         self._active_worker = None
 
-    def _start_file_logging(self, current_target: str) -> None:
+    def _start_file_logging(self, current_target: str, mode_name: str = "", action: str = "install") -> None:
         """Starts a dynamic FileHandler log for this installation."""
         if self._file_logger_handlers:
             self._stop_file_logging()
@@ -3698,8 +3705,12 @@ class MainWindow(QMainWindow):
         import datetime
         timestamp = datetime.datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
 
-        file_prefix = "install_"
-        file_suffix = f"_{timestamp}.log"
+        safe_mode = "".join(c for c in mode_name if c.isalnum() or c in ("-", "_")).strip()
+        if safe_mode:
+            file_prefix = f"{timestamp}_{action}_{safe_mode}_"
+        else:
+            file_prefix = f"{timestamp}_{action}_"
+        file_suffix = ".log"
         max_filename_len = 180
         max_segment_len = max(8, max_filename_len - len(file_prefix) - len(file_suffix))
         if len(codename) > max_segment_len:
@@ -3733,6 +3744,45 @@ class MainWindow(QMainWindow):
         self._config.log_detail_level = apply_log_detail(self._config.log_detail_level)
         for log_path in log_paths:
             logger.info("Install log file: %s", log_path)
+
+    def _rename_log_file_with_codename(self, new_codename: str) -> None:
+        """Rename the current log file(s) replacing the original target name with the true codename."""
+        if not self._file_logger_handlers or not new_codename:
+            return
+
+        import os
+        safe_codename = "".join(c for c in new_codename if c.isalnum() or c in ("-", "_")).strip()
+        if not safe_codename:
+            return
+
+        for handler in list(self._file_logger_handlers):
+            if not isinstance(handler, logging.FileHandler):
+                continue
+            
+            old_path = Path(handler.baseFilename)
+            old_name = old_path.name
+            if not old_name.endswith(".log"):
+                continue
+            
+            name_without_ext = old_name[:-4]
+            last_underscore = name_without_ext.rfind("_")
+            if last_underscore == -1:
+                continue
+            
+            new_name = name_without_ext[:last_underscore+1] + safe_codename + ".log"
+            new_path = old_path.parent / new_name
+            
+            if new_path == old_path or new_path.exists():
+                continue
+            
+            try:
+                handler.close()
+                os.rename(old_path, new_path)
+                handler.baseFilename = str(new_path.resolve())
+                handler.stream = handler._open()
+                logger.info("Log file renamed to incorporate detected codename: %s", new_path.name)
+            except Exception as e:
+                logger.debug("Failed to rename log file to %s: %s", new_name, e)
 
     def _stop_file_logging(self) -> None:
         """Removes the active FileHandler and cleanly closes handles."""
