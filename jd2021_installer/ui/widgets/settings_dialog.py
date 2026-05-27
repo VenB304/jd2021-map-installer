@@ -480,12 +480,12 @@ class SettingsDialog(QDialog):
             "Open the editor: always show the layout editor.\n"
             "Use automatic layout: use automatic compositing silently."
         )
-        install_form.addRow("Album art layout (multi-coach maps):", self.combo_albumcoach)
+        install_form.addRow("JDNext Album art layout:", self.combo_albumcoach)
 
         self.combo_jdnext_cover = QComboBox()
         self.combo_jdnext_cover.addItem("Ask me each time (default)", "ask")
-        self.combo_jdnext_cover.addItem("Generate new cover (from background + title)", "synthesized")
-        self.combo_jdnext_cover.addItem("Use original cover (may look stretched)", "original")
+        self.combo_jdnext_cover.addItem("Generate new cover (background + title asset)", "synthesized")
+        self.combo_jdnext_cover.addItem("Use original cover (may look squished)", "original")
         self._set_combo_from_value(
             self.combo_jdnext_cover,
             getattr(self._config, "jdnext_cover_behavior", "ask"),

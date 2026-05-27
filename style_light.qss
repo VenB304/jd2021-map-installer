@@ -54,31 +54,38 @@ QListWidget:focus {
 
 QSpinBox,
 QDoubleSpinBox {
-	padding-right: 22px;
-	padding-left: 22px;
+	padding-right: 28px;
+	padding-left: 28px;
 	text-align: center;
+	min-width: 80px;
+}
+
+QComboBox {
+	padding-right: 32px;
 }
 
 QSpinBox::up-button,
 QDoubleSpinBox::up-button {
-	subcontrol-origin: border;
+	subcontrol-origin: padding;
 	subcontrol-position: right;
 	border: none;
 	background: #edf2f9;
-	width: 16px;
-	border-radius: 4px;
-	margin: 1px;
+	width: 24px;
+	border-top-right-radius: 5px;
+	border-bottom-right-radius: 5px;
+	margin: 0px;
 }
 
 QSpinBox::down-button,
 QDoubleSpinBox::down-button {
-	subcontrol-origin: border;
+	subcontrol-origin: padding;
 	subcontrol-position: left;
 	border: none;
 	background: #edf2f9;
-	width: 16px;
-	border-radius: 4px;
-	margin: 1px;
+	width: 24px;
+	border-top-left-radius: 5px;
+	border-bottom-left-radius: 5px;
+	margin: 0px;
 }
 
 QSpinBox::up-button:hover,
@@ -91,26 +98,26 @@ QDoubleSpinBox::down-button:hover {
 QSpinBox::up-arrow,
 QDoubleSpinBox::up-arrow {
 	image: url(assets/icons/chevron-up-dark.svg);
-	width: 8px;
-	height: 8px;
+	width: 14px;
+	height: 14px;
 }
 
 QSpinBox::down-arrow,
 QDoubleSpinBox::down-arrow {
 	image: url(assets/icons/chevron-down-dark.svg);
-	width: 8px;
-	height: 8px;
+	width: 14px;
+	height: 14px;
 }
 
 QComboBox::drop-down {
 	border: none;
-	width: 22px;
+	width: 28px;
 }
 
 QComboBox::down-arrow {
 	image: url(assets/icons/chevron-down-dark.svg);
-	width: 10px;
-	height: 10px;
+	width: 14px;
+	height: 14px;
 }
 
 QComboBox QAbstractItemView {
