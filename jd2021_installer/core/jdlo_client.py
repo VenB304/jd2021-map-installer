@@ -41,6 +41,11 @@ class JDLOClient:
     USER_AGENT_API = "UbiServices_SDK_2020.Release.17_PC64_ansi_static"
     USER_AGENT_DOWNLOAD = _get_dynamic_user_agent()
     
+    _mem_cache_songs = None
+    _mem_cache_songs_time = 0
+    _mem_cache_sku = None
+    _mem_cache_sku_time = 0
+    
     def __init__(self, config: AppConfig):
         self.config = config
         self.cache_dir = config.cache_directory / "jdlo"
@@ -141,6 +146,10 @@ class JDLOClient:
 
     def fetch_songs_db(self, force_refresh: bool = False) -> Dict[str, Any]:
         """Fetches the JDLO songs.json database, using cache if available."""
+        if not force_refresh and JDLOClient._mem_cache_songs is not None:
+            if time.time() - JDLOClient._mem_cache_songs_time < 86400:
+                return JDLOClient._mem_cache_songs
+
         cache_file = self.cache_dir / "songs.json"
         
         # Cache for 24 hours
@@ -148,7 +157,10 @@ class JDLOClient:
             if time.time() - cache_file.stat().st_mtime < 86400:
                 try:
                     with open(cache_file, "r", encoding="utf-8") as f:
-                        return json.load(f)
+                        data = json.load(f)
+                        JDLOClient._mem_cache_songs = data
+                        JDLOClient._mem_cache_songs_time = time.time()
+                        return data
                 except json.JSONDecodeError:
                     pass
                     
@@ -167,17 +179,26 @@ class JDLOClient:
             json.dump(data, f)
             
         self._update_last_fetched("songs")
+        JDLOClient._mem_cache_songs = data
+        JDLOClient._mem_cache_songs_time = time.time()
         return data
 
     def fetch_sku_packages(self, force_refresh: bool = False) -> Dict[str, Any]:
         """Fetches and merges sku-packages (Durango + PC fallback)."""
+        if not force_refresh and JDLOClient._mem_cache_sku is not None:
+            if time.time() - JDLOClient._mem_cache_sku_time < 86400:
+                return JDLOClient._mem_cache_sku
+
         cache_file = self.cache_dir / "sku-packages.json"
         
         if not force_refresh and cache_file.exists():
             if time.time() - cache_file.stat().st_mtime < 86400:
                 try:
                     with open(cache_file, "r", encoding="utf-8") as f:
-                        return json.load(f)
+                        data = json.load(f)
+                        JDLOClient._mem_cache_sku = data
+                        JDLOClient._mem_cache_sku_time = time.time()
+                        return data
                 except json.JSONDecodeError:
                     pass
                     
@@ -209,6 +230,8 @@ class JDLOClient:
             json.dump(merged_packages, f)
             
         self._update_last_fetched("sku_packages")
+        JDLOClient._mem_cache_sku = merged_packages
+        JDLOClient._mem_cache_sku_time = time.time()
         return merged_packages
 
     def get_content_authorization(self, codename: str) -> Dict[str, str]:

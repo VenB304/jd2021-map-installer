@@ -1401,6 +1401,7 @@ class BatchInstallWorker(QObject):
         force_unlock_locked_status: bool = False,
         bundle_ipk: Optional[Path] = None,
         bundlelogic_ipk: Optional[Path] = None,
+        source_mode: str = "",
         parent: Optional[QObject] = None,
     ) -> None:
         super().__init__(parent)
@@ -1413,6 +1414,7 @@ class BatchInstallWorker(QObject):
         self._force_unlock_locked_status = force_unlock_locked_status
         self._bundle_ipk = bundle_ipk
         self._bundlelogic_ipk = bundlelogic_ipk
+        self._source_mode = source_mode
 
     def run(self) -> None:
         try:
@@ -1504,11 +1506,9 @@ class BatchInstallWorker(QObject):
             
             candidates: list[dict[str, object]] = []
             if self._fetch_codenames:
+                kind = "fetch_jdlo" if getattr(self, "_source_mode", "") == "fetch_jdlo" else "fetch"
                 for codename in self._fetch_codenames:
-                    candidates.append({"kind": "fetch", "name": codename, "path": self._source_dir})
-            elif self._source_mode == "fetch_jdlo":
-                for codename in self._codenames:
-                    candidates.append({"kind": "fetch_jdlo", "name": codename, "path": self._source_dir})
+                    candidates.append({"kind": kind, "name": codename, "path": self._source_dir})
 
             # When explicit fetch codenames are provided, treat this as a pure fetch batch.
             if self._source_dir and not self._fetch_codenames:
@@ -1574,7 +1574,7 @@ class BatchInstallWorker(QObject):
             for candidate in candidates:
                 kind = str(candidate["kind"])
                 cpath = Path(candidate["path"])
-                if kind == "fetch":
+                if kind in ("fetch", "fetch_jdlo"):
                     map_names.append(str(candidate.get("name") or cpath.name))
                 elif kind == "ipk":
                     from jd2021_installer.extractors.archive_ipk import inspect_ipk
@@ -1861,8 +1861,9 @@ class BatchInstallWorker(QObject):
                     
                 except Exception as e:
                     cpath = Path(candidate["path"])
-                    logger.debug("Failed to install map from %s: %s", cpath.name, e)
-                    self.status.emit(f"Warning: Failed {cpath.name} ({str(e)[:30]})")
+                    failed_name = str(candidate.get("name") or cpath.name)
+                    logger.debug("Failed to install map from %s: %s", failed_name, e)
+                    self.status.emit(f"Warning: Failed {failed_name} ({str(e)[:30]})")
 
             # Process maps prepared from HTML folders in phase 1.
             for map_name, map_dir, source_game in html_prepared:

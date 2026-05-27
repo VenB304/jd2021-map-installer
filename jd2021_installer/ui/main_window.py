@@ -2220,6 +2220,7 @@ class MainWindow(QMainWindow):
                     map_names=fetch_codenames,
                     fetch_codenames=fetch_codenames,
                     fetch_source=fetch_source,
+                    source_mode=fetch_mode_key,
                 )
                 return
 
@@ -3573,6 +3574,7 @@ class MainWindow(QMainWindow):
         fetch_source: str = "jdu",
         bundle_ipk: Optional[Path] = None,
         bundlelogic_ipk: Optional[Path] = None,
+        source_mode: str = "",
     ) -> None:
         """Launches the dedicated Batch mode worker."""
         if not self._current_target:
@@ -3604,6 +3606,7 @@ class MainWindow(QMainWindow):
             force_unlock_locked_status=force_unlock_locked_status,
             bundle_ipk=bundle_ipk,
             bundlelogic_ipk=bundlelogic_ipk,
+            source_mode=source_mode,
         )
         thread = QThread()
         worker.moveToThread(thread)
