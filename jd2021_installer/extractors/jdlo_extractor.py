@@ -197,7 +197,7 @@ class JDLOExtractor(BaseExtractor):
                 audio_url = v
                 break
 
-        video_url = None
+        video_urls = []
         
         from jd2021_installer.core.config import QUALITY_ORDER, QUALITY_PATTERNS
         target_quality = self._config.video_quality.upper()
@@ -205,24 +205,26 @@ class JDLOExtractor(BaseExtractor):
             target_quality = "ULTRA"
             
         start_index = QUALITY_ORDER.index(target_quality)
-        fallback_order = QUALITY_ORDER[start_index:]
+        fallback_behavior = getattr(self._config, "video_fallback_behavior", "fallback_down")
+        
+        if fallback_behavior == "fallback_up":
+            fallback_order = list(reversed(QUALITY_ORDER[:start_index + 1]))
+            fallback_order.extend(QUALITY_ORDER[start_index + 1:])
+        else:
+            fallback_order = QUALITY_ORDER[start_index:]
         
         for q in fallback_order:
             suffix = QUALITY_PATTERNS.get(q)
             if not suffix:
                 continue
             for k, v in urls_map.items():
-                if k.lower().endswith(suffix.lower()):
-                    video_url = v
-                    break
-            if video_url:
-                break
-                
-        if not video_url:
+                if k.lower().endswith(suffix.lower()) and v not in video_urls:
+                    video_urls.append(v)
+                    
+        if not video_urls:
             for k, v in urls_map.items():
-                if ".webm" in k.lower():
-                    video_url = v
-                    break
+                if ".webm" in k.lower() and v not in video_urls:
+                    video_urls.append(v)
                     
         # 3. Download files
         try:
@@ -235,11 +237,27 @@ class JDLOExtractor(BaseExtractor):
                 if not audio_dest.exists():
                     self._download_file(audio_url, audio_dest)
                     
-            if video_url:
-                video_name = video_url.split("/")[-1].split("?")[0]
-                video_dest = self._download_dir / video_name
-                if not video_dest.exists():
-                    self._download_file(video_url, video_dest)
+            used_video_url = None
+            if video_urls:
+                video_success = False
+                last_video_err = None
+                for v_url in video_urls:
+                    video_name = v_url.split("/")[-1].split("?")[0]
+                    video_dest = self._download_dir / video_name
+                    try:
+                        if not video_dest.exists():
+                            self._download_file(v_url, video_dest)
+                        used_video_url = v_url
+                        video_success = True
+                        break
+                    except Exception as e:
+                        if hasattr(e, "response") and e.response is not None and e.response.status_code in (404, 403):
+                            logger.info(f"Video quality {v_url.split('/')[-1]} not found ({e.response.status_code}), falling back to next available...")
+                            last_video_err = e
+                            continue
+                        raise e
+                if not video_success and last_video_err:
+                    raise last_video_err
         except Exception as e:
             is_http_missing = False
             status_code = None
@@ -296,29 +314,25 @@ class JDLOExtractor(BaseExtractor):
                                     new_audio_url = v
                                     break
                                     
-                        new_video_url = None
+                        new_video_urls = []
                         if new_urls_map:
                             for q in fallback_order:
                                 suffix = QUALITY_PATTERNS.get(q)
                                 if not suffix:
                                     continue
                                 for k, v in new_urls_map.items():
-                                    if k.lower().endswith(suffix.lower()):
-                                        new_video_url = v
-                                        break
-                                if new_video_url:
-                                    break
-                            if not new_video_url:
+                                    if k.lower().endswith(suffix.lower()) and v not in new_video_urls:
+                                        new_video_urls.append(v)
+                            if not new_video_urls:
                                 for k, v in new_urls_map.items():
-                                    if ".webm" in k.lower():
-                                        new_video_url = v
-                                        break
+                                    if ".webm" in k.lower() and v not in new_video_urls:
+                                        new_video_urls.append(v)
                                         
                         # Check if any URL actually changed
                         url_changed = (
                             (new_package_url != package_url) or
                             (new_audio_url != audio_url) or
-                            (new_video_url != video_url)
+                            (new_video_urls != video_urls)
                         )
                         
                         if url_changed:
@@ -327,8 +341,8 @@ class JDLOExtractor(BaseExtractor):
                             pkg_dest.unlink(missing_ok=True)
                             if audio_url:
                                 (self._download_dir / f"{codename}.ogg").unlink(missing_ok=True)
-                            if video_url:
-                                (self._download_dir / video_name).unlink(missing_ok=True)
+                            if used_video_url:
+                                (self._download_dir / used_video_url.split("/")[-1].split("?")[0]).unlink(missing_ok=True)
                                 
                             # Re-run download steps with new URLs
                             if new_package_url:
@@ -336,18 +350,37 @@ class JDLOExtractor(BaseExtractor):
                             if new_audio_url:
                                 audio_dest = self._download_dir / f"{codename}.ogg"
                                 self._download_file(new_audio_url, audio_dest)
-                            if new_video_url:
-                                new_video_name = new_video_url.split("/")[-1].split("?")[0]
-                                video_dest = self._download_dir / new_video_name
-                                self._download_file(new_video_url, video_dest)
+                            
+                            new_used_video_url = None
+                            if new_video_urls:
+                                new_video_success = False
+                                new_last_video_err = None
+                                for v_url in new_video_urls:
+                                    new_video_name = v_url.split("/")[-1].split("?")[0]
+                                    new_video_dest = self._download_dir / new_video_name
+                                    try:
+                                        if not new_video_dest.exists():
+                                            self._download_file(v_url, new_video_dest)
+                                        new_used_video_url = v_url
+                                        new_video_success = True
+                                        break
+                                    except Exception as e:
+                                        if hasattr(e, "response") and e.response is not None and e.response.status_code in (404, 403):
+                                            logger.info(f"Video quality {v_url.split('/')[-1]} not found ({e.response.status_code}), falling back to next available...")
+                                            new_last_video_err = e
+                                            continue
+                                        raise e
+                                if not new_video_success and new_last_video_err:
+                                    raise new_last_video_err
                                 
                             logger.info("Successfully downloaded required assets using updated URLs after cache refresh!")
                             # Update main scope bindings
-                            if new_video_url:
-                                video_name = new_video_name
+                            if new_used_video_url:
+                                video_name = new_used_video_url.split("/")[-1].split("?")[0]
                             package_url = new_package_url
                             audio_url = new_audio_url
-                            video_url = new_video_url
+                            video_urls = new_video_urls
+                            used_video_url = new_used_video_url
                             song_entry = new_song_entry
                         else:
                             logger.warning(

@@ -543,10 +543,22 @@ class SettingsDialog(QDialog):
         )
         self.combo_quality.setCurrentText(display_quality)
         self.combo_quality.setToolTip(
-            "The quality tier the installer tries to download first.\n"
-            "Falls back to lower tiers if the requested one is unavailable."
+            "The quality tier the installer tries to download first."
         )
         media_form.addRow("Video download quality:", self.combo_quality)
+        
+        self.combo_fallback_behavior = QComboBox()
+        self.combo_fallback_behavior.addItem("Next lower quality (e.g. High -> Mid)", "fallback_down")
+        self.combo_fallback_behavior.addItem("Next best quality (e.g. High -> Ultra)", "fallback_up")
+        current_fallback_mode = getattr(self._config, "video_fallback_behavior", "fallback_down")
+        fallback_idx = self.combo_fallback_behavior.findData(current_fallback_mode)
+        self.combo_fallback_behavior.setCurrentIndex(fallback_idx if fallback_idx >= 0 else 0)
+        self.combo_fallback_behavior.setToolTip(
+            "What to do if the selected video quality is missing or incompatible.\n\n"
+            "Next lower quality: Safely falls back to a lower resolution.\n"
+            "Next best quality: Tries to find a higher resolution before falling back to lower."
+        )
+        media_form.addRow("Missing quality fallback:", self.combo_fallback_behavior)
 
         self.combo_vp9_mode = QComboBox()
         self.combo_vp9_mode.addItem("Convert to VP8 (best game compatibility)", "reencode_to_vp8")
@@ -1155,6 +1167,7 @@ class SettingsDialog(QDialog):
         self._config.style_debug_mode = self.cb_style_debug.isChecked()
         display_text = self.combo_quality.currentText()
         self._config.video_quality = self._quality_display_to_internal.get(display_text, display_text)
+        self._config.video_fallback_behavior = str(self.combo_fallback_behavior.currentData())
         self._config.ffmpeg_hwaccel = self.combo_hwaccel.currentText()
         self._config.vp9_handling_mode = str(self.combo_vp9_mode.currentData())
         self._config.preview_video_mode = self._combo_value(self.combo_preview_mode)

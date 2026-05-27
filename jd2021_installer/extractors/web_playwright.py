@@ -578,6 +578,7 @@ def _build_quality_search_order(
     selected = (selected_quality or "ULTRA_HD").upper()
     cfg = config or AppConfig()
     vp9_mode = getattr(cfg, "vp9_handling_mode", "reencode_to_vp8")
+    fallback_behavior = getattr(cfg, "video_fallback_behavior", "fallback_down")
 
     if selected.endswith("_HD"):
         selected_tier = selected[:-3]
@@ -589,17 +590,27 @@ def _build_quality_search_order(
     if selected_tier not in tiers:
         selected_tier = "ULTRA"
 
+    # Determine base ordered tiers depending on fallback mode
+    start_idx = tiers.index(selected_tier)
+    
     # Compatibility mode: avoid VP9 tiers entirely, pick the next HD tier down.
     if vp9_mode == "fallback_compatible_down" and is_jdnext_url_set:
-        start_idx = tiers.index(selected_tier)
         if not selected_is_hd:
             start_idx = min(start_idx + 1, len(tiers) - 1)
-        return [f"{tier}_HD" for tier in tiers[start_idx:]]
+        
+        if fallback_behavior == "fallback_up":
+            ordered_tiers = list(reversed(tiers[:start_idx + 1])) + tiers[start_idx + 1:]
+        else:
+            ordered_tiers = tiers[start_idx:]
+            
+        return [f"{tier}_HD" for tier in ordered_tiers]
 
     prefer_hd_first = selected_is_hd
 
-    start_idx = tiers.index(selected_tier)
-    ordered_tiers = tiers[start_idx:]
+    if fallback_behavior == "fallback_up":
+        ordered_tiers = list(reversed(tiers[:start_idx + 1])) + tiers[start_idx + 1:]
+    else:
+        ordered_tiers = tiers[start_idx:]
 
     order: List[str] = []
     for tier in ordered_tiers:

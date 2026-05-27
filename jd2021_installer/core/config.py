@@ -109,6 +109,14 @@ class AppConfig(BaseModel):
         pattern=r"^(reencode_to_vp8|fallback_compatible_down)$",
     )
     preview_video_mode: str = Field(default="original", pattern=r"^(proxy_low|original)$")
+    
+    # Missing/incompatible quality fallback behavior
+    # "fallback_down" = Try lower qualities if the selected one is missing/incompatible
+    # "fallback_up" = Try higher qualities before falling back to lower qualities
+    video_fallback_behavior: str = Field(
+        default="fallback_down", 
+        pattern=r"^(fallback_down|fallback_up)$"
+    )
 
     class Config:
         env_prefix = "JD2021_"
