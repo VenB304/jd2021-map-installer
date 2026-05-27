@@ -708,7 +708,7 @@ def _inject_intro_amb_soundset_clip(target_dir: Path, codename: str, attempt_ena
     # JDNext maps), play the tail of the intro so the clip is not all silence.
     # JDNext clip timing can be beat-scaled (24 units per beat) rather than ms,
     # so convert to seconds using marker-derived beat length when available.
-    if hide_window is None and intro_wav_duration_ms is not None and clip_duration_ms > 0:
+    if intro_wav_duration_ms is not None and clip_duration_ms > 0:
         clip_window_ms_equivalent = float(clip_duration_ms)
         if beat_ms is not None and beat_ms > 0:
             clip_window_ms_equivalent = float(clip_duration_ms) * (float(beat_ms) / 24.0)
