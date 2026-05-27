@@ -1088,7 +1088,7 @@ class MainWindow(QMainWindow):
         """Toggle visibility of legacy sync refinement UI based on config."""
         show_legacy = getattr(self._config, "enable_legacy_sync_refinement", False)
         self._sync_hint_label.setVisible(show_legacy)
-        self._sync_refinement.setVisible(show_legacy)
+        self._sync_refinement.set_legacy_visible(show_legacy)
         self._action_panel.set_readjust_visible(show_legacy)
         
         # If the log console isn't expanding properly, we might need to adjust stretch here,

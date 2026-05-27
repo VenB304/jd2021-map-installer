@@ -345,7 +345,7 @@ def _ensure_jdnext_albumcoach_texture_from_coach(map_target: Path, codename: str
         return True
         
     except Exception as exc:
-        logger.debug("Failed to composite multi-coach albumcoach: %s", exc)
+        logger.exception("Failed to composite multi-coach albumcoach: %s", exc)
         # Fallback to copy the first coach if PIL compositing fails
         try:
             dst.parent.mkdir(parents=True, exist_ok=True)
@@ -430,7 +430,7 @@ def _synthesize_jdnext_cover_if_needed(
                 if choice == "original":
                     return False
             except Exception as exc:
-                logger.debug("JDNext cover ask callback failed (%s); defaulting to synthesized", exc)
+                logger.warning("JDNext cover ask callback failed (%s); defaulting to synthesized", exc)
 
     # --- Composite ---
     try:
@@ -477,7 +477,7 @@ def _synthesize_jdnext_cover_if_needed(
                 out = composite.resize(orig_size, _Image.Resampling.LANCZOS) if orig_size != (1024, 1024) else composite
                 out.save(f, format="PNG")
             except Exception as _e:
-                logger.debug("Could not overwrite cover PNG %s: %s", f.name, _e)
+                logger.warning("Could not overwrite cover PNG %s: %s", f.name, _e)
 
         logger.debug(
             "Synthesized JDNext cover art for '%s': map_bkg=%s title=%s -> cover_generic(512)/online(256).tga + PNGs",
@@ -700,7 +700,7 @@ def _install_menuart_companion_assets(menuart_sources: list[Path], map_target: P
                 shutil.copy2(ckd_path, dst_path)
                 copied += 1
             except OSError as exc:
-                logger.debug("Failed to install MenuArt companion %s: %s", ckd_path.name, exc)
+                logger.warning("Failed to install MenuArt companion %s: %s", ckd_path.name, exc)
 
     return copied
 
@@ -949,7 +949,7 @@ class ExtractAndNormalizeWorker(QObject):
                 user_msg = str(e)
                 if _is_user_cancelled_browser_close(e):
                     user_msg = "Browser was closed by user. Fetch cancelled."
-                logger.debug("ExtractAndNormalize failed: %s", user_msg)
+                logger.exception("ExtractAndNormalize failed: %s", user_msg)
                 self.error.emit(failed_stage, user_msg)
                 self.finished.emit(None)
                 return
@@ -1656,7 +1656,7 @@ class BatchInstallWorker(QObject):
                         prepared_dir = extractor.extract(batch_cache)
                         html_prepared.append((map_name, prepared_dir, source_game))
                     except Exception as e:
-                        logger.debug("Failed HTML prepare for %s: %s", map_name, e)
+                        logger.exception("Failed HTML prepare for %s: %s", map_name, e)
                         self.status.emit(f"Warning: Failed HTML prepare for {map_name} ({str(e)[:40]})")
 
                 emit_progress(20)
@@ -1862,7 +1862,7 @@ class BatchInstallWorker(QObject):
                 except Exception as e:
                     cpath = Path(candidate["path"])
                     failed_name = str(candidate.get("name") or cpath.name)
-                    logger.debug("Failed to install map from %s: %s", failed_name, e)
+                    logger.exception("Failed to install map from %s: %s", failed_name, e)
                     self.status.emit(f"Warning: Failed {failed_name} ({str(e)[:30]})")
 
             # Process maps prepared from HTML folders in phase 1.
@@ -1953,7 +1953,7 @@ class BatchInstallWorker(QObject):
                     installed_maps.append(map_data)
                     logger.info("Batch installed HTML map: %s", map_data.codename)
                 except Exception as e:
-                    logger.debug("Failed to install HTML map %s: %s", map_name, e)
+                    logger.exception("Failed to install HTML map %s: %s", map_name, e)
                     self.status.emit(f"Warning: Failed {map_name} ({str(e)[:30]})")
 
             import shutil
@@ -2664,7 +2664,7 @@ def install_map_to_game(
         from jd2021_installer.installers.sku_scene import register_map
         register_map(game_dir, codename)
     except Exception as e:
-        logger.debug("SkuScene registration failed (non-fatal): %s", e)
+        logger.warning("SkuScene registration failed (non-fatal): %s", e)
 
     if status_callback: status_callback("Finalizing offsets...")
     if progress_callback: progress_callback(100)
