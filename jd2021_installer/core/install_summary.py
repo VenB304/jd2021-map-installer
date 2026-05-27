@@ -210,17 +210,7 @@ def _optional_items(base_dir: Path, codename: str) -> list[InstallChecklistItem]
         ),
         InstallChecklistItem(
             label="Map preview video",
-            present=(
-                _exists_any(
-                    base_dir,
-                    [
-                        f"VideosCoach/{codename}_MapPreview.webm",
-                        f"videoscoach/{codename}_MapPreview.webm",
-                        f"videoscoach/{codename}_mappreview.webm",
-                    ],
-                )
-                or (_has_main_video(base_dir, codename) and _has_trk_preview_markers(base_dir, codename))
-            ),
+            present=_has_main_video(base_dir, codename) and _has_trk_preview_markers(base_dir, codename),
             required=False,
         ),
         InstallChecklistItem(
