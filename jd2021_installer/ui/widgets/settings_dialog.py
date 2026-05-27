@@ -936,88 +936,102 @@ class SettingsDialog(QDialog):
         import_section_label.setStyleSheet("font-weight: bold; margin-top: 4px;")
         maintenance_layout.addWidget(import_section_label)
 
-        localization_row = QHBoxLayout()
-        localization_row.addWidget(QLabel("Update Localization from JSON:"))
+        import_form = QFormLayout()
+        import_form.setLabelAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+        import_form.setHorizontalSpacing(12)
+        import_form.setVerticalSpacing(10)
+
         self.btn_update_localization = QPushButton("Select Localization JSON")
         self.btn_update_localization.setEnabled(False)
         self.btn_update_localization.clicked.connect(self._on_update_localization)
         self.btn_update_localization.setToolTip(
             "Updates in-game text such as 'Alternate Version' or 'Official Choreo'. (Currently disabled)"
         )
-        localization_row.addWidget(self.btn_update_localization)
-        localization_row.addStretch()
-        maintenance_layout.addLayout(localization_row)
+        l_layout1 = QHBoxLayout()
+        l_layout1.setContentsMargins(0, 0, 0, 0)
+        l_layout1.addWidget(self.btn_update_localization)
+        l_layout1.addStretch()
+        import_form.addRow("Update Localization from JSON:", l_layout1)
 
-        songdb_row = QHBoxLayout()
-        songdb_row.addWidget(QLabel("Import JDNext Metadata via JDNext songdb:"))
         self.btn_update_songdb = QPushButton("Select JDNext songdb")
         self.btn_update_songdb.clicked.connect(self._on_update_songdb)
         self.btn_update_songdb.setToolTip(
             "Loads JDNext song database entries from a JSON file."
         )
-        songdb_row.addWidget(self.btn_update_songdb)
-        songdb_row.addStretch()
-        maintenance_layout.addLayout(songdb_row)
+        l_layout2 = QHBoxLayout()
+        l_layout2.setContentsMargins(0, 0, 0, 0)
+        l_layout2.addWidget(self.btn_update_songdb)
+        l_layout2.addStretch()
+        import_form.addRow("Import JDNext Metadata via JDNext songdb:", l_layout2)
 
-        bulk_jdu_row = QHBoxLayout()
-        bulk_jdu_row.addWidget(QLabel("Attempt Install all JDU maps"))
         self.btn_bulk_install_jdu_songdb = QPushButton("Select JDU songdb JSON")
         self.btn_bulk_install_jdu_songdb.clicked.connect(self._on_bulk_install_jdu_songdb)
         self.btn_bulk_install_jdu_songdb.setToolTip(
             "Pick a JDU songdb JSON and queue every codename through Fetch mode."
         )
-        bulk_jdu_row.addWidget(self.btn_bulk_install_jdu_songdb)
-        bulk_jdu_row.addStretch()
-        maintenance_layout.addLayout(bulk_jdu_row)
+        l_layout3 = QHBoxLayout()
+        l_layout3.setContentsMargins(0, 0, 0, 0)
+        l_layout3.addWidget(self.btn_bulk_install_jdu_songdb)
+        l_layout3.addStretch()
+        import_form.addRow("Attempt Install all JDU maps:", l_layout3)
 
-        bulk_jdnext_row = QHBoxLayout()
-        bulk_jdnext_row.addWidget(QLabel("Attempt Install all JDNext maps"))
         self.btn_bulk_install_jdnext_songdb = QPushButton("Select JDNext songdb JSON")
         self.btn_bulk_install_jdnext_songdb.clicked.connect(self._on_bulk_install_jdnext_songdb)
         self.btn_bulk_install_jdnext_songdb.setToolTip(
             "Pick a JDNext songdb JSON and queue every map through Fetch JDNext mode."
         )
-        bulk_jdnext_row.addWidget(self.btn_bulk_install_jdnext_songdb)
-        bulk_jdnext_row.addStretch()
-        maintenance_layout.addLayout(bulk_jdnext_row)
+        l_layout4 = QHBoxLayout()
+        l_layout4.setContentsMargins(0, 0, 0, 0)
+        l_layout4.addWidget(self.btn_bulk_install_jdnext_songdb)
+        l_layout4.addStretch()
+        import_form.addRow("Attempt Install all JDNext maps:", l_layout4)
+
+        maintenance_layout.addLayout(import_form)
 
         # ----- Cleanup section -----
         cleanup_section_label = QLabel("Cleanup")
         cleanup_section_label.setStyleSheet("font-weight: bold; margin-top: 8px;")
         maintenance_layout.addWidget(cleanup_section_label)
 
-        clean_data_row = QHBoxLayout()
-        clean_data_row.addWidget(QLabel("Remove all installed custom maps and cached data:"))
+        cleanup_form = QFormLayout()
+        cleanup_form.setLabelAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+        cleanup_form.setHorizontalSpacing(12)
+        cleanup_form.setVerticalSpacing(10)
+
         self.btn_clean_data = QPushButton("Clean Game Data...")
         self.btn_clean_data.clicked.connect(self._on_clean_game_data)
         self.btn_clean_data.setToolTip(
             "Deletes custom map files and resets caches in the game directory."
         )
-        clean_data_row.addWidget(self.btn_clean_data)
-        clean_data_row.addStretch()
-        maintenance_layout.addLayout(clean_data_row)
+        c_layout1 = QHBoxLayout()
+        c_layout1.setContentsMargins(0, 0, 0, 0)
+        c_layout1.addWidget(self.btn_clean_data)
+        c_layout1.addStretch()
+        cleanup_form.addRow("Remove all installed custom maps and cached data:", c_layout1)
 
-        downloads_row = QHBoxLayout()
-        downloads_row.addWidget(QLabel("Delete downloaded map files:"))
         self.btn_clear_mapdownloads = QPushButton("Delete Downloads...")
         self.btn_clear_mapdownloads.clicked.connect(self._on_clear_map_downloads)
         self.btn_clear_mapdownloads.setToolTip(
             "Removes the mapDownloads folder contents."
         )
-        downloads_row.addWidget(self.btn_clear_mapdownloads)
-        downloads_row.addStretch()
-        maintenance_layout.addLayout(downloads_row)
+        c_layout2 = QHBoxLayout()
+        c_layout2.setContentsMargins(0, 0, 0, 0)
+        c_layout2.addWidget(self.btn_clear_mapdownloads)
+        c_layout2.addStretch()
+        cleanup_form.addRow("Delete downloaded map files:", c_layout2)
 
-        cache_row = QHBoxLayout()
-        cache_row.addWidget(QLabel("Clear cache and rebuild index:"))
         self.btn_clear_cache = QPushButton("Clear Cache...")
         self.btn_clear_cache.clicked.connect(self._on_clear_cache)
         self.btn_clear_cache.setToolTip(
             "Deletes the installer cache and regenerates the map index."
         )
-        cache_row.addWidget(self.btn_clear_cache)
-        cache_row.addStretch()
-        maintenance_layout.addLayout(cache_row)
+        c_layout3 = QHBoxLayout()
+        c_layout3.setContentsMargins(0, 0, 0, 0)
+        c_layout3.addWidget(self.btn_clear_cache)
+        c_layout3.addStretch()
+        cleanup_form.addRow("Clear cache and rebuild index:", c_layout3)
+
+        maintenance_layout.addLayout(cleanup_form)
 
         # ----- Updates section -----
         updates_section_label = QLabel("Updates")
@@ -1072,7 +1086,6 @@ class SettingsDialog(QDialog):
         branch_widget = QWidget()
         branch_widget.setLayout(branch_row)
         branch_form.addRow("Update branch:", branch_widget)
-        maintenance_layout.addLayout(branch_form)
 
         # Pre-populate branch combo with current branch
         self._populate_branch_combo_initial()
@@ -1086,12 +1099,15 @@ class SettingsDialog(QDialog):
 
         # Manual check button
         check_row = QHBoxLayout()
+        check_row.setContentsMargins(0, 0, 0, 0)
         self.btn_check_updates = QPushButton("Check for Updates")
         self.btn_check_updates.setMinimumWidth(160)
         self.btn_check_updates.clicked.connect(self._on_check_updates)
         check_row.addWidget(self.btn_check_updates)
         check_row.addStretch()
-        maintenance_layout.addLayout(check_row)
+        branch_form.addRow("", check_row)
+
+        maintenance_layout.addLayout(branch_form)
 
         maintenance_layout.addStretch()
 

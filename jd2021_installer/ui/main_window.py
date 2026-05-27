@@ -565,6 +565,13 @@ class MainWindow(QMainWindow):
             )
             return False
 
+        # Refresh python module caches so newly installed packages can be found immediately
+        import importlib
+        importlib.invalidate_caches()
+        # Also re-evaluate site-packages to ensure .pth files and sys.path are updated
+        import site
+        site.main()
+
         still_missing = self._find_missing_python_dependencies()
         if still_missing:
             QMessageBox.warning(
