@@ -2245,7 +2245,6 @@ class MainWindow(QMainWindow):
                 c = c.strip()
                 if not c:
                     continue
-                import re
                 match = re.search(r'\(([^)]+)\)$', c)
                 if match:
                     fetch_codenames.append(match.group(1).strip())
