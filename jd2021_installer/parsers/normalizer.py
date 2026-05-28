@@ -110,6 +110,8 @@ def load_ckd(file_path: str | Path) -> dict | object:
         raise FileNotFoundError(f"CKD file not found: {path}")
 
     raw = path.read_bytes()
+    if not raw:
+        return {}
 
     # Try JSON first (strip null padding) using strict UTF-8 decoding.
     try:

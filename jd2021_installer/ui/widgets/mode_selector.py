@@ -120,10 +120,23 @@ class FileRowWidget(QWidget):
         if self.is_dir:
             path = QFileDialog.getExistingDirectory(self, "Select Directory")
         else:
-            # For HTML files, default to mapDownloads folder
+            # For HTML files, default to configured download_root
             initial_dir = ""
             if "html" in self.file_filter.lower():
-                map_downloads = Path(__file__).parent.parent.parent.parent / "mapDownloads"
+                root_dir = Path(__file__).resolve().parents[3]
+                settings_file = root_dir / "installer_settings.json"
+                map_downloads = root_dir / "mapDownloads"
+                try:
+                    import json
+                    if settings_file.exists():
+                        with settings_file.open("r", encoding="utf-8") as f:
+                            data = json.load(f)
+                            if "download_root" in data:
+                                candidate = Path(data["download_root"]).expanduser()
+                                map_downloads = candidate if candidate.is_absolute() else (root_dir / candidate)
+                except Exception:
+                    pass
+
                 if map_downloads.exists():
                     initial_dir = str(map_downloads)
             

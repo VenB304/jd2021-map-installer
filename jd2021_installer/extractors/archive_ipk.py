@@ -282,20 +282,29 @@ def extract_ipk(
                     logger.debug("IPK: Extracting %s...", status)
 
                 offset = _unpack(chunk["offset"]["value"])
-                data_size = _unpack(chunk["size"]["value"])
+                uncompressed_size = _unpack(chunk["size"]["value"])
+                compressed_size = _unpack(chunk["compressed_size"]["value"])
+                disk_size = compressed_size if compressed_size > 0 else uncompressed_size
 
                 path_ori_raw = chunk["path_name"]["value"].decode()
-                if os.path.basename(path_ori_raw) == path_ori_raw:
-                    file_path = output_path / chunk["file_name"]["value"].decode()
-                    file_name = chunk["path_name"]["value"].decode()
+                file_ori_raw = chunk["file_name"]["value"].decode()
+                
+                # Check if fields are swapped (if file contains slashes but path doesn't)
+                if ("/" in file_ori_raw or "\\" in file_ori_raw) and not ("/" in path_ori_raw or "\\" in path_ori_raw):
+                    file_path = output_path / file_ori_raw
+                    file_name = path_ori_raw
                 else:
-                    file_path = output_path / chunk["path_name"]["value"].decode()
-                    file_name = chunk["file_name"]["value"].decode()
+                    file_path = output_path / path_ori_raw
+                    file_name = file_ori_raw
 
                 # Path traversal protection
                 resolved = os.path.normpath(os.path.join(str(file_path), file_name))
                 if not resolved.startswith(str(output_path)):
                     logger.debug("Skipping path-traversal entry: %s", resolved)
+                    continue
+                    
+                if os.path.abspath(resolved) == os.path.abspath(target_file):
+                    logger.debug("Skipping self-referential entry that would overwrite the source IPK: %s", resolved)
                     continue
 
                 f.seek(offset + base_offset)
@@ -304,7 +313,7 @@ def extract_ipk(
                     created_dirs.add(file_path)
 
                 with open(file_path / file_name, "wb") as ff:
-                    _decompress_to_file(f, ff, data_size)
+                    _decompress_to_file(f, ff, disk_size)
                 extracted_files += 1
 
         logger.info(

@@ -410,6 +410,9 @@ def parse_dtape(data: bytes, map_name: str) -> DanceTape:
                 duration=entry_duration,
                 effect_type=effecttype,
             ))
+        else:
+            logger.debug(f"parse_dtape: unknown clip class {entry_class}, breaking to avoid desync")
+            break
 
     return DanceTape(clips=clips, map_name=map_name)
 
@@ -466,6 +469,9 @@ def parse_ktape(data: bytes, map_name: str) -> KaraokeTape:
                 end_time_tolerance=end_time_tol,
                 semitone_tolerance=semitone_tol,
             ))
+        else:
+            logger.debug(f"parse_ktape: unknown clip class {entry_class}, breaking to avoid desync")
+            break
 
     return KaraokeTape(clips=clips, map_name=map_name)
 
@@ -583,6 +589,9 @@ def parse_btape(data: bytes, map_name: str) -> BeatsTape:
                 duration=entry_duration,
                 beat_type=clip_type,
             ))
+        else:
+            logger.debug(f"parse_btape: unknown clip class {entry_class}, breaking to avoid desync")
+            break
 
     return BeatsTape(clips=clips, map_name=map_name)
 

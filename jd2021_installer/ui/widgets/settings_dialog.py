@@ -61,7 +61,11 @@ class _SettingsTaskWorker(QObject):
     def run(self) -> None:
         try:
             self.status.emit(self._start_status)
-            result = self._task()
+            import inspect
+            if len(inspect.signature(self._task).parameters) > 0:
+                result = self._task(self.status.emit)
+            else:
+                result = self._task()
             self.finished.emit(result)
         except Exception as exc:
             logger.exception("Settings task failed: %s", exc)
@@ -439,6 +443,57 @@ class SettingsDialog(QDialog):
         install_layout = QVBoxLayout(tab_install)
         install_layout.setContentsMargins(10, 10, 10, 10)
         install_layout.setSpacing(10)
+
+        # Storage Directories section
+        directories_section_label = QLabel("Storage Directories")
+        directories_section_label.setStyleSheet("font-weight: bold; margin-top: 4px;")
+        install_layout.addWidget(directories_section_label)
+
+        directories_form = QFormLayout()
+        directories_form.setLabelAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+        directories_form.setHorizontalSpacing(12)
+        directories_form.setVerticalSpacing(10)
+
+        self.txt_download_root = QLineEdit(str(self._config.download_root))
+        self.txt_download_root.setPlaceholderText("./mapDownloads")
+        self.txt_download_root.setToolTip("Directory where maps are downloaded before installation.")
+        directories_form.addRow(
+            "Downloads directory:",
+            self._make_path_picker_row(
+                self.txt_download_root,
+                browse_title="Select Downloads Directory",
+                select_directory=True,
+            ),
+        )
+
+        self.txt_cache_dir = QLineEdit(str(self._config.cache_directory))
+        self.txt_cache_dir.setPlaceholderText("./cache")
+        self.txt_cache_dir.setToolTip("Directory used to store cached metadata and assets.")
+        directories_form.addRow(
+            "Cache directory:",
+            self._make_path_picker_row(
+                self.txt_cache_dir,
+                browse_title="Select Cache Directory",
+                select_directory=True,
+            ),
+        )
+
+        self.txt_temp_dir = QLineEdit(str(self._config.temp_directory))
+        self.txt_temp_dir.setPlaceholderText("./temp")
+        self.txt_temp_dir.setToolTip("Temporary directory used during extraction and processing.")
+        directories_form.addRow(
+            "Temp directory:",
+            self._make_path_picker_row(
+                self.txt_temp_dir,
+                browse_title="Select Temp Directory",
+                select_directory=True,
+            ),
+        )
+        install_layout.addLayout(directories_form)
+
+        behavior_section_label = QLabel("Map Processing")
+        behavior_section_label.setStyleSheet("font-weight: bold; margin-top: 8px;")
+        install_layout.addWidget(behavior_section_label)
 
         install_form = QFormLayout()
         install_form.setLabelAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
@@ -1142,6 +1197,24 @@ class SettingsDialog(QDialog):
         layout.addLayout(btn_layout)
 
     def _on_save(self) -> None:
+        new_dl = Path(self.txt_download_root.text().strip() or "./mapDownloads")
+        new_cache = Path(self.txt_cache_dir.text().strip() or "./cache")
+        new_temp = Path(self.txt_temp_dir.text().strip() or "./temp")
+
+        moves = []
+        if new_dl != self._config.download_root:
+            dl_path = self._resolve_config_path(self._config.download_root)
+            if dl_path.exists() and any(True for _ in dl_path.iterdir()):
+                moves.append((dl_path, self._resolve_config_path(new_dl)))
+        if new_cache != self._config.cache_directory:
+            cache_path = self._resolve_config_path(self._config.cache_directory)
+            if cache_path.exists() and any(True for _ in cache_path.iterdir()):
+                moves.append((cache_path, self._resolve_config_path(new_cache)))
+
+        self._config.download_root = new_dl
+        self._config.cache_directory = new_cache
+        self._config.temp_directory = new_temp
+
         self._config.skip_preflight = self.cb_skip_preflight.isChecked()
         self._config.enable_legacy_sync_refinement = self.cb_legacy_sync.isChecked()
         self._config.suppress_offset_notification = self.cb_suppress.isChecked()
@@ -1194,6 +1267,36 @@ class SettingsDialog(QDialog):
         if selected_branch:
             self._config.update_branch = selected_branch
         
+        if moves:
+            reply = QMessageBox.question(
+                self,
+                "Migrate Files?",
+                "You have changed one or more storage directories.\n\n"
+                "Would you like to automatically move your existing files from the old locations to the new locations?",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            )
+            if reply == QMessageBox.StandardButton.Yes:
+                def _task(set_status: Callable[[str], None]) -> None:
+                    for src, dst in moves:
+                        set_status(f"Moving {src.name}...")
+                        if dst.exists():
+                            shutil.copytree(src, dst, dirs_exist_ok=True)
+                            shutil.rmtree(src)
+                        else:
+                            shutil.move(src, dst)
+                
+                def _on_success(_: object) -> None:
+                    self.accept()
+                
+                self._run_background_task(
+                    window_title="Migrating Files",
+                    initial_status="Moving files to new storage locations...",
+                    task=_task,
+                    on_success=_on_success,
+                    error_title="Migration Failed",
+                )
+                return
+
         self.accept()
 
     # ==================================================================
