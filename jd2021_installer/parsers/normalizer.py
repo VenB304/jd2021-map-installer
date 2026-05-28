@@ -1644,7 +1644,10 @@ def normalize_sync(
             if prms_audio is not None:
                 audio_ms = -prms_audio + JDU_AUDIO_CALIBRATION_MS
             else:
-                audio_ms = metadata_ms + JDU_AUDIO_CALIBRATION_MS
+                if is_jdnext_source:
+                    audio_ms = metadata_ms + JDU_AUDIO_CALIBRATION_MS
+                else:
+                    audio_ms = JDU_AUDIO_CALIBRATION_MS
 
             # V1 parity: preserve metadata videoStartTime when present.
             # Only synthesize from markers when metadata is effectively zero.
