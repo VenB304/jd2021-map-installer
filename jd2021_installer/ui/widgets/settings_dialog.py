@@ -32,8 +32,7 @@ from PyQt6.QtWidgets import (
 from jd2021_installer.core.config import AppConfig
 from jd2021_installer.core.clean_data import clean_game_data
 from jd2021_installer.core.localization_update import (
-    resolve_console_save_path,
-    update_console_localization,
+    update_localization,
 )
 from jd2021_installer.core.songdb_update import (
     extract_jdnext_songdb_codenames,
@@ -994,10 +993,9 @@ class SettingsDialog(QDialog):
         import_form.setVerticalSpacing(10)
 
         self.btn_update_localization = QPushButton("Select Localization JSON")
-        self.btn_update_localization.setEnabled(False)
         self.btn_update_localization.clicked.connect(self._on_update_localization)
         self.btn_update_localization.setToolTip(
-            "Updates in-game text such as 'Alternate Version' or 'Official Choreo'. (Currently disabled)"
+            "Updates in-game text such as 'Alternate Version' or 'Official Choreo'."
         )
         l_layout1 = QHBoxLayout()
         l_layout1.setContentsMargins(0, 0, 0, 0)
@@ -1499,46 +1497,38 @@ class SettingsDialog(QDialog):
             "Confirm Localization Update",
             "Use this file to update in-game localization?\n\n"
             f"Source: {selected_file}\n\n"
-            "A backup of ConsoleSave.json will be created before updating.",
+            "This will update ConsoleSave.json and any relevant .loc8 files.",
             QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
             QMessageBox.StandardButton.No,
         )
         if confirm != QMessageBox.StandardButton.Yes:
             return
 
-        try:
-            console_save_path = resolve_console_save_path(Path(self._config.game_directory))
-        except Exception as exc:
-            logger.exception("Localization update failed: %s", exc)
-            QMessageBox.critical(
-                self,
-                "Localization Update Failed",
-                f"Could not update localization:\n{exc}",
-            )
-            return
-
         def _task() -> object:
-            return update_console_localization(Path(selected_file), console_save_path)
+            return update_localization(Path(selected_file), Path(self._config.game_directory))
 
         def _on_success(result: object) -> None:
             logger.info(
-                "Localization updated: %s updated, %s added, backup=%s",
+                "Localization updated: %s updated, %s added, %s loc8 files updated",
                 result.updated_existing,
                 result.added_new,
-                result.backup_path,
+                result.updated_loc8_files,
             )
+            backup_msg = f"ConsoleSave Backup: {result.backup_path}\n" if result.backup_path else ""
             QMessageBox.information(
                 self,
                 "Localization Updated",
                 "Localization update completed successfully.\n\n"
-                f"Updated IDs: {result.updated_existing}\n"
-                f"New IDs: {result.added_new}\n\n"
-                f"Backup: {result.backup_path}",
+                f"Updated Console IDs: {result.updated_existing}\n"
+                f"New Console IDs: {result.added_new}\n"
+                f"Updated loc8 files: {result.updated_loc8_files}\n"
+                f"loc8 IDs patched: {result.loc8_added_or_updated}\n\n"
+                f"{backup_msg}",
             )
 
         self._run_background_task(
             window_title="Updating Localization",
-            initial_status="Updating ConsoleSave localization",
+            initial_status="Updating ConsoleSave and loc8 localization",
             task=_task,
             on_success=_on_success,
             error_title="Localization Update Failed",
