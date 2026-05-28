@@ -22,6 +22,7 @@ from typing import Optional
 from PyQt6.QtCore import QSignalBlocker, Qt, pyqtSignal
 from PyQt6.QtWidgets import (
     QComboBox,
+    QCompleter,
     QFileDialog,
     QGridLayout,
     QGroupBox,
@@ -40,20 +41,23 @@ from jd2021_installer.extractors.archive_ipk import find_bundle_ipks
 
 logger = logging.getLogger("jd2021.ui.widgets.mode_selector")
 
-# Mode identifiers (indices match the combo-box order)
 MODE_FETCH = 0
 MODE_HTML = 1
 MODE_JDNEXT = 2
 MODE_HTML_JDNEXT = 3
-MODE_IPK = 4
-MODE_BATCH = 5
-MODE_MANUAL = 6
+MODE_FETCH_JDLO = 4
+MODE_HTML_JDLO = 5
+MODE_IPK = 6
+MODE_BATCH = 7
+MODE_MANUAL = 8
 
 MODE_LABELS = [
     "Fetch JDU",
     "HTML JDU",
     "Fetch JDNext",
     "HTML JDNext",
+    "Fetch JDLO",
+    "HTML JDLO",
     "IPK Archive",
     "Batch (Directory)",
     "Manual (Directory)",
@@ -64,6 +68,8 @@ MODE_KEYS = [
     "html",
     "jdnext",
     "html_jdnext",
+    "fetch_jdlo",
+    "html_jdlo",
     "ipk",
     "batch",
     "manual",
@@ -135,6 +141,19 @@ class FileRowWidget(QWidget):
         self.path_changed.emit("")
 
 
+class MultiCompleter(QCompleter):
+    def pathFromIndex(self, index):
+        path = super().pathFromIndex(index)
+        text = self.widget().text()
+        if "," in text:
+            prefix = text[:text.rfind(",")]
+            return prefix + ", " + path
+        return path
+
+    def splitPath(self, path):
+        return [path.split(",")[-1].strip()]
+
+
 class ModeSelectorWidget(QWidget):
     """Dropdown + dynamic input area for selecting the map-import mode."""
 
@@ -152,6 +171,8 @@ class ModeSelectorWidget(QWidget):
             "ipk": {},
             "batch": {},
             "manual": {},
+            "fetch_jdlo": {},
+            "html_jdlo": {},
         }
         self._build_ui()
 
@@ -189,9 +210,11 @@ class ModeSelectorWidget(QWidget):
         self._stack.addWidget(self._build_html_page())  # 1
         self._stack.addWidget(self._build_jdnext_page())  # 2
         self._stack.addWidget(self._build_html_jdnext_page())  # 3
-        self._stack.addWidget(self._build_ipk_page())  # 4
-        self._stack.addWidget(self._build_batch_page())  # 5
-        self._stack.addWidget(self._build_manual_page())  # 6
+        self._stack.addWidget(self._build_fetch_jdlo_page())  # 4
+        self._stack.addWidget(self._build_html_jdlo_page())  # 5
+        self._stack.addWidget(self._build_ipk_page())  # 6
+        self._stack.addWidget(self._build_batch_page())  # 7
+        self._stack.addWidget(self._build_manual_page())  # 8
         self._wire_state_signals()
         self._fit_current_page_height()
 
@@ -223,6 +246,26 @@ class ModeSelectorWidget(QWidget):
         inp = QLineEdit()
         inp.setPlaceholderText(placeholder)
         inp.setToolTip("Enter one or more codenames, separated by commas, to target specific maps.")
+        
+        if input_key == "fetch_jdlo":
+            import json
+            jdlo_cache_path = Path(__file__).parent.parent.parent.parent / "cache" / "jdlo" / "songs.json"
+            if jdlo_cache_path.exists():
+                try:
+                    with open(jdlo_cache_path, "r", encoding="utf-8") as f:
+                        jdlo_data = json.load(f)
+                    
+                    # Provide suggestions only for codename
+                    suggestions = list(jdlo_data.keys())
+                            
+                    completer = MultiCompleter(list(set(suggestions)), inp)
+                    completer.setCaseSensitivity(Qt.CaseSensitivity.CaseInsensitive)
+                    completer.setFilterMode(Qt.MatchFlag.MatchContains)
+                    completer.popup().setObjectName("completerPopup")
+                    inp.setCompleter(completer)
+                except Exception as e:
+                    logger.warning(f"Failed to load JDLO codenames for completer: {e}")
+
         inp.textChanged.connect(lambda t: self.target_selected.emit(t))
         row.addWidget(inp)
 
@@ -250,6 +293,74 @@ class ModeSelectorWidget(QWidget):
             ),
             placeholder="e.g. TelephoneALT",
         )
+        
+    def _build_fetch_jdlo_page(self) -> QWidget:
+        return self._build_codename_fetch_page(
+            input_key="fetch_jdlo",
+            warning_text=(
+                "Fetch JDLO downloads maps directly from the JDLO CDN. "
+                "Ensure your jdlo_auth.ini is configured in Settings."
+            ),
+            placeholder="e.g. Padam, RainOnMe",
+        )
+        
+    def _build_html_jdlo_page(self) -> QWidget:
+        page = QWidget()
+        page.setObjectName("modePage")
+        lay = QVBoxLayout(page)
+        lay.setContentsMargins(0, 4, 0, 0)
+
+        warn = QLabel(
+            "Load the assets.html and nohud.html generated from a previous Fetch JDLO run."
+        )
+        warn.setObjectName("modeHtmlJdloWarningLabel")
+        warn.setWordWrap(True)
+        lay.addWidget(warn)
+
+        asset_row = FileRowWidget(
+            "Asset HTML:",
+            is_dir=False,
+            file_filter="HTML Files (*.html *.htm)",
+            placeholder="No file selected",
+        )
+        lay.addWidget(asset_row)
+
+        nohud_row = FileRowWidget(
+            "NOHUD HTML:",
+            is_dir=False,
+            file_filter="HTML Files (*.html *.htm)",
+            placeholder="No file selected",
+        )
+        lay.addWidget(nohud_row)
+
+        self.inputs["html_jdlo"]["asset"] = asset_row.line_edit
+        self.inputs["html_jdlo"]["nohud"] = nohud_row.line_edit
+
+        # Auto-detect counterparts
+        def auto_detect(source_path: str, is_asset: bool):
+            if not source_path:
+                return
+            src = Path(source_path)
+            asset_guess, nohud_guess = self._find_html_pair(src.parent)
+
+            if is_asset and nohud_guess:
+                current_nohud = self.inputs["html_jdlo"]["nohud"].text().strip()
+                detected_nohud = str(nohud_guess)
+                if current_nohud != detected_nohud:
+                    self.inputs["html_jdlo"]["nohud"].setText(detected_nohud)
+            elif not is_asset and asset_guess:
+                current_asset = self.inputs["html_jdlo"]["asset"].text().strip()
+                detected_asset = str(asset_guess)
+                if current_asset != detected_asset:
+                    self.inputs["html_jdlo"]["asset"].setText(detected_asset)
+
+            target = self.inputs["html_jdlo"]["asset"].text().strip() or source_path
+            self.target_selected.emit(target)
+
+        asset_row.path_changed.connect(lambda p: auto_detect(p, True))
+        nohud_row.path_changed.connect(lambda p: auto_detect(p, False))
+
+        return page
 
     def _build_html_page(self) -> QWidget:
         page = QWidget()

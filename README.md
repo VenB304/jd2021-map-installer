@@ -27,11 +27,13 @@ No manual file wrangling required.
 |------|--------|-------------|
 | **Fetch (Codename)** | JDU via Playwright | Enter codenames → headless Chromium scrapes JDHelper for asset & NOHUD HTML, downloads everything, and installs automatically. |
 | **HTML Files** | Saved `.html` exports | Load pre-saved asset + NOHUD HTML files from JDHelper. Useful when files are already downloaded. |
+| **Fetch JDNext** | JDNext via Playwright | Enter codenames → fetches JDNext asset pages, extracts Unity bundles,  and converts to UbiArt. |
+| **HTML Files JDNext** | Saved JDNext `.html` | Same as Fetch JDNext but from pre-saved HTML. |
+| **Fetch JDLO** | JDLO CDN API | Enter codenames → downloads map IPKs and media directly from the Just Dance Legacy Online infrastructure. |
+| **HTML JDLO** | Saved JDLO `.html` | Same as Fetch JDLO but driven from pre-saved HTML files. |
 | **IPK Archive** | `.ipk` file | Extracts maps from Xbox 360 IPK archives with zlib/LZMA decompression and binary CKD parsing. |
 | **Batch (Directory)** | Folder of maps | Point to a directory containing any mix of IPK files, HTML exports, or pre-extracted map folders — processes them all in sequence. |
 | **Manual (Directory)** | Pre-extracted files | Full granular control: pick individual audio, video, tape, and asset files by hand. Supports JDU, IPK, and mixed source layouts. |
-| **Fetch JDNext** | JDNext via Playwright | Enter codenames → fetches JDNext asset pages, extracts Unity bundles,  and converts to UbiArt. |
-| **HTML Files JDNext** | Saved JDNext `.html` | Same as Fetch JDNext but from pre-saved HTML. |
 
 ---
 
@@ -139,6 +141,7 @@ This project builds on the work of the Just Dance modding community:
 - **[AssetStudioMod](https://github.com/aelurum/AssetStudio)** / **AssetStudioModCLI** — Unity bundle extraction for JDNext maps
 - **[Unity2UbiArt](https://github.com/Itaybl14/Unity2UbiArt)** — Unity-to-UbiArt conversion workflow
 - **[UnityPy](https://github.com/K0lb3/UnityPy)** — Python Unity asset parsing for JDNext bundle inspection
+- **[JDLO](https://jdlo.ovosimpatico.com/)** — This installer pulls maps from the Just Dance Legacy Online (JDLO) CDN. Special Thanks to Ovo and the JDLO Team for making this integration possible.
 
 Special thanks to the authors and contributors of these tools for making Just Dance modding possible.
 

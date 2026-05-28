@@ -469,3 +469,32 @@ def extract_jdnext_songdb_codenames(source_json_path: Path) -> list[str]:
     if not result:
         raise ValueError("Selected JSON does not look like a JDNext song database (no usable mapName entries found).")
     return result
+
+
+def extract_jdlo_songdb_codenames(source_json_path: Path) -> list[str]:
+    """Extract codename keys from a raw JDLO songs.json file."""
+    source_path = Path(source_json_path)
+    if not source_path.is_file():
+        raise FileNotFoundError(f"Song database file not found: {source_path}")
+
+    try:
+        payload = json.loads(source_path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError as exc:
+        raise ValueError(f"Invalid JSON file: {source_path}") from exc
+
+    if not isinstance(payload, dict):
+        raise ValueError("JDLO songs database must be a top-level object keyed by codename.")
+
+    codenames: list[str] = []
+    for key, raw_entry in payload.items():
+        if not isinstance(raw_entry, dict):
+            continue
+        key_name = str(key or "").strip()
+        if not key_name:
+            continue
+        codenames.append(key_name)
+
+    result = _dedupe_codenames(codenames)
+    if not result:
+        raise ValueError("Selected JSON does not look like a JDLO song database (no usable codenames found).")
+    return result

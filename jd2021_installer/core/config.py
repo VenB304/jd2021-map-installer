@@ -29,6 +29,7 @@ class AppConfig(BaseModel):
     )
 
     # UI/UX settings
+    enable_legacy_sync_refinement: bool = False
     skip_preflight: bool = False
     suppress_offset_notification: bool = False
     cleanup_behavior: str = Field(default="ask", pattern=r"^(ask|delete|keep|aggressive)$")
@@ -92,6 +93,9 @@ class AppConfig(BaseModel):
     # Update checker settings
     check_updates_on_launch: bool = True
     update_branch: str = ""  # empty = auto-detect from git or state file
+    
+    # JDLO Integration
+    jdlo_auth_path: Optional[Path] = None
 
     # FFmpeg configuration
     ffmpeg_path: str = "ffmpeg"
@@ -105,6 +109,14 @@ class AppConfig(BaseModel):
         pattern=r"^(reencode_to_vp8|fallback_compatible_down)$",
     )
     preview_video_mode: str = Field(default="original", pattern=r"^(proxy_low|original)$")
+    
+    # Missing/incompatible quality fallback behavior
+    # "fallback_down" = Try lower qualities if the selected one is missing/incompatible
+    # "fallback_up" = Try higher qualities before falling back to lower qualities
+    video_fallback_behavior: str = Field(
+        default="fallback_down", 
+        pattern=r"^(fallback_down|fallback_up)$"
+    )
 
     class Config:
         env_prefix = "JD2021_"

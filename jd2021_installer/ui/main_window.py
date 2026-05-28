@@ -305,8 +305,12 @@ class MainWindow(QMainWindow):
         # Give threads a moment to finish, but don't hang if they are stuck
         for thread in list(self._active_threads):
             if thread.isRunning():
+                thread.requestInterruption()
                 thread.quit()
                 thread.wait(1000)
+                if thread.isRunning():
+                    logger.warning("Forcefully terminating stuck thread.")
+                    thread.terminate()
         
         self._save_settings()
         event.accept()
@@ -560,6 +564,13 @@ class MainWindow(QMainWindow):
                 f"Output:\n{output}",
             )
             return False
+
+        # Refresh python module caches so newly installed packages can be found immediately
+        import importlib
+        importlib.invalidate_caches()
+        # Also re-evaluate site-packages to ensure .pth files and sys.path are updated
+        import site
+        site.main()
 
         still_missing = self._find_missing_python_dependencies()
         if still_missing:
@@ -1078,6 +1089,22 @@ class MainWindow(QMainWindow):
 
         self._config_panel.set_video_quality(self._config.video_quality)
         self._set_preview_controls_ready(False)
+        self._update_legacy_sync_visibility()
+
+    def _update_legacy_sync_visibility(self) -> None:
+        """Toggle visibility of legacy sync refinement UI based on config."""
+        show_legacy = getattr(self._config, "enable_legacy_sync_refinement", False)
+        self._sync_hint_label.setVisible(show_legacy)
+        self._sync_refinement.set_legacy_visible(show_legacy)
+        self._action_panel.set_readjust_visible(show_legacy)
+        
+        # If the log console isn't expanding properly, we might need to adjust stretch here,
+        # but the layout was defined with stretch=0 for sync and stretch=0 for log console.
+        # Wait, if both are stretch=0, hiding one will let the stretch=1 preview widget expand.
+        # Let's dynamically set stretch so log console expands if legacy sync is hidden.
+        right_layout = self._log_console.parentWidget().layout()
+        if isinstance(right_layout, QVBoxLayout):
+            right_layout.setStretchFactor(self._log_console, 1 if not show_legacy else 0)
 
     # ==================================================================
     # SIGNAL / SLOT WIRING  (Phase 4)
@@ -1135,10 +1162,6 @@ class MainWindow(QMainWindow):
             return
 
         self._current_target = normalized_target or None
-        if normalized_target:
-            logger.debug("Target selected: %s", normalized_target)
-        elif previous_target:
-            logger.debug("Target cleared")
         self._set_preview_controls_ready(False)
 
     def _on_game_dir_changed(self, path: str) -> None:
@@ -1199,23 +1222,25 @@ class MainWindow(QMainWindow):
 
     def _collect_source_target_issues(self) -> list[str]:
         """Validate mode-specific source inputs and refresh the active target."""
-        issues: list[str] = []
         from jd2021_installer.ui.widgets.mode_selector import (
             MODE_FETCH,
             MODE_JDNEXT,
+            MODE_FETCH_JDLO,
             MODE_HTML,
             MODE_HTML_JDNEXT,
+            MODE_HTML_JDLO,
             MODE_IPK,
             MODE_BATCH,
             MODE_MANUAL,
         )
 
+        issues: list[str] = []
         source_state = self._mode_selector.get_current_state()
         idx = int(source_state.get("mode_index", MODE_FETCH))
         fields = source_state.get("fields", {})
 
-        if idx in (MODE_FETCH, MODE_JDNEXT):
-            fetch_mode_key = "jdnext" if idx == MODE_JDNEXT else "fetch"
+        if idx in (MODE_FETCH, MODE_JDNEXT, MODE_FETCH_JDLO):
+            fetch_mode_key = "jdnext" if idx == MODE_JDNEXT else ("fetch_jdlo" if idx == MODE_FETCH_JDLO else "fetch")
             fetch_fields = fields.get(fetch_mode_key, {}) if isinstance(fields, dict) else {}
             raw = str(fetch_fields.get("codenames", "")).strip()
             codenames = [c.strip() for c in raw.split(",") if c.strip()]
@@ -1228,8 +1253,9 @@ class MainWindow(QMainWindow):
                 self._current_target = ",".join(codenames)
             return issues
 
-        if idx == MODE_HTML:
-            html_fields = fields.get("html", {}) if isinstance(fields, dict) else {}
+        if idx in (MODE_HTML, MODE_HTML_JDLO):
+            html_key = "html_jdlo" if idx == MODE_HTML_JDLO else "html"
+            html_fields = fields.get(html_key, {}) if isinstance(fields, dict) else {}
             asset_html = str(html_fields.get("asset", "")).strip()
             nohud_html = str(html_fields.get("nohud", "")).strip()
             if not asset_html or not nohud_html:
@@ -1333,9 +1359,9 @@ class MainWindow(QMainWindow):
             self._set_status("Pre-flight failed")
             return
 
-        from jd2021_installer.ui.widgets.mode_selector import MODE_FETCH, MODE_JDNEXT
+        from jd2021_installer.ui.widgets.mode_selector import MODE_FETCH, MODE_JDNEXT, MODE_FETCH_JDLO
         source_state = self._mode_selector.get_current_state()
-        include_fetch_checks = int(source_state.get("mode_index", -1)) in (MODE_FETCH, MODE_JDNEXT)
+        include_fetch_checks = int(source_state.get("mode_index", -1)) in (MODE_FETCH, MODE_JDNEXT, MODE_FETCH_JDLO)
         if not self._ensure_runtime_dependencies(include_fetch_checks=include_fetch_checks):
             self._set_status("Pre-flight failed")
             return
@@ -1566,6 +1592,7 @@ class MainWindow(QMainWindow):
         self._feedback_panel.set_checklist_steps(selected_codes)
         self._feedback_panel.set_progress(0)
         self._set_status("Uninstalling selected maps...")
+        self._start_file_logging(",".join(selected_codes), action="uninstall")
         self.append_log(f"Starting uninstall for {len(selected_codes)} map(s)...")
 
         worker = UninstallMapsWorker(
@@ -1664,6 +1691,7 @@ class MainWindow(QMainWindow):
             self._apply_theme()
             self._refresh_media_tool_configuration(persist=True)
             self._save_settings()
+            self._update_legacy_sync_visibility()
             if not getattr(self._config, "show_window_size_overlay", True):
                 self._hide_size_overlay()
             self._config_panel.set_video_quality(self._config.video_quality)
@@ -1693,12 +1721,18 @@ class MainWindow(QMainWindow):
             self._set_status("No valid codenames were provided for bulk install.")
             return False
 
-        from jd2021_installer.ui.widgets.mode_selector import MODE_FETCH, MODE_JDNEXT
+        from jd2021_installer.ui.widgets.mode_selector import MODE_FETCH, MODE_JDNEXT, MODE_FETCH_JDLO
 
         mode_source = (source_game or "jdu").strip().lower()
-        is_jdnext = mode_source == "jdnext"
-        mode_index = MODE_JDNEXT if is_jdnext else MODE_FETCH
-        mode_key = "jdnext" if is_jdnext else "fetch"
+        if mode_source == "jdnext":
+            mode_index = MODE_JDNEXT
+            mode_key = "jdnext"
+        elif mode_source == "jdlo":
+            mode_index = MODE_FETCH_JDLO
+            mode_key = "fetch_jdlo"
+        else:
+            mode_index = MODE_FETCH
+            mode_key = "fetch"
 
         self._mode_selector.set_mode_index(mode_index)
         self._mode_selector.set_mode_codenames(mode_key, ",".join(clean_codenames))
@@ -2119,6 +2153,8 @@ class MainWindow(QMainWindow):
         self._preview_widget.reset()
         self._set_preview_controls_ready(False)
         self._feedback_panel.reset()
+        if hasattr(self, "_log_console") and self._log_console is not None:
+            self._log_console.clear()
         self._set_status("State reset.")
 
     # ==================================================================
@@ -2141,12 +2177,12 @@ class MainWindow(QMainWindow):
             return
 
         # v1 parity: codename whitespace sanitization prompt before fetch scrape starts.
-        from jd2021_installer.ui.widgets.mode_selector import MODE_FETCH, MODE_JDNEXT
+        from jd2021_installer.ui.widgets.mode_selector import MODE_FETCH, MODE_JDNEXT, MODE_FETCH_JDLO
         source_state = self._mode_selector.get_current_state()
         source_fields = source_state.get("fields", {})
         mode_index = int(source_state.get("mode_index", -1))
-        if mode_index in (MODE_FETCH, MODE_JDNEXT):
-            fetch_mode_key = "jdnext" if mode_index == MODE_JDNEXT else "fetch"
+        if mode_index in (MODE_FETCH, MODE_JDNEXT, MODE_FETCH_JDLO):
+            fetch_mode_key = "jdnext" if mode_index == MODE_JDNEXT else ("fetch_jdlo" if mode_index == MODE_FETCH_JDLO else "fetch")
             fetch_fields = source_fields.get(fetch_mode_key, {}) if isinstance(source_fields, dict) else {}
             raw_value = str(fetch_fields.get("codenames", ""))
             if re.search(r"\s", raw_value):
@@ -2182,10 +2218,10 @@ class MainWindow(QMainWindow):
                 "\n".join(f"• {w}" for w in game_warnings),
             )
 
-        from jd2021_installer.ui.widgets.mode_selector import MODE_FETCH, MODE_JDNEXT
+        from jd2021_installer.ui.widgets.mode_selector import MODE_FETCH, MODE_JDNEXT, MODE_FETCH_JDLO, MODE_LABELS
         source_state = self._mode_selector.get_current_state()
         mode_index = int(source_state.get("mode_index", -1))
-        include_fetch_checks = mode_index in (MODE_FETCH, MODE_JDNEXT)
+        include_fetch_checks = mode_index in (MODE_FETCH, MODE_JDNEXT, MODE_FETCH_JDLO)
         if not self._ensure_runtime_dependencies(include_fetch_checks=include_fetch_checks):
             return
 
@@ -2194,7 +2230,8 @@ class MainWindow(QMainWindow):
         self._clear_offset_review_state()
 
         # Start dynamic per-map logging immediately if target is available
-        self._start_file_logging(self._current_target)
+        mode_label = MODE_LABELS[mode_index] if 0 <= mode_index < len(MODE_LABELS) else ""
+        self._start_file_logging(self._current_target, mode_name=mode_label)
 
         # Intercept batch mode - it has a completely different pipeline structure
         from jd2021_installer.ui.widgets.mode_selector import MODE_BATCH
@@ -2203,13 +2240,22 @@ class MainWindow(QMainWindow):
             return
 
         # Multi-codename Fetch should use the same multi-map review/apply flow as Batch/IPK bundle.
-        from jd2021_installer.ui.widgets.mode_selector import MODE_FETCH, MODE_JDNEXT
-        if mode_index in (MODE_FETCH, MODE_JDNEXT):
-            fetch_mode_key = "jdnext" if mode_index == MODE_JDNEXT else "fetch"
+        from jd2021_installer.ui.widgets.mode_selector import MODE_FETCH, MODE_JDNEXT, MODE_FETCH_JDLO
+        if mode_index in (MODE_FETCH, MODE_JDNEXT, MODE_FETCH_JDLO):
+            fetch_mode_key = "jdnext" if mode_index == MODE_JDNEXT else ("fetch_jdlo" if mode_index == MODE_FETCH_JDLO else "fetch")
             fetch_source = "jdnext" if mode_index == MODE_JDNEXT else "jdu"
             fetch_fields = source_fields.get(fetch_mode_key, {}) if isinstance(source_fields, dict) else {}
             raw_fetch = str(fetch_fields.get("codenames", "")).strip()
-            fetch_codenames = [c.strip() for c in raw_fetch.split(",") if c.strip()]
+            fetch_codenames = []
+            for c in raw_fetch.split(","):
+                c = c.strip()
+                if not c:
+                    continue
+                match = re.search(r'\(([^)]+)\)$', c)
+                if match:
+                    fetch_codenames.append(match.group(1).strip())
+                else:
+                    fetch_codenames.append(c)
             if len(fetch_codenames) > 1:
                 self._sync_refinement.set_ipk_mode(is_ipk=False)
                 self._start_batch_install(
@@ -2217,6 +2263,7 @@ class MainWindow(QMainWindow):
                     map_names=fetch_codenames,
                     fetch_codenames=fetch_codenames,
                     fetch_source=fetch_source,
+                    source_mode=fetch_mode_key,
                 )
                 return
 
@@ -2270,8 +2317,8 @@ class MainWindow(QMainWindow):
 
         # Create worker + thread
         worker_codename: str | None = None
-        if mode_index in (MODE_FETCH, MODE_JDNEXT):
-            fetch_mode_key = "jdnext" if mode_index == MODE_JDNEXT else "fetch"
+        if mode_index in (MODE_FETCH, MODE_JDNEXT, MODE_FETCH_JDLO):
+            fetch_mode_key = "jdnext" if mode_index == MODE_JDNEXT else ("fetch_jdlo" if mode_index == MODE_FETCH_JDLO else "fetch")
             fetch_fields = source_fields.get(fetch_mode_key, {}) if isinstance(source_fields, dict) else {}
             raw_codenames = str(fetch_fields.get("codenames", "")).strip()
             fetch_codenames = [c.strip() for c in raw_codenames.split(",") if c.strip()]
@@ -2327,15 +2374,12 @@ class MainWindow(QMainWindow):
         if map_data is None:
             return  # error already handled
 
+        self._rename_log_file_with_codename(map_data.codename)
         self._current_map = map_data
         self._completed_install_maps = [map_data]
         self._feedback_panel.update_checklist_step("Extracting map data...", StepStatus.DONE)
         self._feedback_panel.update_checklist_step("Parsing CKDs and metadata...", StepStatus.DONE)
         self._feedback_panel.update_checklist_step("Normalizing assets...", StepStatus.DONE)
-        self._feedback_panel.update_checklist_step(
-            "Decoding XMA2 audio...", StepStatus.IN_PROGRESS
-        )
-
         # Update UI offsets from calculated normalization data
         logger.info("Setting UI offsets from normalization: audio=%.1f ms, video=%.1f ms", 
                     map_data.sync.audio_ms, map_data.sync.video_ms)
@@ -2358,6 +2402,10 @@ class MainWindow(QMainWindow):
             self._lock_ui(False)
             self._stop_file_logging()
             return
+
+        self._feedback_panel.update_checklist_step(
+            "Decoding XMA2 audio...", StepStatus.IN_PROGRESS
+        )
 
         # Pre-install AlbumCoach customization for JDNext multi-coach maps.
         self._apply_albumcoach_customization(map_data)
@@ -2900,12 +2948,16 @@ class MainWindow(QMainWindow):
             return "Fetch JDNext"
         if "jdnext" in mode_low and "html" in mode_low:
             return "HTML JDNext"
+        if "jdlo" in mode_low and "fetch" in mode_low:
+            return "Fetch JDLO"
+        if "jdlo" in mode_low and "html" in mode_low:
+            return "HTML JDLO"
         if "jdnext" in mode_low:
             return "JDNext"
         if "fetch" in mode_low:
-            return "Fetch"
+            return "Fetch JDU"
         if "html" in mode_low:
-            return "HTML"
+            return "HTML JDU"
         if "ipk" in mode_low:
             return "IPK Archive"
         if "batch" in mode_low:
@@ -3375,8 +3427,10 @@ class MainWindow(QMainWindow):
         from jd2021_installer.ui.widgets.mode_selector import (
             MODE_FETCH,
             MODE_JDNEXT,
+            MODE_FETCH_JDLO,
             MODE_HTML,
             MODE_HTML_JDNEXT,
+            MODE_HTML_JDLO,
             MODE_IPK,
             MODE_BATCH,
             MODE_MANUAL,
@@ -3403,6 +3457,24 @@ class MainWindow(QMainWindow):
             )
             return ArchiveIPKExtractor(ipk_path, desired_codename=desired_codename)
 
+        if idx == MODE_FETCH_JDLO:
+            from jd2021_installer.extractors.jdlo_extractor import JDLOExtractor
+            fetch_fields = source_fields.get("fetch_jdlo", {}) if isinstance(source_fields, dict) else {}
+            raw_codenames = str(fetch_fields.get("codenames", "")).strip()
+            
+            parsed_codenames = []
+            for c in raw_codenames.split(","):
+                c = c.strip()
+                if not c:
+                    continue
+                match = re.search(r'\(([^)]+)\)$', c)
+                if match:
+                    parsed_codenames.append(match.group(1).strip())
+                else:
+                    parsed_codenames.append(c)
+                    
+            return JDLOExtractor(codenames=parsed_codenames, config=self._config)
+
         if idx in (MODE_FETCH, MODE_JDNEXT):
             from jd2021_installer.extractors.web_playwright import WebPlaywrightExtractor
             fetch_mode_key = "jdnext" if idx == MODE_JDNEXT else "fetch"
@@ -3417,6 +3489,17 @@ class MainWindow(QMainWindow):
                 config=self._config,
                 quality=self._config.video_quality,
             )
+
+        if idx == MODE_HTML_JDLO:
+            from jd2021_installer.extractors.jdlo_extractor import JDLOOfflineExtractor
+            html_fields = source_fields.get("html_jdlo", {}) if isinstance(source_fields, dict) else {}
+            asset_html = str(html_fields.get("asset", ""))
+            
+            if not asset_html:
+                QMessageBox.warning(self, "Missing File", "Please select the JDLO Asset HTML file.")
+                return None
+                
+            return JDLOOfflineExtractor(asset_html=asset_html, config=self._config)
 
         if idx == MODE_HTML:
             from jd2021_installer.extractors.web_playwright import WebPlaywrightExtractor
@@ -3550,6 +3633,7 @@ class MainWindow(QMainWindow):
         fetch_source: str = "jdu",
         bundle_ipk: Optional[Path] = None,
         bundlelogic_ipk: Optional[Path] = None,
+        source_mode: str = "",
     ) -> None:
         """Launches the dedicated Batch mode worker."""
         if not self._current_target:
@@ -3581,6 +3665,7 @@ class MainWindow(QMainWindow):
             force_unlock_locked_status=force_unlock_locked_status,
             bundle_ipk=bundle_ipk,
             bundlelogic_ipk=bundlelogic_ipk,
+            source_mode=source_mode,
         )
         thread = QThread()
         worker.moveToThread(thread)
@@ -3619,9 +3704,10 @@ class MainWindow(QMainWindow):
         logger.debug("Thread cleaned up: %s", label)
         if thread in self._active_threads:
             self._active_threads.remove(thread)
-        self._active_worker = None
+        if not self._active_threads:
+            self._active_worker = None
 
-    def _start_file_logging(self, current_target: str) -> None:
+    def _start_file_logging(self, current_target: str, mode_name: str = "", action: str = "install") -> None:
         """Starts a dynamic FileHandler log for this installation."""
         if self._file_logger_handlers:
             self._stop_file_logging()
@@ -3648,8 +3734,12 @@ class MainWindow(QMainWindow):
         import datetime
         timestamp = datetime.datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
 
-        file_prefix = "install_"
-        file_suffix = f"_{timestamp}.log"
+        safe_mode = "".join(c for c in mode_name if c.isalnum() or c in ("-", "_")).strip()
+        if safe_mode:
+            file_prefix = f"{timestamp}_{action}_{safe_mode}_"
+        else:
+            file_prefix = f"{timestamp}_{action}_"
+        file_suffix = ".log"
         max_filename_len = 180
         max_segment_len = max(8, max_filename_len - len(file_prefix) - len(file_suffix))
         if len(codename) > max_segment_len:
@@ -3683,6 +3773,45 @@ class MainWindow(QMainWindow):
         self._config.log_detail_level = apply_log_detail(self._config.log_detail_level)
         for log_path in log_paths:
             logger.info("Install log file: %s", log_path)
+
+    def _rename_log_file_with_codename(self, new_codename: str) -> None:
+        """Rename the current log file(s) replacing the original target name with the true codename."""
+        if not self._file_logger_handlers or not new_codename:
+            return
+
+        import os
+        safe_codename = "".join(c for c in new_codename if c.isalnum() or c in ("-", "_")).strip()
+        if not safe_codename:
+            return
+
+        for handler in list(self._file_logger_handlers):
+            if not isinstance(handler, logging.FileHandler):
+                continue
+            
+            old_path = Path(handler.baseFilename)
+            old_name = old_path.name
+            if not old_name.endswith(".log"):
+                continue
+            
+            name_without_ext = old_name[:-4]
+            last_underscore = name_without_ext.rfind("_")
+            if last_underscore == -1:
+                continue
+            
+            new_name = name_without_ext[:last_underscore+1] + safe_codename + ".log"
+            new_path = old_path.parent / new_name
+            
+            if new_path == old_path or new_path.exists():
+                continue
+            
+            try:
+                handler.close()
+                os.rename(old_path, new_path)
+                handler.baseFilename = str(new_path.resolve())
+                handler.stream = handler._open()
+                logger.info("Log file renamed to incorporate detected codename: %s", new_path.name)
+            except Exception as e:
+                logger.debug("Failed to rename log file to %s: %s", new_name, e)
 
     def _stop_file_logging(self) -> None:
         """Removes the active FileHandler and cleanly closes handles."""

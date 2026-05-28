@@ -345,7 +345,7 @@ def _ensure_jdnext_albumcoach_texture_from_coach(map_target: Path, codename: str
         return True
         
     except Exception as exc:
-        logger.debug("Failed to composite multi-coach albumcoach: %s", exc)
+        logger.exception("Failed to composite multi-coach albumcoach: %s", exc)
         # Fallback to copy the first coach if PIL compositing fails
         try:
             dst.parent.mkdir(parents=True, exist_ok=True)
@@ -430,7 +430,7 @@ def _synthesize_jdnext_cover_if_needed(
                 if choice == "original":
                     return False
             except Exception as exc:
-                logger.debug("JDNext cover ask callback failed (%s); defaulting to synthesized", exc)
+                logger.warning("JDNext cover ask callback failed (%s); defaulting to synthesized", exc)
 
     # --- Composite ---
     try:
@@ -477,7 +477,7 @@ def _synthesize_jdnext_cover_if_needed(
                 out = composite.resize(orig_size, _Image.Resampling.LANCZOS) if orig_size != (1024, 1024) else composite
                 out.save(f, format="PNG")
             except Exception as _e:
-                logger.debug("Could not overwrite cover PNG %s: %s", f.name, _e)
+                logger.warning("Could not overwrite cover PNG %s: %s", f.name, _e)
 
         logger.debug(
             "Synthesized JDNext cover art for '%s': map_bkg=%s title=%s -> cover_generic(512)/online(256).tga + PNGs",
@@ -700,7 +700,7 @@ def _install_menuart_companion_assets(menuart_sources: list[Path], map_target: P
                 shutil.copy2(ckd_path, dst_path)
                 copied += 1
             except OSError as exc:
-                logger.debug("Failed to install MenuArt companion %s: %s", ckd_path.name, exc)
+                logger.warning("Failed to install MenuArt companion %s: %s", ckd_path.name, exc)
 
     return copied
 
@@ -949,7 +949,7 @@ class ExtractAndNormalizeWorker(QObject):
                 user_msg = str(e)
                 if _is_user_cancelled_browser_close(e):
                     user_msg = "Browser was closed by user. Fetch cancelled."
-                logger.debug("ExtractAndNormalize failed: %s", user_msg)
+                logger.exception("ExtractAndNormalize failed: %s", user_msg)
                 self.error.emit(failed_stage, user_msg)
                 self.finished.emit(None)
                 return
@@ -1065,8 +1065,9 @@ def reprocess_audio(
             source_is_jdnext = True
 
     # Preserve native IPK intro AMB assets when present; apply generated intro
-    # flow only for JDNext sources.
-    intro_amb_attempt_enabled = source_is_jdnext
+    # flow for JDNext, HTML, and JDLO sources.
+    source_is_jdlo = getattr(map_data, "_install_source_mode", "") in ("HTML JDLO",) or getattr(map_data, "is_jdlo_source", False)
+    intro_amb_attempt_enabled = source_is_jdnext or source_is_html or source_is_jdlo
     
     media = map_data.media
 
@@ -1400,6 +1401,7 @@ class BatchInstallWorker(QObject):
         force_unlock_locked_status: bool = False,
         bundle_ipk: Optional[Path] = None,
         bundlelogic_ipk: Optional[Path] = None,
+        source_mode: str = "",
         parent: Optional[QObject] = None,
     ) -> None:
         super().__init__(parent)
@@ -1412,6 +1414,7 @@ class BatchInstallWorker(QObject):
         self._force_unlock_locked_status = force_unlock_locked_status
         self._bundle_ipk = bundle_ipk
         self._bundlelogic_ipk = bundlelogic_ipk
+        self._source_mode = source_mode
 
     def run(self) -> None:
         try:
@@ -1503,8 +1506,9 @@ class BatchInstallWorker(QObject):
             
             candidates: list[dict[str, object]] = []
             if self._fetch_codenames:
+                kind = "fetch_jdlo" if getattr(self, "_source_mode", "") == "fetch_jdlo" else "fetch"
                 for codename in self._fetch_codenames:
-                    candidates.append({"kind": "fetch", "name": codename, "path": self._source_dir})
+                    candidates.append({"kind": kind, "name": codename, "path": self._source_dir})
 
             # When explicit fetch codenames are provided, treat this as a pure fetch batch.
             if self._source_dir and not self._fetch_codenames:
@@ -1570,7 +1574,7 @@ class BatchInstallWorker(QObject):
             for candidate in candidates:
                 kind = str(candidate["kind"])
                 cpath = Path(candidate["path"])
-                if kind == "fetch":
+                if kind in ("fetch", "fetch_jdlo"):
                     map_names.append(str(candidate.get("name") or cpath.name))
                 elif kind == "ipk":
                     from jd2021_installer.extractors.archive_ipk import inspect_ipk
@@ -1652,7 +1656,7 @@ class BatchInstallWorker(QObject):
                         prepared_dir = extractor.extract(batch_cache)
                         html_prepared.append((map_name, prepared_dir, source_game))
                     except Exception as e:
-                        logger.debug("Failed HTML prepare for %s: %s", map_name, e)
+                        logger.exception("Failed HTML prepare for %s: %s", map_name, e)
                         self.status.emit(f"Warning: Failed HTML prepare for {map_name} ({str(e)[:40]})")
 
                 emit_progress(20)
@@ -1675,8 +1679,22 @@ class BatchInstallWorker(QObject):
                     map_names_for_candidate: list[str] = []
                     is_candidate_ipk = str(candidate["kind"]) == "ipk"
                     is_candidate_fetch = str(candidate["kind"]) == "fetch"
+                    is_candidate_fetch_jdlo = str(candidate["kind"]) == "fetch_jdlo"
                     supplemental_roots: list[Path] = []
-                    if is_candidate_fetch:
+                    if is_candidate_fetch_jdlo:
+                        from jd2021_installer.extractors.jdlo_extractor import JDLOExtractor
+                        map_name = str(candidate.get("name") or "").strip()
+                        if selected_lookup and map_name.lower() not in selected_lookup:
+                            continue
+                        
+                        self.status.emit(f"[{map_name}] Fetching map data from JDLO CDN...")
+                        extractor = JDLOExtractor(
+                            codenames=[map_name],
+                            config=self._config
+                        )
+                        map_dir = extractor.extract(batch_cache)
+                        map_names_for_candidate = [map_name]
+                    elif is_candidate_fetch:
                         from jd2021_installer.extractors.web_playwright import WebPlaywrightExtractor
 
                         map_name = str(candidate.get("name") or "").strip()
@@ -1809,11 +1827,15 @@ class BatchInstallWorker(QObject):
                             map_data.media.audio_path = persisted_audio
                         
                         self.status.emit(f"[{map_data.codename}] Installing map...")
-                        install_source_mode = ""
-                        if is_candidate_fetch:
+                        if is_candidate_fetch_jdlo:
+                            install_source_mode = "Fetch JDLO"
+                        elif is_candidate_fetch:
                             install_source_mode = "Fetch JDNext" if self._fetch_source == "jdnext" else "Fetch"
-                        elif bool(getattr(map_data, "is_html_source", False)):
-                            install_source_mode = "HTML JDNext" if bool(getattr(map_data, "is_jdnext_source", False)) else "HTML"
+                        else:
+                            if "html_jdlo" in self._source_mode:
+                                install_source_mode = "HTML JDLO"
+                            else:
+                                install_source_mode = "HTML JDNext" if bool(getattr(map_data, "is_jdnext_source", False)) else "HTML"
                         setattr(map_data, "_install_source_mode", install_source_mode)
                         self._install_map_synchronously(map_data)
                         emit_map_stage(2)
@@ -1839,8 +1861,9 @@ class BatchInstallWorker(QObject):
                     
                 except Exception as e:
                     cpath = Path(candidate["path"])
-                    logger.debug("Failed to install map from %s: %s", cpath.name, e)
-                    self.status.emit(f"Warning: Failed {cpath.name} ({str(e)[:30]})")
+                    failed_name = str(candidate.get("name") or cpath.name)
+                    logger.exception("Failed to install map from %s: %s", failed_name, e)
+                    self.status.emit(f"Warning: Failed {failed_name} ({str(e)[:30]})")
 
             # Process maps prepared from HTML folders in phase 1.
             for map_name, map_dir, source_game in html_prepared:
@@ -1901,7 +1924,10 @@ class BatchInstallWorker(QObject):
                         map_data.media.audio_path = persisted_audio
 
                     self.status.emit(f"[{map_data.codename}] Installing map...")
-                    install_source_mode = "HTML JDNext" if source_game == "jdnext" else "HTML"
+                    if "html_jdlo" in self._source_mode:
+                        install_source_mode = "HTML JDLO"
+                    else:
+                        install_source_mode = "HTML JDNext" if source_game == "jdnext" else "HTML"
                     setattr(map_data, "_install_source_mode", install_source_mode)
                     self._install_map_synchronously(map_data)
                     emit_map_stage(2)
@@ -1911,6 +1937,11 @@ class BatchInstallWorker(QObject):
                         dl_dir = self._config.download_root / map_data.codename
                         if dl_dir.exists() and dl_dir.is_dir():
                             shutil.rmtree(dl_dir, ignore_errors=True)
+                            
+                        dl_dir_jdlo = self._config.download_root / "jdlo" / map_data.codename
+                        if dl_dir_jdlo.exists() and dl_dir_jdlo.is_dir():
+                            shutil.rmtree(dl_dir_jdlo, ignore_errors=True)
+                            
                         if cb == "aggressive" and map_cache.exists() and map_cache.is_dir():
                             shutil.rmtree(map_cache, ignore_errors=True)
                         if map_dir.exists() and map_dir.is_dir() and str(map_dir).startswith(str(batch_cache)):
@@ -1922,7 +1953,7 @@ class BatchInstallWorker(QObject):
                     installed_maps.append(map_data)
                     logger.info("Batch installed HTML map: %s", map_data.codename)
                 except Exception as e:
-                    logger.debug("Failed to install HTML map %s: %s", map_name, e)
+                    logger.exception("Failed to install HTML map %s: %s", map_name, e)
                     self.status.emit(f"Warning: Failed {map_name} ({str(e)[:30]})")
 
             import shutil
@@ -2285,7 +2316,7 @@ def install_map_to_game(
 
     # Fetch/HTML parity ticket: boost installed gameplay audio by +8 dB (JDU only).
     mode_low = (source_mode or "").lower()
-    if ("fetch" in mode_low or "html" in mode_low) and not _is_jdnext_source_map():
+    if ("fetch" in mode_low or "html" in mode_low) and not getattr(map_data, "is_jdnext_source", False) and "jdlo" not in mode_low:
         if status_callback: status_callback("Applying +8dB JDU audio boost...")
         if progress_callback: progress_callback(45)
         from jd2021_installer.installers.media_processor import apply_audio_gain
@@ -2633,7 +2664,7 @@ def install_map_to_game(
         from jd2021_installer.installers.sku_scene import register_map
         register_map(game_dir, codename)
     except Exception as e:
-        logger.debug("SkuScene registration failed (non-fatal): %s", e)
+        logger.warning("SkuScene registration failed (non-fatal): %s", e)
 
     if status_callback: status_callback("Finalizing offsets...")
     if progress_callback: progress_callback(100)

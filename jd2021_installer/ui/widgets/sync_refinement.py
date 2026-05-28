@@ -61,9 +61,13 @@ class SyncRefinementWidget(QWidget):
         root = QVBoxLayout(self)
         root.setContentsMargins(4, 4, 4, 4)
 
-        group = QGroupBox("Sync Refinement")
-        group_layout = QVBoxLayout(group)
-        root.addWidget(group)
+        self._group_box = QGroupBox("Sync Refinement")
+        group_layout = QVBoxLayout(self._group_box)
+        root.addWidget(self._group_box)
+
+        self._legacy_container = QWidget()
+        legacy_layout = QVBoxLayout(self._legacy_container)
+        legacy_layout.setContentsMargins(0, 0, 0, 0)
 
         # -- Offset controls -------------------------------------------------
         controls_grid = QGridLayout()
@@ -139,7 +143,7 @@ class SyncRefinementWidget(QWidget):
             self._video_buttons.append(btn)
         controls_grid.addLayout(inc_row_video, 3, 0, 1, 2)
 
-        group_layout.addLayout(controls_grid)
+        legacy_layout.addLayout(controls_grid)
 
 
         # -- Separator -------------------------------------------------------
@@ -148,7 +152,9 @@ class SyncRefinementWidget(QWidget):
         sep.setFrameShape(QFrame.Shape.HLine)
         sep.setFrameShadow(QFrame.Shadow.Plain)
         sep.setLineWidth(1)
-        group_layout.addWidget(sep)
+        legacy_layout.addWidget(sep)
+
+        group_layout.addWidget(self._legacy_container)
 
         # -- Preview frame ---------------------------------------------------
         preview_row = QHBoxLayout()
@@ -298,6 +304,12 @@ class SyncRefinementWidget(QWidget):
         self._nav_group.setVisible(visible)
         if label_text:
             self._nav_label.setText(label_text)
+
+    def set_legacy_visible(self, visible: bool) -> None:
+        """Toggle visibility of legacy offset controls and update labels."""
+        self._legacy_container.setVisible(visible)
+        self._group_box.setTitle("Sync Refinement" if visible else "Preview Controls")
+        self._btn_apply.setText("Apply Offset" if visible else "Apply")
 
     def _on_preview_toggled(self, checked: bool) -> None:
         self._set_preview_icon(checked)
