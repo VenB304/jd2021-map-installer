@@ -127,7 +127,7 @@ def test_strategy_uses_assetstudio_first(tmp_path: Path, monkeypatch):
 
     calls: list[str] = []
 
-    def fake_assetstudio(bundle_path: Path, output_dir: Path, unity_version: str):
+    def fake_assetstudio(bundle_path: Path, output_dir: Path, unity_version: str, **kwargs):
         calls.append("assetstudio")
         (output_dir / "MonoBehaviour").mkdir(parents=True, exist_ok=True)
         (output_dir / "MonoBehaviour" / "TestMap.json").write_text("{}", encoding="utf-8")
@@ -135,7 +135,7 @@ def test_strategy_uses_assetstudio_first(tmp_path: Path, monkeypatch):
         (output_dir / "TextAsset").mkdir(parents=True, exist_ok=True)
         return output_dir
 
-    def fake_unitypy(bundle_path: Path, output_dir: Path):
+    def fake_unitypy(bundle_path: Path, output_dir: Path, **kwargs):
         calls.append("unitypy")
         raise AssertionError("UnityPy should not run when AssetStudio succeeds first")
 
@@ -155,7 +155,7 @@ def test_strategy_falls_back_to_assetstudio_when_unitypy_fails(tmp_path: Path, m
 
     calls: list[str] = []
 
-    def fake_assetstudio(bundle_path: Path, output_dir: Path, unity_version: str):
+    def fake_assetstudio(bundle_path: Path, output_dir: Path, unity_version: str, **kwargs):
         calls.append("assetstudio")
         (output_dir / "MonoBehaviour").mkdir(parents=True, exist_ok=True)
         (output_dir / "MonoBehaviour" / "RecoveredMap.json").write_text("{}", encoding="utf-8")
@@ -163,7 +163,7 @@ def test_strategy_falls_back_to_assetstudio_when_unitypy_fails(tmp_path: Path, m
         (output_dir / "TextAsset").mkdir(parents=True, exist_ok=True)
         return output_dir
 
-    def fake_unitypy(bundle_path: Path, output_dir: Path):
+    def fake_unitypy(bundle_path: Path, output_dir: Path, **kwargs):
         calls.append("unitypy")
         raise RuntimeError("encrypted")
 

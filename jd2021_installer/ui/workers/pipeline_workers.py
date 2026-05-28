@@ -2316,7 +2316,7 @@ def install_map_to_game(
 
     # Fetch/HTML parity ticket: boost installed gameplay audio by +8 dB (JDU only).
     mode_low = (source_mode or "").lower()
-    if ("fetch" in mode_low or "html" in mode_low) and not getattr(map_data, "is_jdnext_source", False) and "jdlo" not in mode_low:
+    if ("fetch" in mode_low or "html" in mode_low) and not source_is_jdnext and "jdlo" not in mode_low:
         if status_callback: status_callback("Applying +8dB JDU audio boost...")
         if progress_callback: progress_callback(45)
         from jd2021_installer.installers.media_processor import apply_audio_gain

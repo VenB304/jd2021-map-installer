@@ -40,8 +40,11 @@ def test_copy_moves_only_accepts_kinect_v1_v2_gestures(tmp_path: Path) -> None:
     assert (wiiu_out / "x360_ok.msm").exists()
     assert (wiiu_out / "scarlett_ok.msm").exists()
 
-    # No pc/ folder should exist
-    assert not (target / "timeline" / "moves" / "pc").exists()
+    # Mirror pc/ folder should exist
+    pc_out = target / "timeline" / "moves" / "pc"
+    assert (pc_out / "x360_ok.gesture").exists()
+    assert (pc_out / "durango_ok.gesture").exists()
+    assert (pc_out / "scarlett_should_skip.gesture").exists()
 
     assert copied == 5
 
