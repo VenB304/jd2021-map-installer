@@ -22,6 +22,7 @@ from typing import Optional
 from PyQt6.QtCore import QSignalBlocker, Qt, pyqtSignal
 from PyQt6.QtWidgets import (
     QComboBox,
+    QCompleter,
     QFileDialog,
     QGridLayout,
     QGroupBox,
@@ -140,6 +141,19 @@ class FileRowWidget(QWidget):
         self.path_changed.emit("")
 
 
+class MultiCompleter(QCompleter):
+    def pathFromIndex(self, index):
+        path = super().pathFromIndex(index)
+        text = self.widget().text()
+        if "," in text:
+            prefix = text[:text.rfind(",")]
+            return prefix + ", " + path
+        return path
+
+    def splitPath(self, path):
+        return [path.split(",")[-1].strip()]
+
+
 class ModeSelectorWidget(QWidget):
     """Dropdown + dynamic input area for selecting the map-import mode."""
 
@@ -232,6 +246,26 @@ class ModeSelectorWidget(QWidget):
         inp = QLineEdit()
         inp.setPlaceholderText(placeholder)
         inp.setToolTip("Enter one or more codenames, separated by commas, to target specific maps.")
+        
+        if input_key == "fetch_jdlo":
+            import json
+            jdlo_cache_path = Path(__file__).parent.parent.parent.parent / "cache" / "jdlo" / "songs.json"
+            if jdlo_cache_path.exists():
+                try:
+                    with open(jdlo_cache_path, "r", encoding="utf-8") as f:
+                        jdlo_data = json.load(f)
+                    
+                    # Provide suggestions only for codename
+                    suggestions = list(jdlo_data.keys())
+                            
+                    completer = MultiCompleter(list(set(suggestions)), inp)
+                    completer.setCaseSensitivity(Qt.CaseSensitivity.CaseInsensitive)
+                    completer.setFilterMode(Qt.MatchFlag.MatchContains)
+                    completer.popup().setObjectName("completerPopup")
+                    inp.setCompleter(completer)
+                except Exception as e:
+                    logger.warning(f"Failed to load JDLO codenames for completer: {e}")
+
         inp.textChanged.connect(lambda t: self.target_selected.emit(t))
         row.addWidget(inp)
 

@@ -120,7 +120,8 @@ QComboBox::down-arrow {
 	height: 14px;
 }
 
-QComboBox QAbstractItemView {
+QComboBox QAbstractItemView,
+QListView#completerPopup {
 	background-color: #ffffff;
 	color: #1f2a38;
 	border: 1px solid #c5d1e4;
@@ -129,13 +130,15 @@ QComboBox QAbstractItemView {
 	outline: none;
 }
 
-QComboBox QAbstractItemView::item {
+QComboBox QAbstractItemView::item,
+QListView#completerPopup::item {
 	min-height: 24px;
 	padding: 4px 8px;
 	border-radius: 4px;
 }
 
-QComboBox QAbstractItemView::item:selected {
+QComboBox QAbstractItemView::item:selected,
+QListView#completerPopup::item:selected {
 	background-color: #3f7cff;
 	color: #ffffff;
 }

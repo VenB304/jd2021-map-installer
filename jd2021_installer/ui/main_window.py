@@ -2240,7 +2240,17 @@ class MainWindow(QMainWindow):
             fetch_source = "jdnext" if mode_index == MODE_JDNEXT else "jdu"
             fetch_fields = source_fields.get(fetch_mode_key, {}) if isinstance(source_fields, dict) else {}
             raw_fetch = str(fetch_fields.get("codenames", "")).strip()
-            fetch_codenames = [c.strip() for c in raw_fetch.split(",") if c.strip()]
+            fetch_codenames = []
+            for c in raw_fetch.split(","):
+                c = c.strip()
+                if not c:
+                    continue
+                import re
+                match = re.search(r'\(([^)]+)\)$', c)
+                if match:
+                    fetch_codenames.append(match.group(1).strip())
+                else:
+                    fetch_codenames.append(c)
             if len(fetch_codenames) > 1:
                 self._sync_refinement.set_ipk_mode(is_ipk=False)
                 self._start_batch_install(
@@ -3446,8 +3456,19 @@ class MainWindow(QMainWindow):
             from jd2021_installer.extractors.jdlo_extractor import JDLOExtractor
             fetch_fields = source_fields.get("fetch_jdlo", {}) if isinstance(source_fields, dict) else {}
             raw_codenames = str(fetch_fields.get("codenames", "")).strip()
-            codenames = [c.strip() for c in raw_codenames.split(",") if c.strip()]
-            return JDLOExtractor(codenames=codenames, config=self._config)
+            
+            parsed_codenames = []
+            for c in raw_codenames.split(","):
+                c = c.strip()
+                if not c:
+                    continue
+                match = re.search(r'\(([^)]+)\)$', c)
+                if match:
+                    parsed_codenames.append(match.group(1).strip())
+                else:
+                    parsed_codenames.append(c)
+                    
+            return JDLOExtractor(codenames=parsed_codenames, config=self._config)
 
         if idx in (MODE_FETCH, MODE_JDNEXT):
             from jd2021_installer.extractors.web_playwright import WebPlaywrightExtractor
