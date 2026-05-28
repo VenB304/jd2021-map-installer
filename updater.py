@@ -177,7 +177,6 @@ class Updater:
             "download_root",
             "cache_directory",
             "temp_directory",
-            "third_party_tools_root",
             "browser_profile_dir",
             "assetstudio_cli_path",
             "vgmstream_path",

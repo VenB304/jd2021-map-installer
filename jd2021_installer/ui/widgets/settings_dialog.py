@@ -731,22 +731,6 @@ class SettingsDialog(QDialog):
             ),
         )
 
-        third_party_root = getattr(self._config, "third_party_tools_root", None)
-        self.txt_third_party_root = QLineEdit(str(third_party_root) if third_party_root else "")
-        self.txt_third_party_root.setPlaceholderText("Auto (./tools)")
-        self.txt_third_party_root.setToolTip(
-            "Root folder for JDNext helper tools.\n"
-            "Leave empty for the default ./tools path."
-        )
-        tools_form.addRow(
-            "Third-party tools folder:",
-            self._make_path_picker_row(
-                self.txt_third_party_root,
-                browse_title="Select third-party tools folder",
-                select_directory=True,
-            ),
-        )
-
         advanced_layout.addLayout(tools_form)
 
         # ----- Service Connections section -----
@@ -1190,10 +1174,10 @@ class SettingsDialog(QDialog):
         self._config.ffmpeg_path = self.txt_ffmpeg_path.text().strip() or "ffmpeg"
         self._config.ffprobe_path = self.txt_ffprobe_path.text().strip() or "ffprobe"
         self._config.vgmstream_path = self.txt_vgmstream_path.text().strip() or None
-        self._config.assetstudio_cli_path = self.txt_assetstudio_cli.text().strip() or None
-        third_party_root_text = self.txt_third_party_root.text().strip()
-        self._config.third_party_tools_root = (
-            Path(third_party_root_text).expanduser() if third_party_root_text else None
+        self._config.assetstudio_cli_path = (
+            Path(self.txt_assetstudio_cli.text().strip())
+            if self.txt_assetstudio_cli.text().strip()
+            else None
         )
         self._config.download_timeout_s = self.spin_download_timeout.value()
         self._config.max_retries = self.spin_max_retries.value()
