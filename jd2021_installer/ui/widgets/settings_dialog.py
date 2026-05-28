@@ -38,6 +38,7 @@ from jd2021_installer.core.localization_update import (
 from jd2021_installer.core.songdb_update import (
     extract_jdnext_songdb_codenames,
     extract_jdu_songdb_codenames,
+    extract_jdlo_songdb_codenames,
     resolve_songdb_synth_path,
     synthesize_jdnext_songdb,
 )
@@ -998,6 +999,17 @@ class SettingsDialog(QDialog):
         l_layout4.addStretch()
         import_form.addRow("Attempt Install all JDNext maps:", l_layout4)
 
+        self.btn_bulk_install_jdlo_songdb = QPushButton("Select JDLO songs.json")
+        self.btn_bulk_install_jdlo_songdb.clicked.connect(self._on_bulk_install_jdlo_songdb)
+        self.btn_bulk_install_jdlo_songdb.setToolTip(
+            "Pick a JDLO songs.json and queue every map through Fetch JDLO mode."
+        )
+        l_layout5 = QHBoxLayout()
+        l_layout5.setContentsMargins(0, 0, 0, 0)
+        l_layout5.addWidget(self.btn_bulk_install_jdlo_songdb)
+        l_layout5.addStretch()
+        import_form.addRow("Attempt Install all JDLO maps:", l_layout5)
+
         maintenance_layout.addLayout(import_form)
 
         # ----- Cleanup section -----
@@ -1576,10 +1588,11 @@ class SettingsDialog(QDialog):
             )
             return
 
+        display_name = "JDNext" if source_game == "jdnext" else ("JDLO" if source_game == "jdlo" else "JDU")
         QMessageBox.information(
             self,
             "Bulk Install Started",
-            f"Queued {len(codenames)} map(s) for {'JDNext' if source_game == 'jdnext' else 'JDU'} fetch install.",
+            f"Queued {len(codenames)} map(s) for {display_name} fetch install.",
         )
         self.reject()
 
@@ -1595,6 +1608,13 @@ class SettingsDialog(QDialog):
             source_game="jdnext",
             title="Select JDNext song database JSON",
             extractor=extract_jdnext_songdb_codenames,
+        )
+
+    def _on_bulk_install_jdlo_songdb(self) -> None:
+        self._run_songdb_bulk_install(
+            source_game="jdlo",
+            title="Select JDLO songs.json",
+            extractor=extract_jdlo_songdb_codenames,
         )
 
     def _on_clean_game_data(self) -> None:

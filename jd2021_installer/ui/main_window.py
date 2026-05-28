@@ -1721,12 +1721,18 @@ class MainWindow(QMainWindow):
             self._set_status("No valid codenames were provided for bulk install.")
             return False
 
-        from jd2021_installer.ui.widgets.mode_selector import MODE_FETCH, MODE_JDNEXT
+        from jd2021_installer.ui.widgets.mode_selector import MODE_FETCH, MODE_JDNEXT, MODE_FETCH_JDLO
 
         mode_source = (source_game or "jdu").strip().lower()
-        is_jdnext = mode_source == "jdnext"
-        mode_index = MODE_JDNEXT if is_jdnext else MODE_FETCH
-        mode_key = "jdnext" if is_jdnext else "fetch"
+        if mode_source == "jdnext":
+            mode_index = MODE_JDNEXT
+            mode_key = "jdnext"
+        elif mode_source == "jdlo":
+            mode_index = MODE_FETCH_JDLO
+            mode_key = "fetch_jdlo"
+        else:
+            mode_index = MODE_FETCH
+            mode_key = "fetch"
 
         self._mode_selector.set_mode_index(mode_index)
         self._mode_selector.set_mode_codenames(mode_key, ",".join(clean_codenames))
