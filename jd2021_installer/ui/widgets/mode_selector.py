@@ -262,7 +262,21 @@ class ModeSelectorWidget(QWidget):
         
         if input_key == "fetch_jdlo":
             import json
-            jdlo_cache_path = Path(__file__).parent.parent.parent.parent / "cache" / "jdlo" / "songs.json"
+            root_dir = Path(__file__).resolve().parents[3]
+            jdlo_cache_path = root_dir / "cache" / "jdlo" / "songs.json"
+            settings_file = root_dir / "installer_settings.json"
+            
+            try:
+                if settings_file.exists():
+                    with settings_file.open("r", encoding="utf-8") as f:
+                        data = json.load(f)
+                        if "cache_directory" in data:
+                            candidate = Path(data["cache_directory"]).expanduser()
+                            cache_dir = candidate if candidate.is_absolute() else (root_dir / candidate)
+                            jdlo_cache_path = cache_dir / "jdlo" / "songs.json"
+            except Exception as e:
+                logger.warning(f"Failed to read cache_directory from settings: {e}")
+
             if jdlo_cache_path.exists():
                 try:
                     with open(jdlo_cache_path, "r", encoding="utf-8") as f:

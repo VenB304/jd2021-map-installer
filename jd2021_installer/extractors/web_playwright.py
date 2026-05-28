@@ -486,7 +486,9 @@ def _try_jdnext_missing_fallbacks(
     if expected_scene:
         expected_scene_name = get_filename_from_url(expected_scene)
         if expected_scene_name not in downloaded:
-            local_cache = Path(__file__).resolve().parents[2] / "temp" / "jdnext_downloads"
+            candidate_temp = Path(config.temp_directory).expanduser()
+            root_dir = Path(__file__).resolve().parents[2]
+            local_cache = (candidate_temp if candidate_temp.is_absolute() else (root_dir / candidate_temp)) / "jdnext_downloads"
             candidates = []
             if local_cache.exists():
                 candidates.extend(local_cache.glob("*mapPackage*.bundle"))
