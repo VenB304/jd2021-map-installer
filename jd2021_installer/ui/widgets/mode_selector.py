@@ -106,6 +106,10 @@ class FileRowWidget(QWidget):
         self.line_edit.setToolTip(f"Selected path for {label_text.rstrip(':')}")
         lay.addWidget(self.line_edit)
 
+        self.status_icon = QLabel("")
+        self.status_icon.setMinimumWidth(20)
+        lay.addWidget(self.status_icon)
+
         btn = QPushButton("Browse")
         btn.setToolTip(f"Browse and select {label_text.rstrip(':')}")
         btn.clicked.connect(self._browse)
@@ -115,6 +119,20 @@ class FileRowWidget(QWidget):
         btn_clear.setToolTip(f"Clear selected path for {label_text.rstrip(':')}")
         btn_clear.clicked.connect(self._clear)
         lay.addWidget(btn_clear)
+
+    def set_status(self, status: str) -> None:
+        """Update the status icon next to the input."""
+        if status == "ok":
+            self.status_icon.setText("✓")
+            self.status_icon.setStyleSheet("color: green; font-weight: bold;")
+            self.status_icon.setToolTip("Auto-detected")
+        elif status == "warn":
+            self.status_icon.setText("⚠")
+            self.status_icon.setStyleSheet("color: orange; font-weight: bold;")
+            self.status_icon.setToolTip("Not detected (Optional or missing)")
+        else:
+            self.status_icon.setText("")
+            self.status_icon.setToolTip("")
 
     def _browse(self) -> None:
         if self.is_dir:
@@ -593,23 +611,6 @@ class ModeSelectorWidget(QWidget):
         warn.setWordWrap(True)
         scroll_lay.addWidget(warn)
 
-        source_lay = QHBoxLayout()
-        source_lay.addWidget(QLabel("Source Type:"))
-        self._manual_source_combo = QComboBox()
-        self._manual_source_combo.addItem("JDU", "jdu")
-        self._manual_source_combo.addItem("IPK", "ipk")
-        self._manual_source_combo.addItem("Mixed", "mixed")
-        self._manual_source_combo.setCurrentIndex(2)
-        self._manual_source_combo.setToolTip(
-            "Choose how to interpret Manual fields. Detection is still shown as a hint."
-        )
-        self._manual_source_combo.currentIndexChanged.connect(
-            lambda _idx: self._on_manual_source_type_changed()
-        )
-        source_lay.addWidget(self._manual_source_combo)
-        source_lay.addStretch()
-        scroll_lay.addLayout(source_lay)
-
         # Top generic entries
         top_lay = QGridLayout()
         top_lay.setContentsMargins(0, 0, 0, 0)
@@ -634,6 +635,8 @@ class ModeSelectorWidget(QWidget):
 
         # Required Files Group
         self._manual_required_group = QGroupBox("Required Files")
+        self._manual_required_group.setCheckable(True)
+        self._manual_required_group.setChecked(False)
         lay_req = QVBoxLayout(self._manual_required_group)
         
         row_audio = FileRowWidget("Audio File:", file_filter="Audio (*.ogg *.wav *.wav.ckd);;All (*.*)")
@@ -647,6 +650,8 @@ class ModeSelectorWidget(QWidget):
 
         # Optional Tapes Group
         self._manual_tapes_group = QGroupBox("Tapes & Config")
+        self._manual_tapes_group.setCheckable(True)
+        self._manual_tapes_group.setChecked(False)
         lay_tapes = QVBoxLayout(self._manual_tapes_group)
         
         row_sdesc = FileRowWidget("Songdesc", file_filter="CKD (*.ckd);;All (*.*)")
@@ -662,6 +667,8 @@ class ModeSelectorWidget(QWidget):
 
         # Optional Assets Group
         self._manual_assets_group = QGroupBox("Asset Folders")
+        self._manual_assets_group.setCheckable(True)
+        self._manual_assets_group.setChecked(False)
         lay_assets = QVBoxLayout(self._manual_assets_group)
         
         self._manual_row_moves = FileRowWidget("Moves Folder:", is_dir=True)
@@ -676,9 +683,11 @@ class ModeSelectorWidget(QWidget):
         scroll_lay.addWidget(self._manual_assets_group)
 
         self._manual_menuart_group = QGroupBox("MenuArt")
+        self._manual_menuart_group.setCheckable(True)
+        self._manual_menuart_group.setChecked(False)
         lay_menuart = QVBoxLayout(self._manual_menuart_group)
         menuart_note = QLabel(
-            "MenuArt fields are shown only when they exist in the source."
+            "MenuArt images override generic fallback covers."
         )
         menuart_note.setWordWrap(True)
         lay_menuart.addWidget(menuart_note)
@@ -767,8 +776,22 @@ class ModeSelectorWidget(QWidget):
             "jdu_menuart_coach3": row_jdu_coach3.line_edit,
             "jdu_menuart_coach4": row_jdu_coach4.line_edit,
         })
-
-        self._apply_manual_layout_sections("unknown")
+        
+        # Track rows for status updates
+        self._manual_rows = {
+            "audio": row_audio,
+            "video": row_video,
+            "mtrack": row_mtrack,
+            "sdesc": row_sdesc,
+            "dtape": row_dtape,
+            "ktape": row_ktape,
+            "mseq": row_mseq,
+            "moves": self._manual_row_moves,
+            "pictos": self._manual_row_pictos,
+            "menuart": self._manual_row_menuart,
+            "amb": self._manual_row_amb,
+        }
+        self._manual_rows.update(self._manual_jdu_menuart_rows)
         
         return page
 
@@ -816,8 +839,6 @@ class ModeSelectorWidget(QWidget):
 
         source_type = self.manual_source_type
         scan_root = self._resolve_scan_root(root, source_type)
-        layout = self._detect_manual_layout(root)
-        self._apply_manual_layout_sections(layout)
         codename = self.inputs["manual"]["codename"].text().strip()
         
         # 1. Infer codename from structure/file hints before falling back to folder name.
@@ -877,7 +898,31 @@ class ModeSelectorWidget(QWidget):
         for key, asset_path in menuart_assets.items():
             if asset_path and not self.inputs["manual"][key].text().strip():
                 self.inputs["manual"][key].setText(str(asset_path))
-        self._apply_jdu_menuart_visibility(menuart_assets)
+                
+        # Update status icons and expand groups if they have data
+        req_keys = ["audio", "video", "mtrack"]
+        for k in req_keys:
+            self._manual_rows[k].set_status("ok" if self.inputs["manual"][k].text().strip() else "warn")
+        if any(self.inputs["manual"][k].text().strip() for k in req_keys):
+            self._manual_required_group.setChecked(True)
+            
+        tape_keys = ["sdesc", "dtape", "ktape", "mseq"]
+        for k in tape_keys:
+            self._manual_rows[k].set_status("ok" if self.inputs["manual"][k].text().strip() else "")
+        if any(self.inputs["manual"][k].text().strip() for k in tape_keys):
+            self._manual_tapes_group.setChecked(True)
+            
+        asset_keys = ["moves", "pictos", "menuart", "amb"]
+        for k in asset_keys:
+            self._manual_rows[k].set_status("ok" if self.inputs["manual"][k].text().strip() else "")
+        if any(self.inputs["manual"][k].text().strip() for k in asset_keys):
+            self._manual_assets_group.setChecked(True)
+            
+        menuart_keys = list(self._manual_jdu_menuart_rows.keys())
+        for k in menuart_keys:
+            self._manual_rows[k].set_status("ok" if self.inputs["manual"][k].text().strip() else "")
+        if any(self.inputs["manual"][k].text().strip() for k in menuart_keys):
+            self._manual_menuart_group.setChecked(True)
 
     def _detect_manual_layout(self, root: Path) -> str:
         """Detect likely source layout: jdu, ipk, mixed, or unknown."""
@@ -900,37 +945,6 @@ class ModeSelectorWidget(QWidget):
             return "jdu"
         return "unknown"
 
-    def _apply_manual_layout_sections(self, layout: str) -> None:
-        source_type = self.manual_source_type
-        show_jdu = source_type in {"jdu", "mixed"}
-
-        if hasattr(self, "_manual_required_group"):
-            self._manual_required_group.setVisible(True)
-        if hasattr(self, "_manual_tapes_group"):
-            self._manual_tapes_group.setVisible(source_type in {"ipk", "mixed"})
-        if hasattr(self, "_manual_assets_group"):
-            self._manual_assets_group.setVisible(True)
-
-        # JDU maps typically do not use AMB folders and use file-based menuart assets.
-        if hasattr(self, "_manual_row_amb"):
-            self._manual_row_amb.setVisible(source_type in {"ipk", "mixed"})
-        if hasattr(self, "_manual_row_menuart"):
-            self._manual_row_menuart.setVisible(source_type in {"ipk", "mixed"})
-        if hasattr(self, "_manual_menuart_group"):
-            self._manual_menuart_group.setVisible(show_jdu or source_type == "mixed")
-        if hasattr(self, "_manual_jdu_menuart_rows"):
-            for row in self._manual_jdu_menuart_rows.values():
-                row.setVisible(show_jdu)
-
-    def _on_manual_source_type_changed(self) -> None:
-        root_path = self.inputs["manual"]["root"].text().strip()
-        layout = self._detect_manual_layout(Path(root_path)) if root_path else "unknown"
-        self._apply_manual_layout_sections(layout)
-        if root_path:
-            codename = self.inputs["manual"]["codename"].text().strip() or None
-            self._apply_jdu_menuart_visibility(self._find_jdu_menuart_assets(Path(root_path), codename))
-        self._emit_state_changed()
-
     def _reset_manual_inputs(self, keep_root: bool = False) -> None:
         manual_fields = self.inputs.get("manual", {})
         blocked = []
@@ -942,16 +956,11 @@ class ModeSelectorWidget(QWidget):
 
         # Keep blockers alive until all clears finish.
         del blocked
-
-        if hasattr(self, "_manual_jdu_menuart_rows"):
-            for row in self._manual_jdu_menuart_rows.values():
-                row.setVisible(False)
-        if hasattr(self, "_manual_menuart_group"):
-            self._manual_menuart_group.setVisible(False)
-        if hasattr(self, "_manual_row_amb"):
-            self._manual_row_amb.setVisible(False)
-        if hasattr(self, "_manual_row_menuart"):
-            self._manual_row_menuart.setVisible(False)
+        
+        # Clear status icons
+        if hasattr(self, "_manual_rows"):
+            for row in self._manual_rows.values():
+                row.set_status("")
 
     def _find_jdu_menuart_assets(
         self, root: Path, codename: Optional[str]
@@ -1007,26 +1016,13 @@ class ModeSelectorWidget(QWidget):
 
         return result
 
-    def _apply_jdu_menuart_visibility(self, detected: dict[str, Optional[Path]]) -> None:
-        source_type = self.manual_source_type
-        if not hasattr(self, "_manual_jdu_menuart_rows"):
-            return
 
-        for key, row in self._manual_jdu_menuart_rows.items():
-            if source_type != "jdu":
-                row.setVisible(source_type == "mixed")
-                continue
-            row.setVisible(bool(detected.get(key)))
 
     def _wire_state_signals(self) -> None:
         """Emit a normalized source-state payload whenever inputs change."""
         for mode_inputs in self.inputs.values():
             for line_edit in mode_inputs.values():
                 line_edit.textChanged.connect(lambda _text: self._emit_state_changed())
-        if hasattr(self, "_manual_source_combo"):
-            self._manual_source_combo.currentIndexChanged.connect(
-                lambda _index: self._emit_state_changed()
-            )
 
     def _emit_state_changed(self) -> None:
         self.source_state_changed.emit(self.get_current_state())
@@ -1321,11 +1317,10 @@ class ModeSelectorWidget(QWidget):
 
     @property
     def manual_source_type(self) -> str:
-        if hasattr(self, "_manual_source_combo"):
-            selected = self._manual_source_combo.currentData()
-            if isinstance(selected, str) and selected.strip():
-                return selected.strip().lower()
-        return "mixed"
+        root_path = self.inputs.get("manual", {}).get("root")
+        if root_path and root_path.text().strip():
+            return self._detect_manual_layout(Path(root_path.text().strip()))
+        return "auto"
 
     def set_fetch_codenames(self, raw_value: str) -> None:
         """Public setter used by MainWindow (avoid direct child-input access)."""

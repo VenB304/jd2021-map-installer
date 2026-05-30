@@ -2307,6 +2307,26 @@ class MainWindow(QMainWindow):
         if extractor is None:
             return
 
+        from jd2021_installer.extractors.manual_extractor import ManualExtractor
+        if isinstance(extractor, ManualExtractor) and getattr(extractor, "_is_multi_map", False):
+            from jd2021_installer.ui.widgets.bundle_dialog import BundleSelectDialog
+            selected_maps = BundleSelectDialog.show_dialog(
+                Path(self._current_target).name if self._current_target else "Manual Source",
+                extractor.bundle_maps,
+                self
+            )
+            if not selected_maps:
+                return # User cancelled
+
+            # Hand off to batch installer which uses self._current_target as the source root
+            self._sync_refinement.set_ipk_mode(is_ipk=False)
+            self._start_batch_install(
+                selected_maps=set(selected_maps),
+                map_names=sorted(list(selected_maps)),
+                source_mode="Manual",
+            )
+            return
+
         # Prepare UI
         self._lock_ui(True)
         self._feedback_panel.reset()

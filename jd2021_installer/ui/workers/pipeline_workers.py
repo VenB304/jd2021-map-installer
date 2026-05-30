@@ -2249,6 +2249,10 @@ def install_map_to_game(
     codename = map_data.codename
 
     def _is_jdnext_source_map() -> bool:
+        # 1. Check normalizer-detected attribute first (works for all modes)
+        if bool(getattr(map_data, "is_jdnext_source", False)):
+            return True
+
         mode_low = (source_mode or "").lower()
         if "jdnext" in mode_low:
             return True
@@ -2315,8 +2319,16 @@ def install_map_to_game(
     reprocess_audio(map_data, map_target, initial_a_offset, config)
 
     # Fetch/HTML parity ticket: boost installed gameplay audio by +8 dB (JDU only).
+    # Use both source_mode string AND normalizer-detected attributes so this
+    # applies for Manual mode when the source content is HTML/JDU-downloaded.
     mode_low = (source_mode or "").lower()
-    if ("fetch" in mode_low or "html" in mode_low) and not source_is_jdnext and "jdlo" not in mode_low:
+    source_is_html = bool(getattr(map_data, "is_html_source", False))
+    apply_gain = (
+        ("fetch" in mode_low or "html" in mode_low or source_is_html)
+        and not source_is_jdnext
+        and "jdlo" not in mode_low
+    )
+    if apply_gain:
         if status_callback: status_callback("Applying +8dB JDU audio boost...")
         if progress_callback: progress_callback(45)
         from jd2021_installer.installers.media_processor import apply_audio_gain
