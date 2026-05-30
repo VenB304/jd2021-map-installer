@@ -1592,10 +1592,11 @@ def _infer_coach_count_from_media(media: MapMedia) -> int:
 
 
 def normalize_sync(
-    music_track: Optional[MusicTrackStructure], 
+    music_track: Optional[MusicTrackStructure],
     is_html_source: bool = False,
-    existing_trk_path: Optional[Path] = None,
     is_jdnext_source: bool = False,
+    is_web_audio: bool = False,
+    existing_trk_path: Optional[Path] = None,
 ) -> MapSync:
     """Determine the optimal audio/video sync offsets.
     
@@ -1627,8 +1628,8 @@ def normalize_sync(
 
     # If no existing .trk or failed to read, proceed with standard logic
     if music_track:
-        if is_html_source:
-            # Fetch/HTML mode (OGG)
+        if is_html_source or is_web_audio:
+            # Fetch/HTML/Web mode (OGG/OPUS)
             # V1 parity: marker-based sync for HTML mode.
             # Audio keeps a constant +85ms calibration in all Fetch/HTML branches.
             prms_video = calculate_marker_preroll(
@@ -1863,11 +1864,16 @@ def normalize(
     if is_jdnext_source:
         _apply_jdnext_songdb_cache_overrides(effective_codename, song_desc, music_track)
 
+    is_web_audio = False
+    if media.audio_path and media.audio_path.suffix.lower() in (".ogg", ".opus", ".webm"):
+        is_web_audio = True
+
     sync_data = normalize_sync(
-        music_track, 
+        music_track,
         is_html_source=is_html_source,
-        existing_trk_path=source_trk_path,
         is_jdnext_source=is_jdnext_source,
+        is_web_audio=is_web_audio,
+        existing_trk_path=source_trk_path,
     )
 
     # V1 Parity: Detect whether the source contains real autodance data.

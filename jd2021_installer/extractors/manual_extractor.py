@@ -9,8 +9,11 @@ from __future__ import annotations
 
 import logging
 import shutil
+import json
 from pathlib import Path
 from typing import Dict, Optional
+
+from jd2021_installer.parsers.normalizer import load_ckd
 
 from jd2021_installer.core.exceptions import DownloadError
 from jd2021_installer.extractors.base import BaseExtractor
@@ -339,16 +342,55 @@ class ManualExtractor(BaseExtractor):
             dirs:     Dict of logical name → absolute directory path for assets (moves, pictos, etc).
         """
         inferred_codename = codename.strip() if codename else ""
-        if not inferred_codename and root_dir:
-            inferred_codename = Path(root_dir).name.strip()
+        self._root_dir = Path(root_dir) if root_dir else None
+
+        if not inferred_codename and self._root_dir and self._root_dir.is_dir():
+            # Try to scrape the codename from metadata (songdesc or JDNext map.json)
+            inferred_codename = self._infer_codename_from_metadata(self._root_dir)
+            if not inferred_codename:
+                inferred_codename = self._root_dir.name.strip()
+
         self._codename = inferred_codename
         self._source_type = source_type.strip().lower() if source_type else "auto"
-        self._root_dir = Path(root_dir) if root_dir else None
         self._files = files or {}
         self._dirs = dirs or {}
         self._warnings: list[str] = []
         self.bundle_maps: list[str] = []
         self._is_multi_map = False
+
+    def _infer_codename_from_metadata(self, root: Path) -> str:
+        # Try JD2021/JDNext songdesc.tpl.ckd first
+        for p in root.rglob("*songdesc*.tpl.ckd"):
+            try:
+                data = load_ckd(p)
+                if isinstance(data, dict) and "COMPONENTS" in data:
+                    for comp in data["COMPONENTS"]:
+                        if "MapName" in comp and comp["MapName"]:
+                            return comp["MapName"].strip()
+            except Exception:
+                pass
+
+        # Try JDNext map.json
+        for p in root.rglob("map.json"):
+            try:
+                with open(p, "r", encoding="utf-8") as f:
+                    data = json.load(f)
+                if "mapName" in data and data["mapName"]:
+                    return data["mapName"].strip()
+            except Exception:
+                pass
+
+        # Try jdnext_metadata.json
+        for p in root.rglob("jdnext_metadata.json"):
+            try:
+                with open(p, "r", encoding="utf-8") as f:
+                    data = json.load(f)
+                if "MapName" in data and data["MapName"]:
+                    return data["MapName"].strip()
+            except Exception:
+                pass
+
+        return ""
 
     def get_codename(self) -> Optional[str]:
         return self._codename or None
