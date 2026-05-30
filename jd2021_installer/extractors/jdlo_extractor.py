@@ -137,13 +137,23 @@ class JDLOExtractor(BaseExtractor):
             resp = self._client.download_request(url, stream=True)
 
         dest.parent.mkdir(parents=True, exist_ok=True)
-        with open(dest, "wb") as f:
-            for chunk in resp.iter_content(chunk_size=1024 * 64):
-                from PyQt6.QtCore import QThread
-                if QThread.currentThread().isInterruptionRequested():
-                    raise JDLOExtractorError("Download interrupted by user.")
-                if chunk:
-                    f.write(chunk)
+        part_dest = dest.with_suffix(dest.suffix + ".part")
+        
+        try:
+            with open(part_dest, "wb") as f:
+                for chunk in resp.iter_content(chunk_size=1024 * 64):
+                    from PyQt6.QtCore import QThread
+                    if QThread.currentThread().isInterruptionRequested():
+                        raise JDLOExtractorError("Download interrupted by user.")
+                    if chunk:
+                        f.write(chunk)
+            
+            # Atomic rename on success
+            part_dest.replace(dest)
+        except Exception as e:
+            # Clean up the partial file if something went wrong
+            part_dest.unlink(missing_ok=True)
+            raise e
 
     def extract(self, output_dir: Path) -> Path:
         if not self._codenames:

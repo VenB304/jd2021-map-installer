@@ -9,8 +9,11 @@ from __future__ import annotations
 
 import logging
 import shutil
+import json
 from pathlib import Path
 from typing import Dict, Optional
+
+from jd2021_installer.parsers.normalizer import load_ckd
 
 from jd2021_installer.core.exceptions import DownloadError
 from jd2021_installer.extractors.base import BaseExtractor
@@ -149,7 +152,51 @@ class ManualExtractor(BaseExtractor):
             self._warn(f"Manual optional directory missing ({label}): {p}")
 
     def _resolve_root_dir(self, root: Path) -> Path:
-        """Apply source-type specific root resolution for manual mode."""
+        """Resolve an IPK-structured root to the inner map directory.
+
+        If the root contains ``world/maps/<codename>/``, return that inner
+        path so downstream copytree operations don't create broken nested
+        structures like ``output/Codename/world/maps/Codename/``.
+
+        For non-IPK roots (HTML-downloaded folders, flat layouts), the
+        original root is returned unchanged.
+        """
+        if not self._has_ipk_structure(root):
+            return root
+
+        codename = self._codename
+        if not codename:
+            return root
+
+        # Try world/maps/<codename>/ first (standard layout)
+        world_maps = root / "world" / "maps"
+        if world_maps.is_dir():
+            # Case-insensitive match
+            for d in world_maps.iterdir():
+                if d.is_dir() and d.name.lower() == codename.lower():
+                    logger.debug(
+                        "Resolved IPK root to inner map dir: %s -> %s",
+                        root, d,
+                    )
+                    return d
+
+        # Try world/jd20XX/<codename>/ (legacy bundle layout)
+        world_root = root / "world"
+        if world_root.is_dir():
+            for jd_dir in world_root.iterdir():
+                if not jd_dir.is_dir():
+                    continue
+                name = jd_dir.name.lower()
+                if not name.startswith("jd") or not name[2:].isdigit():
+                    continue
+                for d in jd_dir.iterdir():
+                    if d.is_dir() and d.name.lower() == codename.lower():
+                        logger.debug(
+                            "Resolved legacy IPK root to inner map dir: %s -> %s",
+                            root, d,
+                        )
+                        return d
+
         return root
 
     def is_ipk_source(self) -> bool:
@@ -189,10 +236,11 @@ class ManualExtractor(BaseExtractor):
             return
 
         self.bundle_maps = candidates
+        self._is_multi_map = len(candidates) > 1
 
         if not self._codename:
             self._codename = candidates[0]
-            if len(candidates) > 1:
+            if self._is_multi_map:
                 logger.warning(
                     "Manual IPK source contains multiple maps; auto-selected first candidate '%s'.",
                     self._codename,
@@ -294,18 +342,87 @@ class ManualExtractor(BaseExtractor):
             dirs:     Dict of logical name → absolute directory path for assets (moves, pictos, etc).
         """
         inferred_codename = codename.strip() if codename else ""
-        if not inferred_codename and root_dir:
-            inferred_codename = Path(root_dir).name.strip()
+        self._root_dir = Path(root_dir) if root_dir else None
+
+        if not inferred_codename and self._root_dir and self._root_dir.is_dir():
+            # Try to scrape the codename from metadata (songdesc or JDNext map.json)
+            inferred_codename = self._infer_codename_from_metadata(self._root_dir)
+            if not inferred_codename:
+                inferred_codename = self._root_dir.name.strip()
+
         self._codename = inferred_codename
         self._source_type = source_type.strip().lower() if source_type else "auto"
-        self._root_dir = Path(root_dir) if root_dir else None
         self._files = files or {}
         self._dirs = dirs or {}
         self._warnings: list[str] = []
         self.bundle_maps: list[str] = []
+        self._is_multi_map = False
+
+    def _infer_codename_from_metadata(self, root: Path) -> str:
+        # Try JD2021/JDNext songdesc.tpl.ckd first
+        for p in root.rglob("*songdesc*.tpl.ckd"):
+            try:
+                data = load_ckd(p)
+                if isinstance(data, dict) and "COMPONENTS" in data:
+                    for comp in data["COMPONENTS"]:
+                        if "MapName" in comp and comp["MapName"]:
+                            return comp["MapName"].strip()
+            except Exception:
+                pass
+
+        # Try JDNext map.json
+        for p in root.rglob("map.json"):
+            try:
+                with open(p, "r", encoding="utf-8") as f:
+                    data = json.load(f)
+                if "mapName" in data and data["mapName"]:
+                    return data["mapName"].strip()
+            except Exception:
+                pass
+
+        # Try jdnext_metadata.json
+        for p in root.rglob("jdnext_metadata.json"):
+            try:
+                with open(p, "r", encoding="utf-8") as f:
+                    data = json.load(f)
+                if "MapName" in data and data["MapName"]:
+                    return data["MapName"].strip()
+            except Exception:
+                pass
+
+        return ""
 
     def get_codename(self) -> Optional[str]:
         return self._codename or None
+
+    def get_source_dir(self) -> Optional[Path]:
+        """Return the user-selected root directory as the primary source."""
+        return self._root_dir
+
+    # Map file override types to their canonical subdirectory within the
+    # assembled extraction output.  Files are placed here so the normalizer
+    # and install pipeline find them in the expected locations.
+    _FILE_SUBDIRS: dict[str, str] = {
+        "audio": ".",
+        "video": ".",
+        "mtrack": ".",
+        "sdesc": ".",
+        "dtape": ".",
+        "ktape": ".",
+        "mseq": ".",
+        # JDU MenuArt individual textures → menuart/textures/
+        "jdu_menuart_cover_generic": "menuart/textures",
+        "jdu_menuart_cover_online": "menuart/textures",
+        "jdu_menuart_banner": "menuart/textures",
+        "jdu_menuart_banner_bkg": "menuart/textures",
+        "jdu_menuart_map_bkg": "menuart/textures",
+        "jdu_menuart_cover_albumcoach": "menuart/textures",
+        "jdu_menuart_cover_albumbkg": "menuart/textures",
+        "jdu_menuart_coach1": "menuart/textures",
+        "jdu_menuart_coach2": "menuart/textures",
+        "jdu_menuart_coach3": "menuart/textures",
+        "jdu_menuart_coach4": "menuart/textures",
+    }
 
     def extract(self, output_dir: Path) -> Path:
         """Copy manual files to the extraction output_dir.
@@ -314,20 +431,28 @@ class ManualExtractor(BaseExtractor):
         we can simply return the root folder as the extracted data.
         Otherwise, we assemble a clean directory.
         """
+        # Resolve root: for IPK-structured folders this resolves into
+        # the inner world/maps/<codename>/ directory to prevent nesting.
+        resolved_root = None
+        if self._root_dir and self._root_dir.is_dir():
+            # Validate IPK root on the *original* root before resolution
+            # so bundle_maps discovery operates on the full tree.
+            self._validate_ipk_root(self._root_dir)
+            resolved_root = self._resolve_root_dir(self._root_dir)
+
         # If there are NO explicit files/dirs configured but there IS a root,
         # just yield the root directly as the extraction source for the normalizer.
-        resolved_root = self._resolve_root_dir(self._root_dir) if self._root_dir and self._root_dir.is_dir() else None
-        if resolved_root:
-            self._validate_ipk_root(resolved_root)
-
         if resolved_root and not any(self._files.values()) and not any(self._dirs.values()):
-            self._validate_root_source_readiness(resolved_root)
+            # For root-only mode, pass the *original* root (not resolved)
+            # so the normalizer's own _resolve_map_source_dir can handle
+            # both IPK and flat layouts consistently.
+            self._validate_root_source_readiness(self._root_dir)
             logger.info(
                 "Manual extraction using root dir directly (%s): %s",
                 self._source_type,
-                resolved_root,
+                self._root_dir,
             )
-            return resolved_root
+            return self._root_dir
 
         if not self._codename:
             raise DownloadError("Codename is required for manual mode.")
@@ -336,23 +461,29 @@ class ManualExtractor(BaseExtractor):
 
         map_output_dir = output_dir / self._codename
         map_output_dir.mkdir(parents=True, exist_ok=True)
-        
+
         logger.debug("Assembling manual files into %s (source_type=%s)", map_output_dir, self._source_type)
 
-        # Base case: copy everything from root if provided, then overwrite with specific files
+        # Base case: copy the *resolved* root contents (inner map dir
+        # for IPK layouts, or the original root for flat layouts).
+        # This prevents the old nesting bug where copytree(outer_root)
+        # would create output/Codename/world/maps/Codename/.
         if resolved_root:
-            logger.debug("Copying contents of root dir %s", resolved_root)
+            logger.debug("Copying contents of resolved root dir %s", resolved_root)
             shutil.copytree(resolved_root, map_output_dir, dirs_exist_ok=True)
 
-        # Copy specific files
+        # Copy override files into their canonical subdirectories.
         for ftype, path_str in self._files.items():
             if not path_str:
                 continue
             src = Path(path_str)
             if src.is_file():
-                dest = map_output_dir / src.name
+                subdir = self._FILE_SUBDIRS.get(ftype, ".")
+                dest_parent = map_output_dir / subdir if subdir != "." else map_output_dir
+                dest_parent.mkdir(parents=True, exist_ok=True)
+                dest = dest_parent / src.name
                 shutil.copy2(src, dest)
-                logger.debug("Copied manual file: %s", src.name)
+                logger.debug("Copied manual file (%s): %s -> %s", ftype, src.name, dest_parent)
             else:
                 self._warn(f"Manual file not found and skipped ({ftype}): {src}")
 

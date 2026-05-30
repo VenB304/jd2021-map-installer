@@ -79,11 +79,7 @@ def _run_assetstudio_export(
     if configured_cli:
         candidates.append(Path(configured_cli).expanduser())
 
-    configured_root = getattr(config, "third_party_tools_root", None)
-    third_party_roots: list[Path] = []
-    if configured_root:
-        third_party_roots.append(Path(configured_root).expanduser())
-    third_party_roots.append(repo_root / "tools")
+    third_party_roots: list[Path] = [repo_root / "tools"]
 
     seen: set[str] = set()
     for root in third_party_roots:

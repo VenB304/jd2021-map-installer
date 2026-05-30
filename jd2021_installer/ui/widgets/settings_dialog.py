@@ -32,8 +32,7 @@ from PyQt6.QtWidgets import (
 from jd2021_installer.core.config import AppConfig
 from jd2021_installer.core.clean_data import clean_game_data
 from jd2021_installer.core.localization_update import (
-    resolve_console_save_path,
-    update_console_localization,
+    update_localization,
 )
 from jd2021_installer.core.songdb_update import (
     extract_jdnext_songdb_codenames,
@@ -61,7 +60,11 @@ class _SettingsTaskWorker(QObject):
     def run(self) -> None:
         try:
             self.status.emit(self._start_status)
-            result = self._task()
+            import inspect
+            if len(inspect.signature(self._task).parameters) > 0:
+                result = self._task(self.status.emit)
+            else:
+                result = self._task()
             self.finished.emit(result)
         except Exception as exc:
             logger.exception("Settings task failed: %s", exc)
@@ -440,6 +443,57 @@ class SettingsDialog(QDialog):
         install_layout.setContentsMargins(10, 10, 10, 10)
         install_layout.setSpacing(10)
 
+        # Storage Directories section
+        directories_section_label = QLabel("Storage Directories")
+        directories_section_label.setStyleSheet("font-weight: bold; margin-top: 4px;")
+        install_layout.addWidget(directories_section_label)
+
+        directories_form = QFormLayout()
+        directories_form.setLabelAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+        directories_form.setHorizontalSpacing(12)
+        directories_form.setVerticalSpacing(10)
+
+        self.txt_download_root = QLineEdit(str(self._config.download_root))
+        self.txt_download_root.setPlaceholderText("./mapDownloads")
+        self.txt_download_root.setToolTip("Directory where maps are downloaded before installation.")
+        directories_form.addRow(
+            "Downloads directory:",
+            self._make_path_picker_row(
+                self.txt_download_root,
+                browse_title="Select Downloads Directory",
+                select_directory=True,
+            ),
+        )
+
+        self.txt_cache_dir = QLineEdit(str(self._config.cache_directory))
+        self.txt_cache_dir.setPlaceholderText("./cache")
+        self.txt_cache_dir.setToolTip("Directory used to store cached metadata and assets.")
+        directories_form.addRow(
+            "Cache directory:",
+            self._make_path_picker_row(
+                self.txt_cache_dir,
+                browse_title="Select Cache Directory",
+                select_directory=True,
+            ),
+        )
+
+        self.txt_temp_dir = QLineEdit(str(self._config.temp_directory))
+        self.txt_temp_dir.setPlaceholderText("./temp")
+        self.txt_temp_dir.setToolTip("Temporary directory used during extraction and processing.")
+        directories_form.addRow(
+            "Temp directory:",
+            self._make_path_picker_row(
+                self.txt_temp_dir,
+                browse_title="Select Temp Directory",
+                select_directory=True,
+            ),
+        )
+        install_layout.addLayout(directories_form)
+
+        behavior_section_label = QLabel("Map Processing")
+        behavior_section_label.setStyleSheet("font-weight: bold; margin-top: 8px;")
+        install_layout.addWidget(behavior_section_label)
+
         install_form = QFormLayout()
         install_form.setLabelAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
         install_form.setHorizontalSpacing(12)
@@ -731,22 +785,6 @@ class SettingsDialog(QDialog):
             ),
         )
 
-        third_party_root = getattr(self._config, "third_party_tools_root", None)
-        self.txt_third_party_root = QLineEdit(str(third_party_root) if third_party_root else "")
-        self.txt_third_party_root.setPlaceholderText("Auto (./tools)")
-        self.txt_third_party_root.setToolTip(
-            "Root folder for JDNext helper tools.\n"
-            "Leave empty for the default ./tools path."
-        )
-        tools_form.addRow(
-            "Third-party tools folder:",
-            self._make_path_picker_row(
-                self.txt_third_party_root,
-                browse_title="Select third-party tools folder",
-                select_directory=True,
-            ),
-        )
-
         advanced_layout.addLayout(tools_form)
 
         # ----- Service Connections section -----
@@ -955,10 +993,9 @@ class SettingsDialog(QDialog):
         import_form.setVerticalSpacing(10)
 
         self.btn_update_localization = QPushButton("Select Localization JSON")
-        self.btn_update_localization.setEnabled(False)
         self.btn_update_localization.clicked.connect(self._on_update_localization)
         self.btn_update_localization.setToolTip(
-            "Updates in-game text such as 'Alternate Version' or 'Official Choreo'. (Currently disabled)"
+            "Updates in-game text such as 'Alternate Version' or 'Official Choreo'."
         )
         l_layout1 = QHBoxLayout()
         l_layout1.setContentsMargins(0, 0, 0, 0)
@@ -1158,6 +1195,24 @@ class SettingsDialog(QDialog):
         layout.addLayout(btn_layout)
 
     def _on_save(self) -> None:
+        new_dl = Path(self.txt_download_root.text().strip() or "./mapDownloads")
+        new_cache = Path(self.txt_cache_dir.text().strip() or "./cache")
+        new_temp = Path(self.txt_temp_dir.text().strip() or "./temp")
+
+        moves = []
+        if new_dl != self._config.download_root:
+            dl_path = self._resolve_config_path(self._config.download_root)
+            if dl_path.exists() and any(True for _ in dl_path.iterdir()):
+                moves.append((dl_path, self._resolve_config_path(new_dl)))
+        if new_cache != self._config.cache_directory:
+            cache_path = self._resolve_config_path(self._config.cache_directory)
+            if cache_path.exists() and any(True for _ in cache_path.iterdir()):
+                moves.append((cache_path, self._resolve_config_path(new_cache)))
+
+        self._config.download_root = new_dl
+        self._config.cache_directory = new_cache
+        self._config.temp_directory = new_temp
+
         self._config.skip_preflight = self.cb_skip_preflight.isChecked()
         self._config.enable_legacy_sync_refinement = self.cb_legacy_sync.isChecked()
         self._config.suppress_offset_notification = self.cb_suppress.isChecked()
@@ -1190,10 +1245,10 @@ class SettingsDialog(QDialog):
         self._config.ffmpeg_path = self.txt_ffmpeg_path.text().strip() or "ffmpeg"
         self._config.ffprobe_path = self.txt_ffprobe_path.text().strip() or "ffprobe"
         self._config.vgmstream_path = self.txt_vgmstream_path.text().strip() or None
-        self._config.assetstudio_cli_path = self.txt_assetstudio_cli.text().strip() or None
-        third_party_root_text = self.txt_third_party_root.text().strip()
-        self._config.third_party_tools_root = (
-            Path(third_party_root_text).expanduser() if third_party_root_text else None
+        self._config.assetstudio_cli_path = (
+            Path(self.txt_assetstudio_cli.text().strip())
+            if self.txt_assetstudio_cli.text().strip()
+            else None
         )
         self._config.download_timeout_s = self.spin_download_timeout.value()
         self._config.max_retries = self.spin_max_retries.value()
@@ -1210,6 +1265,36 @@ class SettingsDialog(QDialog):
         if selected_branch:
             self._config.update_branch = selected_branch
         
+        if moves:
+            reply = QMessageBox.question(
+                self,
+                "Migrate Files?",
+                "You have changed one or more storage directories.\n\n"
+                "Would you like to automatically move your existing files from the old locations to the new locations?",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            )
+            if reply == QMessageBox.StandardButton.Yes:
+                def _task(set_status: Callable[[str], None]) -> None:
+                    for src, dst in moves:
+                        set_status(f"Moving {src.name}...")
+                        if dst.exists():
+                            shutil.copytree(src, dst, dirs_exist_ok=True)
+                            shutil.rmtree(src)
+                        else:
+                            shutil.move(src, dst)
+                
+                def _on_success(_: object) -> None:
+                    self.accept()
+                
+                self._run_background_task(
+                    window_title="Migrating Files",
+                    initial_status="Moving files to new storage locations...",
+                    task=_task,
+                    on_success=_on_success,
+                    error_title="Migration Failed",
+                )
+                return
+
         self.accept()
 
     # ==================================================================
@@ -1412,46 +1497,38 @@ class SettingsDialog(QDialog):
             "Confirm Localization Update",
             "Use this file to update in-game localization?\n\n"
             f"Source: {selected_file}\n\n"
-            "A backup of ConsoleSave.json will be created before updating.",
+            "This will update ConsoleSave.json and any relevant .loc8 files.",
             QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
             QMessageBox.StandardButton.No,
         )
         if confirm != QMessageBox.StandardButton.Yes:
             return
 
-        try:
-            console_save_path = resolve_console_save_path(Path(self._config.game_directory))
-        except Exception as exc:
-            logger.exception("Localization update failed: %s", exc)
-            QMessageBox.critical(
-                self,
-                "Localization Update Failed",
-                f"Could not update localization:\n{exc}",
-            )
-            return
-
         def _task() -> object:
-            return update_console_localization(Path(selected_file), console_save_path)
+            return update_localization(Path(selected_file), Path(self._config.game_directory))
 
         def _on_success(result: object) -> None:
             logger.info(
-                "Localization updated: %s updated, %s added, backup=%s",
+                "Localization updated: %s updated, %s added, %s loc8 files updated",
                 result.updated_existing,
                 result.added_new,
-                result.backup_path,
+                result.updated_loc8_files,
             )
+            backup_msg = f"ConsoleSave Backup: {result.backup_path}\n" if result.backup_path else ""
             QMessageBox.information(
                 self,
                 "Localization Updated",
                 "Localization update completed successfully.\n\n"
-                f"Updated IDs: {result.updated_existing}\n"
-                f"New IDs: {result.added_new}\n\n"
-                f"Backup: {result.backup_path}",
+                f"Updated Console IDs: {result.updated_existing}\n"
+                f"New Console IDs: {result.added_new}\n"
+                f"Updated loc8 files: {result.updated_loc8_files}\n"
+                f"loc8 IDs patched: {result.loc8_added_or_updated}\n\n"
+                f"{backup_msg}",
             )
 
         self._run_background_task(
             window_title="Updating Localization",
-            initial_status="Updating ConsoleSave localization",
+            initial_status="Updating ConsoleSave and loc8 localization",
             task=_task,
             on_success=_on_success,
             error_title="Localization Update Failed",

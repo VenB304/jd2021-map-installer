@@ -58,7 +58,7 @@ class InstallSummary:
             return "Required files are missing. Install is risky and may not be playable."
         if self.missing_optional_count > 0:
             return "Only optional files are missing. Install should work with reduced polish."
-        return "All required and optional checklist items were found."
+        return "All required and optional checklist items were fulfilled."
 
 
 def _exists_any(base_dir: Path, rel_candidates: list[str]) -> bool:

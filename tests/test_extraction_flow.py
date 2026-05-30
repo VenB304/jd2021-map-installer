@@ -387,8 +387,8 @@ def test_is_valid_embed_response_rejects_other_user_codename_response():
         '<div><a href="https://jd-s3.cdn.ubi.com/public/map/OtherMap/OtherMap_ULTRA.hd.webm">video</a></div>'
     )
 
-    assert _is_valid_embed_response(other_user_html) is True
-    assert _is_valid_embed_response(other_user_html, expected_codename="MyMap") is False
+    assert _is_valid_embed_response(other_user_html)[0] is True
+    assert _is_valid_embed_response(other_user_html, expected_codename="MyMap")[0] is False
 
 
 def test_is_valid_embed_response_allows_textual_codename_fallback():
@@ -403,7 +403,7 @@ def test_is_valid_embed_response_allows_textual_codename_fallback():
         require_gameplay_video=True,
         expected_codename="Judas",
         allow_textual_codename_fallback=True,
-    ) is True
+    )[0] is True
 
 
 def test_extract_embed_error_message_from_error_field():
