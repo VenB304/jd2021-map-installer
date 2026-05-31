@@ -52,6 +52,7 @@ from PyQt6.QtWidgets import (
     QFileDialog,
     QProgressDialog,
     QSizePolicy,
+    QScrollArea,
 )
 
 from jd2021_installer.core.config import AppConfig
@@ -1569,19 +1570,41 @@ class MainWindow(QMainWindow):
             return
 
         code_lines = "\n".join(f"- {code}" for code in selected_codes)
-        confirm = QMessageBox.question(
-            self,
-            "Confirm Uninstall",
-            (
-                f"Remove {len(selected_codes)} selected map(s)?\n\n"
-                f"{code_lines}\n\n"
-                "This will delete map files and cooked cache, unregister from SkuScene, "
-                "remove installer cache, and remove each map from the readjust index."
-            ),
-            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
-            QMessageBox.StandardButton.No,
+        confirm = QDialog(self)
+        confirm.setWindowTitle("Confirm Uninstall")
+        confirm.setMinimumSize(450, 350)
+        
+        layout = QVBoxLayout(confirm)
+        
+        lbl_top = QLabel(f"Remove {len(selected_codes)} selected map(s)?")
+        layout.addWidget(lbl_top)
+        
+        scroll = QScrollArea(confirm)
+        scroll.setWidgetResizable(True)
+        lbl_codes = QLabel(code_lines)
+        lbl_codes.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+        scroll.setWidget(lbl_codes)
+        layout.addWidget(scroll)
+        
+        lbl_bottom = QLabel(
+            "This will delete map files and cooked cache, unregister from SkuScene,\n"
+            "remove installer cache, and remove each map from the readjust index."
         )
-        if confirm != QMessageBox.StandardButton.Yes:
+        layout.addWidget(lbl_bottom)
+        
+        btns = QHBoxLayout()
+        btns.addStretch()
+        btn_yes = QPushButton("Yes")
+        btn_yes.clicked.connect(confirm.accept)
+        btns.addWidget(btn_yes)
+        btn_no = QPushButton("No")
+        btn_no.clicked.connect(confirm.reject)
+        btns.addWidget(btn_no)
+        btn_no.setDefault(True)
+        
+        layout.addLayout(btns)
+        
+        if confirm.exec() != QDialog.DialogCode.Accepted:
             return
 
         self._preview_widget.stop()
