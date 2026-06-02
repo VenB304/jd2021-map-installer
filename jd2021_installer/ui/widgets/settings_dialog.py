@@ -555,12 +555,12 @@ class SettingsDialog(QDialog):
 
         install_layout.addLayout(install_form)
 
-        self.cb_convert_jdnext_gestures = QCheckBox("Convert JDNext motion data for Xbox 360 compatibility (coming soon)")
-        self.cb_convert_jdnext_gestures.setChecked(False)
-        self.cb_convert_jdnext_gestures.setEnabled(False)
+        self.cb_convert_jdnext_gestures = QCheckBox("Convert JDNext camera motion data for Kinect compatibility")
+        self.cb_convert_jdnext_gestures.setChecked(getattr(self._config, "convert_jdnext_gestures", False))
+        self.cb_convert_jdnext_gestures.setEnabled(True)
         self.cb_convert_jdnext_gestures.setToolTip(
-            "This feature is not yet ready.\n"
-            "Gesture conversion is still experimental and currently disabled."
+            "Converts JDNext camera gestures into kinect gestures.\n"
+            "This feature is not ready yet."
         )
         install_layout.addWidget(self.cb_convert_jdnext_gestures)
 
