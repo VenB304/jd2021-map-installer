@@ -419,9 +419,10 @@ def _download_with_curl_resolve(url: str, target: Path, timeout_s: int) -> bool:
 
     target.parent.mkdir(parents=True, exist_ok=True)
     try:
+        _curl_cmd = "curl.exe" if platform.system().lower() == "windows" else "curl"
         completed = subprocess.run(
             [
-                "curl.exe",
+                _curl_cmd,
                 "--location",
                 "--silent",
                 "--show-error",

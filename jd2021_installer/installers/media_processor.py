@@ -880,9 +880,10 @@ def synthesize_jdnext_cover_art(
 # ---------------------------------------------------------------------------
 
 # Default paths relative to project root (V1 parity)
+_vgm_ext = ".exe" if os.name == "nt" else ""
 VGMSTREAM_DEFAULT_PATHS = (
-    Path("tools/vgmstream/vgmstream-cli.exe"),
-    Path("tools/vgmstream/vgmstream.exe"),
+    Path(f"tools/vgmstream/vgmstream-cli{_vgm_ext}"),
+    Path(f"tools/vgmstream/vgmstream{_vgm_ext}"),
 )
 
 
@@ -902,7 +903,8 @@ def _resolve_vgmstream_binary(vgmstream_path: Optional[str | Path] = None) -> Pa
     repo_root = Path(__file__).resolve().parents[2]
     candidates = [repo_root / rel for rel in VGMSTREAM_DEFAULT_PATHS]
 
-    for command_name in ("vgmstream-cli.exe", "vgmstream.exe"):
+    _vgm_ext = ".exe" if os.name == "nt" else ""
+    for command_name in (f"vgmstream-cli{_vgm_ext}", f"vgmstream{_vgm_ext}"):
         on_path = shutil.which(command_name)
         if on_path:
             candidates.append(Path(on_path))

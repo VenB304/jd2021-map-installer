@@ -729,20 +729,22 @@ class MainWindow(QMainWindow):
 
             return None
 
+        _vgm_ext = ".exe" if sys.platform == "win32" else ""
         resolved_vgmstream = _resolve_configured_tool(
             getattr(self._config, "vgmstream_path", None),
             [
-                repo_root / "tools" / "vgmstream" / "vgmstream-cli.exe",
-                repo_root / "tools" / "vgmstream" / "vgmstream.exe",
+                repo_root / "tools" / "vgmstream" / f"vgmstream-cli{_vgm_ext}",
+                repo_root / "tools" / "vgmstream" / f"vgmstream{_vgm_ext}",
             ],
-            command_names=("vgmstream-cli.exe", "vgmstream.exe"),
+            command_names=(f"vgmstream-cli{_vgm_ext}", f"vgmstream{_vgm_ext}"),
         )
+        _as_ext = ".exe" if sys.platform == "win32" else ""
         resolved_assetstudio = _resolve_configured_tool(
             getattr(self._config, "assetstudio_cli_path", None),
             [
-                repo_root / "tools" / "Unity2UbiArt" / "bin" / "AssetStudioModCLI" / "AssetStudioModCLI.exe",
-                repo_root / "tools" / "AssetStudioModCLI" / "AssetStudioModCLI.exe",
-                repo_root / "tools" / "AssetStudio" / "AssetStudioModCLI.exe",
+                repo_root / "tools" / "Unity2UbiArt" / "bin" / "AssetStudioModCLI" / f"AssetStudioModCLI{_as_ext}",
+                repo_root / "tools" / "AssetStudioModCLI" / f"AssetStudioModCLI{_as_ext}",
+                repo_root / "tools" / "AssetStudio" / f"AssetStudioModCLI{_as_ext}",
             ],
         )
 
