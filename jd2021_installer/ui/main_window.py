@@ -598,7 +598,13 @@ class MainWindow(QMainWindow):
 
         try:
             with sync_playwright() as p:
-                browser = p.chromium.launch(headless=True)
+                kwargs = {"headless": True}
+                import sys, shutil
+                if sys.platform != "win32":
+                    sys_chrom = shutil.which("chromium-browser") or shutil.which("chromium")
+                    if sys_chrom:
+                        kwargs["executable_path"] = sys_chrom
+                browser = p.chromium.launch(**kwargs)
                 browser.close()
             return True, ""
         except Exception as exc:

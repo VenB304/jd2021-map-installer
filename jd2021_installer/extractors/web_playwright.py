@@ -2278,12 +2278,18 @@ class WebPlaywrightExtractor(BaseExtractor):
             _log("Background mode: browser will run off-screen.")
 
         async with async_playwright() as p:
-            context = await p.chromium.launch_persistent_context(
-                profile_dir,
-                headless=False,
-                viewport={"width": 1280, "height": 800},
-                args=launch_args,
-            )
+            kwargs = {
+                "user_data_dir": profile_dir,
+                "args": launch_args,
+                "headless": False,
+                "viewport": {"width": 1280, "height": 800},
+            }
+            import sys, shutil
+            if sys.platform != "win32":
+                sys_chrom = shutil.which("chromium-browser") or shutil.which("chromium")
+                if sys_chrom:
+                    kwargs["executable_path"] = sys_chrom
+            context = await p.chromium.launch_persistent_context(**kwargs)
 
             page = context.pages[0] if context.pages else await context.new_page()
 
@@ -2456,7 +2462,13 @@ class WebPlaywrightExtractor(BaseExtractor):
             )
 
         async with async_playwright() as p:
-            browser = await p.chromium.launch(headless=True)
+            kwargs = {"headless": True}
+            import sys, shutil
+            if sys.platform != "win32":
+                sys_chrom = shutil.which("chromium-browser") or shutil.which("chromium")
+                if sys_chrom:
+                    kwargs["executable_path"] = sys_chrom
+            browser = await p.chromium.launch(**kwargs)
             page = await browser.new_page()
             await page.goto(page_url, wait_until="networkidle")
             content = await page.content()
