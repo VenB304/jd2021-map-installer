@@ -50,7 +50,7 @@ ok "Python dependencies installed."
 # ---------------------------------------------------------------------------
 echo
 info "[2/5] Installing Chromium for Playwright..."
-python3 -m playwright install chromium
+python3 -m playwright install chromium || warn "playwright install chromium failed (non-fatal, may need system chromium)"
 # Install system deps required by Playwright's bundled Chromium.
 if command -v sudo &>/dev/null; then
     sudo python3 -m playwright install-deps chromium || warn "playwright install-deps failed (non-fatal)."
