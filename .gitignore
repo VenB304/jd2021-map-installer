@@ -20,7 +20,20 @@ tools/
 map_readjust_index*
 jdnext_songdb_synth*
 3rdPartyTools/
-jd2021-map-installer.code-workspace
 LAST_FAILED_EMBED.html
 run.bat
 run.sh
+.github/copilot-instructions.md
+.agents/
+jd2021-map-installer.code-workspace
+jd2021-map-installer - Copy.code-workspace
+
+# Packaging & Build
+build/
+dist/
+*.spec
+build.bat
+
+# Testing & Coverage
+.coverage
+htmlcov/

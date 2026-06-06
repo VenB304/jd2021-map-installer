@@ -173,6 +173,54 @@ class TestMenuArt(unittest.TestCase):
         self.assertEqual(copied, 2)
         self.assertTrue((target / "MenuArt" / "Actors" / "TestMap_cover_generic.act").exists())
         self.assertTrue((target / "MenuArt" / "TestMap_menuart.isc").exists())
+    def test_install_menuart_companion_skips_binary_cooked_act(self):
+        """Regression test: binary-cooked .act.ckd from IPK must not overwrite text .act."""
+        src = self.test_dir / "menuart_src"
+        src.mkdir(parents=True)
+
+        # Simulate a binary-cooked .act.ckd (has null bytes like real IPK payloads)
+        binary_act = src / "TestMap_coach_1.act.ckd"
+        binary_act.write_bytes(
+            b"\x00\x00\x00\x00\x3f\x80\x00\x00"
+            b"tpl_materialgraphiccomponent2d.tpl\x00"
+            b"enginedata/actortemplates/\x00"
+        )
+
+        target = self.test_dir / "target"
+        copied = _install_menuart_companion_assets([src], target)
+
+        # Binary payload should be skipped
+        self.assertEqual(copied, 0)
+        self.assertFalse(
+            (target / "MenuArt" / "Actors" / "TestMap_coach_1.act").exists(),
+            "Binary-cooked .act.ckd should NOT be installed as .act",
+        )
+
+    def test_install_menuart_companion_skips_existing_destination(self):
+        """Existing text .act from game_writer must not be overwritten by CKD copy."""
+        src = self.test_dir / "menuart_src"
+        src.mkdir(parents=True)
+
+        # Text payload that would normally be installable
+        text_ckd = src / "TestMap_cover_generic.act.ckd"
+        text_ckd.write_text("params = { replacement }", encoding="utf-8")
+
+        target = self.test_dir / "target"
+        actor_dir = target / "MenuArt" / "Actors"
+        actor_dir.mkdir(parents=True)
+
+        # Pre-existing .act from game_writer
+        existing = actor_dir / "TestMap_cover_generic.act"
+        existing.write_text("params = { original }", encoding="utf-8")
+
+        copied = _install_menuart_companion_assets([src], target)
+
+        self.assertEqual(copied, 0)
+        # Original content must be preserved
+        self.assertEqual(
+            existing.read_text(encoding="utf-8"),
+            "params = { original }",
+        )
 
 if __name__ == "__main__":
     unittest.main()

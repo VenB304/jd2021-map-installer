@@ -18,6 +18,7 @@ from typing import Optional
 from PyQt6.QtCore import Qt
 from PyQt6.QtGui import QColor
 from PyQt6.QtWidgets import (
+    QAbstractItemView,
     QLabel,
     QListWidget,
     QListWidgetItem,
@@ -145,6 +146,9 @@ class ProgressLogWidget(QWidget):
         }
         default_colour = self.palette().color(self.foregroundRole())
         item.setForeground(colour_map.get(status, default_colour))
+
+        if status != StepStatus.WAITING:
+            self._checklist.scrollToItem(item, QAbstractItemView.ScrollHint.PositionAtCenter)
 
     # ------------------------------------------------------------------
     # Progress bar API

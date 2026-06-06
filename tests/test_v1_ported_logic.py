@@ -23,12 +23,14 @@ class TestV1PortedLogic(unittest.TestCase):
             ("tgif_durango.ipk", "tgif"),
             ("badromance_pc.ipk", "badromance"),
             ("Starships_nx.ipk", "Starships"),
+            ("nailships_ps3.ipk", "nailships"),
+            ("tgif_wiiu.ipk", "tgif"),
         ]
         
         # Mock the extract_ipk function in the module
         import jd2021_installer.extractors.archive_ipk as archive_ipk
         original_extract = archive_ipk.extract_ipk
-        archive_ipk.extract_ipk = lambda f, o: o
+        archive_ipk.extract_ipk = lambda f, o: (o, [])
         
         try:
             for filename, expected in test_cases:

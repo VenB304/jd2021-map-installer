@@ -282,20 +282,29 @@ def extract_ipk(
                     logger.debug("IPK: Extracting %s...", status)
 
                 offset = _unpack(chunk["offset"]["value"])
-                data_size = _unpack(chunk["size"]["value"])
+                uncompressed_size = _unpack(chunk["size"]["value"])
+                compressed_size = _unpack(chunk["compressed_size"]["value"])
+                disk_size = compressed_size if compressed_size > 0 else uncompressed_size
 
                 path_ori_raw = chunk["path_name"]["value"].decode()
-                if os.path.basename(path_ori_raw) == path_ori_raw:
-                    file_path = output_path / chunk["file_name"]["value"].decode()
-                    file_name = chunk["path_name"]["value"].decode()
+                file_ori_raw = chunk["file_name"]["value"].decode()
+                
+                # Check if fields are swapped (if file contains slashes but path doesn't)
+                if ("/" in file_ori_raw or "\\" in file_ori_raw) and not ("/" in path_ori_raw or "\\" in path_ori_raw):
+                    file_path = output_path / file_ori_raw
+                    file_name = path_ori_raw
                 else:
-                    file_path = output_path / chunk["path_name"]["value"].decode()
-                    file_name = chunk["file_name"]["value"].decode()
+                    file_path = output_path / path_ori_raw
+                    file_name = file_ori_raw
 
                 # Path traversal protection
                 resolved = os.path.normpath(os.path.join(str(file_path), file_name))
                 if not resolved.startswith(str(output_path)):
                     logger.debug("Skipping path-traversal entry: %s", resolved)
+                    continue
+                    
+                if os.path.abspath(resolved) == os.path.abspath(target_file):
+                    logger.debug("Skipping self-referential entry that would overwrite the source IPK: %s", resolved)
                     continue
 
                 f.seek(offset + base_offset)
@@ -304,7 +313,7 @@ def extract_ipk(
                     created_dirs.add(file_path)
 
                 with open(file_path / file_name, "wb") as ff:
-                    _decompress_to_file(f, ff, data_size)
+                    _decompress_to_file(f, ff, disk_size)
                 extracted_files += 1
 
         logger.info(
@@ -430,6 +439,46 @@ def _detect_maps_in_dir(directory: Path) -> list[str]:
     return sorted({c for c in codenames if c and c.lower() not in ignore_list})
 
 
+def find_bundle_ipks(
+    folder: Path,
+    exclude: Optional[Path] = None,
+) -> tuple[Optional[Path], Optional[Path]]:
+    """Locate bundle and bundlelogic IPKs within a folder.
+
+    Returns (bundle_ipk, bundlelogic_ipk); any entry can be None.
+    """
+    if not folder.exists() or not folder.is_dir():
+        return None, None
+
+    exclude_resolved = exclude.resolve() if exclude else None
+    ipks = sorted(
+        [p for p in folder.iterdir() if p.is_file() and p.suffix.lower() == ".ipk"],
+        key=lambda p: p.name.lower(),
+    )
+
+    bundle_ipk: Optional[Path] = None
+    bundlelogic_ipk: Optional[Path] = None
+    for path in ipks:
+        if exclude_resolved and path.resolve() == exclude_resolved:
+            continue
+        name = path.name.lower()
+        if "bundlelogic" in name:
+            if bundlelogic_ipk is None:
+                bundlelogic_ipk = path
+            continue
+        if "bundle" in name:
+            is_chunk = bool(re.search(r"bundle_\d+(_|\.ipk)", name))
+            if bundle_ipk is None:
+                bundle_ipk = path
+            elif not is_chunk:
+                existing_name = bundle_ipk.name.lower()
+                existing_is_chunk = bool(re.search(r"bundle_\d+(_|\.ipk)", existing_name))
+                if existing_is_chunk:
+                    bundle_ipk = path
+
+    return bundle_ipk, bundlelogic_ipk
+
+
 class ArchiveIPKExtractor(BaseExtractor):
     """Extractor for IPK archive files."""
 
@@ -467,7 +516,7 @@ class ArchiveIPKExtractor(BaseExtractor):
             # Try to match the codename from the IPK filename
             base = self._ipk_path.stem
             stem = re.sub(
-                r"_(x360|durango|scarlett|nx|orbis|prospero|pc)$",
+                r"_(x360|durango|scarlett|nx|orbis|prospero|pc|ps3|wiiu)$",
                 "",
                 base,
                 flags=re.IGNORECASE,
@@ -484,7 +533,7 @@ class ArchiveIPKExtractor(BaseExtractor):
             # Fallback to filename inference if no maps found in structure
             base = self._ipk_path.stem
             stem = re.sub(
-                r"_(x360|durango|scarlett|nx|orbis|prospero|pc)$",
+                r"_(x360|durango|scarlett|nx|orbis|prospero|pc|ps3|wiiu)$",
                 "",
                 base,
                 flags=re.IGNORECASE,
@@ -499,6 +548,9 @@ class ArchiveIPKExtractor(BaseExtractor):
 
     def get_codename(self) -> Optional[str]:
         return self._codename
+
+    def get_ipk_path(self) -> Path:
+        return self._ipk_path
 
     def get_source_dir(self) -> Path:
         """Return the folder that contains the selected .ipk file."""

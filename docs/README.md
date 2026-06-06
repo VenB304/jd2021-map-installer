@@ -41,6 +41,7 @@ This is the central navigation page for JD2021 Map Installer documentation.
 - [Manual JDU Porting Guide](05_guides/MANUAL_JDU_PORTING_GUIDE.md)
 - [Manual IPK Porting Guide](05_guides/MANUAL_IPK_PORTING_GUIDE.md)
 - [Known Gaps](06_research/KNOWN_GAPS.md)
+- [Camera Gesture Remediation Plan](06_research/CAMERA_GESTURE_REMEDIATION_PLAN.md)
 - [JDU Unused Data Opportunities](06_research/JDU_UNUSED_DATA_OPPORTUNITIES.md)
 - [Third-Party Tools](04_reference/THIRD_PARTY_TOOLS.md)
 

@@ -399,7 +399,11 @@ def test_batch_worker_discovered_maps_respect_selection(tmp_path: Path, monkeypa
 
     monkeypatch.setattr(archive_ipk, "inspect_ipk", lambda _: ["MapA", "MapB"])
     monkeypatch.setattr(archive_ipk.ArchiveIPKExtractor, "extract", lambda self, _: extracted.parent.parent)
-    monkeypatch.setattr(normalizer, "normalize", lambda root, codename=None, search_root=None: _build_map(codename or "MapA"))
+    monkeypatch.setattr(
+        normalizer,
+        "normalize",
+        lambda root, codename=None, search_root=None, supplemental_roots=None: _build_map(codename or "MapA"),
+    )
     installed: list[str] = []
     monkeypatch.setattr(
         BatchInstallWorker,
@@ -437,7 +441,11 @@ def test_batch_worker_progress_is_monotonic(tmp_path: Path, monkeypatch):
 
     monkeypatch.setattr(archive_ipk, "inspect_ipk", lambda _: ["MapA", "MapB"])
     monkeypatch.setattr(archive_ipk.ArchiveIPKExtractor, "extract", lambda self, _: extracted.parent.parent)
-    monkeypatch.setattr(normalizer, "normalize", lambda root, codename=None, search_root=None: _build_map(codename or "MapA"))
+    monkeypatch.setattr(
+        normalizer,
+        "normalize",
+        lambda root, codename=None, search_root=None, supplemental_roots=None: _build_map(codename or "MapA"),
+    )
     monkeypatch.setattr(BatchInstallWorker, "_install_map_synchronously", lambda self, map_data: None)
 
     worker = BatchInstallWorker(
@@ -475,7 +483,7 @@ def test_batch_worker_accepts_html_map_folder(tmp_path: Path, monkeypatch):
     monkeypatch.setattr(
         normalizer,
         "normalize",
-        lambda root, codename=None, search_root=None: _build_map(codename or "MyMap"),
+        lambda root, codename=None, search_root=None, supplemental_roots=None: _build_map(codename or "MyMap"),
     )
 
     installed: list[str] = []
@@ -517,7 +525,7 @@ def test_batch_worker_fetch_codenames_use_multi_map_flow(tmp_path: Path, monkeyp
     monkeypatch.setattr(
         normalizer,
         "normalize",
-        lambda root, codename=None, search_root=None: _build_map(codename or Path(root).name),
+        lambda root, codename=None, search_root=None, supplemental_roots=None: _build_map(codename or Path(root).name),
     )
 
     installed: list[str] = []
@@ -561,7 +569,7 @@ def test_batch_worker_fetch_sets_source_mode_for_sync_install(tmp_path: Path, mo
     monkeypatch.setattr(
         normalizer,
         "normalize",
-        lambda root, codename=None, search_root=None: _build_map(codename or Path(root).name),
+        lambda root, codename=None, search_root=None, supplemental_roots=None: _build_map(codename or Path(root).name),
     )
 
     captured_modes: list[str] = []
@@ -613,7 +621,7 @@ def test_batch_worker_fetch_codenames_ignore_local_batch_scan(tmp_path: Path, mo
     monkeypatch.setattr(
         normalizer,
         "normalize",
-        lambda root, codename=None, search_root=None: _build_map(codename or Path(root).name),
+        lambda root, codename=None, search_root=None, supplemental_roots=None: _build_map(codename or Path(root).name),
     )
 
     installed: list[str] = []
@@ -666,7 +674,7 @@ def test_batch_worker_merges_bundle_map_list_and_skips_duplicates(tmp_path: Path
     monkeypatch.setattr(
         normalizer,
         "normalize",
-        lambda root, codename=None, search_root=None: _build_map(codename or "MapA"),
+        lambda root, codename=None, search_root=None, supplemental_roots=None: _build_map(codename or "MapA"),
     )
 
     installed: list[str] = []

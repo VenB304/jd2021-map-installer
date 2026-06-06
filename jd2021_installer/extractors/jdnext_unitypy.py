@@ -65,11 +65,7 @@ def _load_unitypy(config: AppConfig | None = None) -> Any:
         unitypy = importlib.import_module("UnityPy")
     except ModuleNotFoundError:
         repo_root = Path(__file__).resolve().parents[2]
-        configured_root = getattr(config, "third_party_tools_root", None)
-        local_roots: list[Path] = []
-        if configured_root:
-            local_roots.append(Path(configured_root).expanduser())
-        local_roots.append(repo_root / "tools")
+        local_roots: list[Path] = [repo_root / "tools"]
 
         local_unitypy = None
         for root in local_roots:
@@ -122,7 +118,7 @@ def unpack_jdnext_bundle_with_unitypy(
     Args:
         bundle_path: Path to one downloaded JDNext .bundle file.
         output_dir:  Destination root for extracted diagnostics/artifacts.
-        config:      Optional AppConfig carrying third_party_tools_root.
+        config:      Optional AppConfig carrying configuration.
 
     Returns:
         JDNextUnpackSummary with counts and destination paths.

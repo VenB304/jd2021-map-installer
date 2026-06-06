@@ -32,12 +32,12 @@ from PyQt6.QtWidgets import (
 from jd2021_installer.core.config import AppConfig
 from jd2021_installer.core.clean_data import clean_game_data
 from jd2021_installer.core.localization_update import (
-    resolve_console_save_path,
-    update_console_localization,
+    update_localization,
 )
 from jd2021_installer.core.songdb_update import (
     extract_jdnext_songdb_codenames,
     extract_jdu_songdb_codenames,
+    extract_jdlo_songdb_codenames,
     resolve_songdb_synth_path,
     synthesize_jdnext_songdb,
 )
@@ -60,7 +60,11 @@ class _SettingsTaskWorker(QObject):
     def run(self) -> None:
         try:
             self.status.emit(self._start_status)
-            result = self._task()
+            import inspect
+            if len(inspect.signature(self._task).parameters) > 0:
+                result = self._task(self.status.emit)
+            else:
+                result = self._task()
             self.finished.emit(result)
         except Exception as exc:
             logger.exception("Settings task failed: %s", exc)
@@ -238,6 +242,7 @@ class SettingsDialog(QDialog):
         *,
         browse_title: str,
         select_directory: bool = False,
+        file_filter: str = "Executables (*.exe);;All Files (*)",
     ) -> QWidget:
         row = QWidget()
         row_layout = QHBoxLayout(row)
@@ -263,7 +268,7 @@ class SettingsDialog(QDialog):
                 self,
                 browse_title,
                 str(Path.cwd()),
-                "Executables (*.exe);;All Files (*)",
+                file_filter,
             )
             if selected:
                 line_edit.setText(selected)
@@ -288,7 +293,7 @@ class SettingsDialog(QDialog):
         title.setObjectName("settingsDialogTitle")
         layout.addWidget(title)
 
-        subtitle = QLabel("These settings control installer behavior, defaults, and UI appearance.")
+        subtitle = QLabel("Configure how the installer looks, behaves, and connects to external services.")
         subtitle.setObjectName("settingsDialogSubtitle")
         layout.addWidget(subtitle)
 
@@ -296,120 +301,92 @@ class SettingsDialog(QDialog):
         tabs.setObjectName("settingsDialogTabs")
         layout.addWidget(tabs, 1)
 
-        # ----- General tab -----
+        # ================================================================
+        # TAB 1: GENERAL  —  Startup, appearance, notifications
+        # ================================================================
         tab_general = QWidget()
         general_layout = QVBoxLayout(tab_general)
         general_layout.setContentsMargins(10, 10, 10, 10)
         general_layout.setSpacing(10)
 
-        # skip_preflight
-        self.cb_skip_preflight = QCheckBox("Skip startup pre-flight checks")
-        self.cb_skip_preflight.setChecked(self._config.skip_preflight)
-        self.cb_skip_preflight.setToolTip(
-            "Skip the pre-flight check on app launch.\n"
-            "Use this only when your setup is stable and already validated."
-        )
-        general_layout.addWidget(self.cb_skip_preflight)
-
-        # suppress_offset_notification
-        self.cb_suppress = QCheckBox("Hide post-install offset refinement reminder")
-        self.cb_suppress.setChecked(self._config.suppress_offset_notification)
-        self.cb_suppress.setToolTip(
-            "Do not show the reminder popup about offset refinement\n"
-            "after install completes."
-        )
-        general_layout.addWidget(self.cb_suppress)
-
         general_form = QFormLayout()
         general_form.setLabelAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
         general_form.setHorizontalSpacing(12)
         general_form.setVerticalSpacing(10)
-        
-        self.combo_cleanup = QComboBox()
-        self.combo_cleanup.addItem("Ask every time", "ask")
-        self.combo_cleanup.addItem("Always delete temporary files", "delete")
-        self.combo_cleanup.addItem("Keep temporary files", "keep")
-        self._set_combo_from_value(self.combo_cleanup, self._config.cleanup_behavior)
-        self.combo_cleanup.setToolTip(
-            "Choose what happens to installer temp files after install."
-        )
-        general_form.addRow("After install cleanup:", self.combo_cleanup)
-
-        self.combo_locked_status = QComboBox()
-        self.combo_locked_status.addItem("Ask when needed", "ask")
-        self.combo_locked_status.addItem("Always force status to 3 (unlocked)", "force3")
-        self.combo_locked_status.addItem("Keep original status values", "keep")
-        self._set_combo_from_value(self.combo_locked_status, self._config.locked_status_behavior)
-        self.combo_locked_status.setToolTip(
-            "Controls how the installer treats locked-song status values\n"
-            "when importing maps."
-        )
-        general_form.addRow("Song unlock status:", self.combo_locked_status)
-
-        # show_preflight_success_popup
-        self.cb_preflight_popup = QCheckBox("Show pre-flight success popup")
-        self.cb_preflight_popup.setChecked(self._config.show_preflight_success_popup)
-        self.cb_preflight_popup.setToolTip(
-            "If disabled, passing pre-flight only enables Install\n"
-            "without opening a confirmation popup."
-        )
-        general_layout.addWidget(self.cb_preflight_popup)
-
-        self.cb_install_summary = QCheckBox("Show installation summary popup")
-        self.cb_install_summary.setChecked(getattr(self._config, "show_install_summary_popup", True))
-        self.cb_install_summary.setToolTip(
-            "Shows a checklist-style summary at the end of install with\n"
-            "required/optional files, counts, and warnings."
-        )
-        general_layout.addWidget(self.cb_install_summary)
-
-        # show_quickstart_on_launch
-        self.cb_quickstart = QCheckBox("Show quick-start help on launch")
-        self.cb_quickstart.setChecked(self._config.show_quickstart_on_launch)
-        self.cb_quickstart.setToolTip(
-            "Shows a short beginner guide at startup.\n"
-            "Helpful for users who skip documentation."
-        )
-        general_layout.addWidget(self.cb_quickstart)
-
-        self.combo_log_detail = QComboBox()
-        self.combo_log_detail.addItem("Quiet (warnings and errors only)", "quiet")
-        self.combo_log_detail.addItem("Normal (recommended)", "user")
-        self.combo_log_detail.addItem("Detailed (extra debug in logs)", "detailed")
-        self.combo_log_detail.addItem("Developer (maximum verbosity)", "developer")
-        self._set_combo_from_value(self.combo_log_detail, self._config.log_detail_level)
-        self.combo_log_detail.setToolTip(
-            "Controls how much detail appears in the app and log files."
-        )
-        general_form.addRow("Log detail level:", self.combo_log_detail)
 
         self.combo_theme = QComboBox()
         self.combo_theme.addItem("Light", "light")
         self.combo_theme.addItem("Dark", "dark")
         self._set_combo_from_value(self.combo_theme, self._config.theme)
-        self.combo_theme.setToolTip(
-            "Pick the installer color theme."
-        )
+        self.combo_theme.setToolTip("Pick the installer color theme.")
         general_form.addRow("Theme:", self.combo_theme)
 
+        self.combo_log_detail = QComboBox()
+        self.combo_log_detail.addItem("Minimal (warnings & errors only)", "quiet")
+        self.combo_log_detail.addItem("Normal (recommended)", "user")
+        self.combo_log_detail.addItem("Detailed (extra debug info)", "detailed")
+        self.combo_log_detail.addItem("Developer (maximum verbosity)", "developer")
+        self._set_combo_from_value(self.combo_log_detail, self._config.log_detail_level)
+        self.combo_log_detail.setToolTip(
+            "Controls how much detail appears in the app and log files."
+        )
+        general_form.addRow("Log verbosity:", self.combo_log_detail)
+
         general_layout.addLayout(general_form)
-        general_layout.addStretch()
 
-        tabs.addTab(tab_general, "General")
+        # Startup checkboxes
+        self.cb_quickstart = QCheckBox("Show beginner guide on startup")
+        self.cb_quickstart.setChecked(self._config.show_quickstart_on_launch)
+        self.cb_quickstart.setToolTip(
+            "Shows a short walkthrough for new users at launch.\n"
+            "Helpful if you haven't read the documentation."
+        )
+        general_layout.addWidget(self.cb_quickstart)
 
-        # ----- Window tab -----
-        tab_window = QWidget()
-        window_layout = QVBoxLayout(tab_window)
-        window_layout.setContentsMargins(10, 10, 10, 10)
-        window_layout.setSpacing(10)
+        self.cb_skip_preflight = QCheckBox("Skip startup checks")
+        self.cb_skip_preflight.setChecked(self._config.skip_preflight)
+        self.cb_skip_preflight.setToolTip(
+            "Skips validation on launch.\n"
+            "Only use when your setup is already stable and working."
+        )
+        general_layout.addWidget(self.cb_skip_preflight)
 
-        # minimum window size policy
-        self.cb_enforce_min_size = QCheckBox("Enforce minimum window size")
+        self.cb_preflight_popup = QCheckBox("Show a confirmation popup when startup checks pass")
+        self.cb_preflight_popup.setChecked(self._config.show_preflight_success_popup)
+        self.cb_preflight_popup.setToolTip(
+            "If off, passing startup checks just silently enables\n"
+            "the Install button without a popup."
+        )
+        general_layout.addWidget(self.cb_preflight_popup)
+
+        # Notification checkboxes
+        self.cb_install_summary = QCheckBox("Show a summary when installation finishes")
+        self.cb_install_summary.setChecked(getattr(self._config, "show_install_summary_popup", True))
+        self.cb_install_summary.setToolTip(
+            "Displays a checklist of installed files, counts, and\n"
+            "warnings after each installation completes."
+        )
+        general_layout.addWidget(self.cb_install_summary)
+
+        self.cb_suppress = QCheckBox("Don't remind me about audio offset tuning after install")
+        self.cb_suppress.setChecked(self._config.suppress_offset_notification)
+        self.cb_suppress.setToolTip(
+            "Hides the post-install reminder about fine-tuning\n"
+            "audio sync for installed maps."
+        )
+        general_layout.addWidget(self.cb_suppress)
+
+        # ----- Window section -----
+        window_section_label = QLabel("Window")
+        window_section_label.setStyleSheet("font-weight: bold; margin-top: 8px;")
+        general_layout.addWidget(window_section_label)
+
+        self.cb_enforce_min_size = QCheckBox("Prevent window from being resized too small")
         self.cb_enforce_min_size.setChecked(self._config.enforce_min_window_size)
         self.cb_enforce_min_size.setToolTip(
-            "When disabled, the main window can be resized smaller than the default minimum."
+            "When off, the main window can be freely resized below the minimum."
         )
-        window_layout.addWidget(self.cb_enforce_min_size)
+        general_layout.addWidget(self.cb_enforce_min_size)
 
         window_form = QFormLayout()
         window_form.setLabelAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
@@ -437,7 +414,7 @@ class SettingsDialog(QDialog):
         min_size_widget = QWidget()
         min_size_widget.setLayout(min_size_row)
         window_form.addRow("Minimum window size:", min_size_widget)
-        window_layout.addLayout(window_form)
+        general_layout.addLayout(window_form)
 
         def _toggle_min_size_inputs(enabled: bool) -> None:
             self.spin_min_width.setEnabled(enabled)
@@ -446,30 +423,153 @@ class SettingsDialog(QDialog):
         self.cb_enforce_min_size.toggled.connect(_toggle_min_size_inputs)
         _toggle_min_size_inputs(self.cb_enforce_min_size.isChecked())
 
-        self.cb_size_overlay = QCheckBox("Show floating current window size while resizing")
+        self.cb_size_overlay = QCheckBox("Show window dimensions while resizing")
         self.cb_size_overlay.setChecked(
             getattr(self._config, "show_window_size_overlay", True)
         )
         self.cb_size_overlay.setToolTip(
-            "Displays an overlay like 1280 x 720 when you resize the main window."
+            "Displays a floating overlay like 1280 × 720 when you resize the main window."
         )
-        window_layout.addWidget(self.cb_size_overlay)
+        general_layout.addWidget(self.cb_size_overlay)
 
-        self.cb_style_debug = QCheckBox("Enable Style Debug Mode (outline sections)")
-        self.cb_style_debug.setChecked(
-            getattr(self._config, "style_debug_mode", False)
+        general_layout.addStretch()
+        tabs.addTab(tab_general, "General")
+
+        # ================================================================
+        # TAB 2: INSTALLATION  —  Map processing behavior
+        # ================================================================
+        tab_install = QWidget()
+        install_layout = QVBoxLayout(tab_install)
+        install_layout.setContentsMargins(10, 10, 10, 10)
+        install_layout.setSpacing(10)
+
+        # Storage Directories section
+        directories_section_label = QLabel("Storage Directories")
+        directories_section_label.setStyleSheet("font-weight: bold; margin-top: 4px;")
+        install_layout.addWidget(directories_section_label)
+
+        directories_form = QFormLayout()
+        directories_form.setLabelAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+        directories_form.setHorizontalSpacing(12)
+        directories_form.setVerticalSpacing(10)
+
+        self.txt_download_root = QLineEdit(str(self._config.download_root))
+        self.txt_download_root.setPlaceholderText("./mapDownloads")
+        self.txt_download_root.setToolTip("Directory where maps are downloaded before installation.")
+        directories_form.addRow(
+            "Downloads directory:",
+            self._make_path_picker_row(
+                self.txt_download_root,
+                browse_title="Select Downloads Directory",
+                select_directory=True,
+            ),
         )
-        self.cb_style_debug.setToolTip(
-            "Adds colored outlines and section labels to help map widgets to QSS selectors.\n"
-            "While enabled, stylesheet edits auto-reload as you save.\n"
-            "Use while tuning colors, then disable for normal appearance."
+
+        self.txt_cache_dir = QLineEdit(str(self._config.cache_directory))
+        self.txt_cache_dir.setPlaceholderText("./cache")
+        self.txt_cache_dir.setToolTip("Directory used to store cached metadata and assets.")
+        directories_form.addRow(
+            "Cache directory:",
+            self._make_path_picker_row(
+                self.txt_cache_dir,
+                browse_title="Select Cache Directory",
+                select_directory=True,
+            ),
         )
-        window_layout.addWidget(self.cb_style_debug)
-        window_layout.addStretch()
 
-        tabs.addTab(tab_window, "Window")
+        self.txt_temp_dir = QLineEdit(str(self._config.temp_directory))
+        self.txt_temp_dir.setPlaceholderText("./temp")
+        self.txt_temp_dir.setToolTip("Temporary directory used during extraction and processing.")
+        directories_form.addRow(
+            "Temp directory:",
+            self._make_path_picker_row(
+                self.txt_temp_dir,
+                browse_title="Select Temp Directory",
+                select_directory=True,
+            ),
+        )
+        install_layout.addLayout(directories_form)
 
-        # ----- Media tab -----
+        behavior_section_label = QLabel("Map Processing")
+        behavior_section_label.setStyleSheet("font-weight: bold; margin-top: 8px;")
+        install_layout.addWidget(behavior_section_label)
+
+        install_form = QFormLayout()
+        install_form.setLabelAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+        install_form.setHorizontalSpacing(12)
+        install_form.setVerticalSpacing(10)
+
+        self.combo_cleanup = QComboBox()
+        self.combo_cleanup.addItem("Ask me each time", "ask")
+        self.combo_cleanup.addItem("Keep files", "keep")
+        self.combo_cleanup.addItem("Auto-delete (keep preview thumbnails)", "delete")
+        self.combo_cleanup.addItem("Full cleanup (saves most space, removes previews)", "aggressive")
+        self._set_combo_from_value(self.combo_cleanup, self._config.cleanup_behavior)
+        self.combo_cleanup.setToolTip(
+            "What happens to temporary files after installation finishes."
+        )
+        install_form.addRow("After-install file cleanup:", self.combo_cleanup)
+
+        self.combo_locked_status = QComboBox()
+        self.combo_locked_status.addItem("Ask when needed", "ask")
+        self.combo_locked_status.addItem("Always unlock songs (force status 3)", "force3")
+        self.combo_locked_status.addItem("Keep original lock state", "keep")
+        self._set_combo_from_value(self.combo_locked_status, self._config.locked_status_behavior)
+        self.combo_locked_status.setToolTip(
+            "How the installer treats lock status values when importing maps."
+        )
+        install_form.addRow("Song lock handling:", self.combo_locked_status)
+
+        self.combo_albumcoach = QComboBox()
+        self.combo_albumcoach.addItem("Ask me each time (default)", "ask")
+        self.combo_albumcoach.addItem("Open the editor", "always_customize")
+        self.combo_albumcoach.addItem("Use automatic layout", "always_default")
+        self._set_combo_from_value(
+            self.combo_albumcoach,
+            getattr(self._config, "albumcoach_behavior", "ask"),
+        )
+        self.combo_albumcoach.setToolTip(
+            "How the album cover is arranged for JDNext songs\n"
+            "with multiple dancers that are missing one.\n\n"
+            "Ask: prompt before each install.\n"
+            "Open the editor: always show the layout editor.\n"
+            "Use automatic layout: use automatic compositing silently."
+        )
+        install_form.addRow("JDNext Album art layout:", self.combo_albumcoach)
+
+        self.combo_jdnext_cover = QComboBox()
+        self.combo_jdnext_cover.addItem("Ask me each time (default)", "ask")
+        self.combo_jdnext_cover.addItem("Generate new cover (background + title asset)", "synthesized")
+        self.combo_jdnext_cover.addItem("Use original cover (may look squished)", "original")
+        self._set_combo_from_value(
+            self.combo_jdnext_cover,
+            getattr(self._config, "jdnext_cover_behavior", "ask"),
+        )
+        self.combo_jdnext_cover.setToolTip(
+            "How cover art is created for JDNext maps.\n\n"
+            "Generate new cover: composites the map background + title into a 1:1 square.\n"
+            "Use original cover: uses the source cover as-is (may look stretched in-game).\n"
+            "Ask: prompt before each JDNext install."
+        )
+        install_form.addRow("Cover art (JDNext maps):", self.combo_jdnext_cover)
+
+        install_layout.addLayout(install_form)
+
+        self.cb_convert_jdnext_gestures = QCheckBox("Convert JDNext camera motion data for Kinect compatibility")
+        self.cb_convert_jdnext_gestures.setChecked(getattr(self._config, "convert_jdnext_gestures", False))
+        self.cb_convert_jdnext_gestures.setEnabled(True)
+        self.cb_convert_jdnext_gestures.setToolTip(
+            "Converts JDNext camera gestures into kinect gestures.\n"
+            "This feature is not ready yet."
+        )
+        install_layout.addWidget(self.cb_convert_jdnext_gestures)
+
+        install_layout.addStretch()
+        tabs.addTab(tab_install, "Installation")
+
+        # ================================================================
+        # TAB 3: MEDIA  —  Downloads, quality, preview playback
+        # ================================================================
         tab_media = QWidget()
         media_layout = QVBoxLayout(tab_media)
         media_layout.setContentsMargins(10, 10, 10, 10)
@@ -482,51 +582,122 @@ class SettingsDialog(QDialog):
 
         self.combo_quality = QComboBox()
         self.combo_quality.addItems([
-            "ULTRA_HD", "ULTRA", "HIGH_HD", "HIGH",
-            "MID_HD", "MID", "LOW_HD", "LOW"
+            "Ultra HD", "Ultra", "High HD", "High",
+            "Mid HD", "Mid", "Low HD", "Low"
         ])
-        self.combo_quality.setCurrentText(self._config.video_quality)
-        media_form.addRow("Default download quality:", self.combo_quality)
+        # Map display names to internal values for save
+        self._quality_display_to_internal = {
+            "Ultra HD": "ULTRA_HD", "Ultra": "ULTRA",
+            "High HD": "HIGH_HD", "High": "HIGH",
+            "Mid HD": "MID_HD", "Mid": "MID",
+            "Low HD": "LOW_HD", "Low": "LOW",
+        }
+        self._quality_internal_to_display = {v: k for k, v in self._quality_display_to_internal.items()}
+        display_quality = self._quality_internal_to_display.get(
+            self._config.video_quality, self._config.video_quality
+        )
+        self.combo_quality.setCurrentText(display_quality)
+        self.combo_quality.setToolTip(
+            "The quality tier the installer tries to download first."
+        )
+        media_form.addRow("Video download quality:", self.combo_quality)
+        
+        self.combo_fallback_behavior = QComboBox()
+        self.combo_fallback_behavior.addItem("Next lower quality (e.g. High -> Mid)", "fallback_down")
+        self.combo_fallback_behavior.addItem("Next best quality (e.g. High -> Ultra)", "fallback_up")
+        current_fallback_mode = getattr(self._config, "video_fallback_behavior", "fallback_down")
+        fallback_idx = self.combo_fallback_behavior.findData(current_fallback_mode)
+        self.combo_fallback_behavior.setCurrentIndex(fallback_idx if fallback_idx >= 0 else 0)
+        self.combo_fallback_behavior.setToolTip(
+            "What to do if the selected video quality is missing or incompatible.\n\n"
+            "Next lower quality: Safely falls back to a lower resolution.\n"
+            "Next best quality: Tries to find a higher resolution before falling back to lower."
+        )
+        media_form.addRow("Missing quality fallback:", self.combo_fallback_behavior)
+
+        self.combo_vp9_mode = QComboBox()
+        self.combo_vp9_mode.addItem("Convert to VP8 (best game compatibility)", "reencode_to_vp8")
+        self.combo_vp9_mode.addItem("Use a lower compatible quality (no conversion)", "fallback_compatible_down")
+        current_vp9_mode = getattr(self._config, "vp9_handling_mode", "reencode_to_vp8")
+        vp9_idx = self.combo_vp9_mode.findData(current_vp9_mode)
+        self.combo_vp9_mode.setCurrentIndex(vp9_idx if vp9_idx >= 0 else 0)
+        self.combo_vp9_mode.setToolTip(
+            "How to handle VP9-encoded videos that the game can't play natively.\n\n"
+            "Convert to VP8: keeps requested quality tier but may reduce fidelity.\n"
+            "Lower compatible quality: skips VP9 tiers and picks a lower one."
+        )
+        media_form.addRow("VP9 codec compatibility:", self.combo_vp9_mode)
 
         self.combo_hwaccel = QComboBox()
         self.combo_hwaccel.addItems(["auto", "none"])
         self.combo_hwaccel.setCurrentText(getattr(self._config, "ffmpeg_hwaccel", "auto"))
         self.combo_hwaccel.setToolTip(
-            "auto: let FFmpeg pick available hardware decoding acceleration\n"
-            "none: disable hardware acceleration"
+            "auto: use GPU hardware decoding if available\n"
+            "none: force software-only decoding"
         )
-        media_form.addRow("FFmpeg acceleration:", self.combo_hwaccel)
-
-        self.combo_vp9_mode = QComboBox()
-        self.combo_vp9_mode.addItem("Re-encode VP9 to VP8 (best compatibility)", "reencode_to_vp8")
-        self.combo_vp9_mode.addItem("Use next compatible quality down (no re-encode)", "fallback_compatible_down")
-        current_vp9_mode = getattr(self._config, "vp9_handling_mode", "reencode_to_vp8")
-        vp9_idx = self.combo_vp9_mode.findData(current_vp9_mode)
-        self.combo_vp9_mode.setCurrentIndex(vp9_idx if vp9_idx >= 0 else 0)
-        self.combo_vp9_mode.setToolTip(
-            "Re-encode VP9 to VP8: keeps requested tier but may reduce quality.\n"
-            "Next compatible down: skips VP9 tiers and picks a lower HD-compatible tier."
-        )
-        media_form.addRow("VP9 handling:", self.combo_vp9_mode)
+        media_form.addRow("Hardware video acceleration:", self.combo_hwaccel)
 
         self.combo_preview_mode = QComboBox()
-        self.combo_preview_mode.addItem("Low-res proxy (faster and smoother)", "proxy_low")
+        self.combo_preview_mode.addItem("Low-res copy (faster playback)", "proxy_low")
         self.combo_preview_mode.addItem("Original video file", "original")
         self._set_combo_from_value(
             self.combo_preview_mode,
             getattr(self._config, "preview_video_mode", "proxy_low"),
         )
         self.combo_preview_mode.setToolTip(
-            "Choose whether preview uses a generated proxy or the source file."
+            "Whether preview uses a lightweight copy or the source file directly."
         )
-        media_form.addRow("Preview source:", self.combo_preview_mode)
+        media_form.addRow("Video preview source:", self.combo_preview_mode)
 
         media_layout.addLayout(media_form)
-        media_layout.addStretch()
 
+        # ----- Preview Playback section -----
+        preview_section_label = QLabel("Preview Playback")
+        preview_section_label.setStyleSheet("font-weight: bold; margin-top: 8px;")
+        media_layout.addWidget(preview_section_label)
+
+        preview_form = QFormLayout()
+        preview_form.setLabelAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+        preview_form.setHorizontalSpacing(12)
+        preview_form.setVerticalSpacing(10)
+
+        self.spin_preview_fps = QSpinBox()
+        self.spin_preview_fps.setRange(12, 120)
+        self.spin_preview_fps.setValue(int(getattr(self._config, "preview_fps", 25)))
+        self.spin_preview_fps.setToolTip(
+            "Default FPS when the source video doesn't specify one."
+        )
+        preview_form.addRow("Preview frame rate:", self.spin_preview_fps)
+
+        self.spin_preview_audio_only_offset = QDoubleSpinBox()
+        self.spin_preview_audio_only_offset.setRange(-2000.0, 2000.0)
+        self.spin_preview_audio_only_offset.setDecimals(1)
+        self.spin_preview_audio_only_offset.setSingleStep(5.0)
+        self.spin_preview_audio_only_offset.setValue(float(getattr(self._config, "preview_only_audio_offset_ms", -125.0)))
+        self.spin_preview_audio_only_offset.setSuffix(" ms")
+        self.spin_preview_audio_only_offset.setToolTip(
+            "Fine-tune audio sync in preview mode."
+        )
+        preview_form.addRow("Audio preview timing offset:", self.spin_preview_audio_only_offset)
+
+        self.spin_audio_preview_fade = QDoubleSpinBox()
+        self.spin_audio_preview_fade.setRange(0.0, 10.0)
+        self.spin_audio_preview_fade.setDecimals(2)
+        self.spin_audio_preview_fade.setSingleStep(0.1)
+        self.spin_audio_preview_fade.setValue(float(getattr(self._config, "audio_preview_fade_s", 2.0)))
+        self.spin_audio_preview_fade.setSuffix(" s")
+        self.spin_audio_preview_fade.setToolTip(
+            "How long audio fades in and out during preview."
+        )
+        preview_form.addRow("Audio preview fade duration:", self.spin_audio_preview_fade)
+
+        media_layout.addLayout(preview_form)
+        media_layout.addStretch()
         tabs.addTab(tab_media, "Media")
 
-        # ----- Advanced tab -----
+        # ================================================================
+        # TAB 4: ADVANCED  —  Tool paths, connections, network timing, dev
+        # ================================================================
         tab_advanced = QWidget()
         tab_advanced_layout = QVBoxLayout(tab_advanced)
         tab_advanced_layout.setContentsMargins(0, 0, 0, 0)
@@ -545,23 +716,28 @@ class SettingsDialog(QDialog):
         advanced_layout.setSpacing(10)
 
         advanced_note = QLabel(
-            "Advanced runtime behavior for downloads, preview timing, and external tool resolution. "
-            "Core engine constants remain JSON-only."
+            "Tool paths, service connections, and network timing. "
+            "Most users won't need to change these."
         )
         advanced_note.setWordWrap(True)
         advanced_layout.addWidget(advanced_note)
 
-        advanced_form = QFormLayout()
-        advanced_form.setLabelAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
-        advanced_form.setHorizontalSpacing(12)
-        advanced_form.setVerticalSpacing(10)
+        # ----- External Tools section -----
+        tools_section_label = QLabel("External Tools")
+        tools_section_label.setStyleSheet("font-weight: bold; margin-top: 4px;")
+        advanced_layout.addWidget(tools_section_label)
+
+        tools_form = QFormLayout()
+        tools_form.setLabelAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+        tools_form.setHorizontalSpacing(12)
+        tools_form.setVerticalSpacing(10)
 
         self.txt_ffmpeg_path = QLineEdit(str(getattr(self._config, "ffmpeg_path", "ffmpeg") or "ffmpeg"))
         self.txt_ffmpeg_path.setPlaceholderText("ffmpeg")
         self.txt_ffmpeg_path.setToolTip(
-            "FFmpeg executable path or command name. Clear to use auto/default resolution."
+            "Path to FFmpeg. Clear to auto-detect."
         )
-        advanced_form.addRow(
+        tools_form.addRow(
             "FFmpeg executable:",
             self._make_path_picker_row(
                 self.txt_ffmpeg_path,
@@ -572,9 +748,9 @@ class SettingsDialog(QDialog):
         self.txt_ffprobe_path = QLineEdit(str(getattr(self._config, "ffprobe_path", "ffprobe") or "ffprobe"))
         self.txt_ffprobe_path.setPlaceholderText("ffprobe")
         self.txt_ffprobe_path.setToolTip(
-            "FFprobe executable path or command name. Clear to use auto/default resolution."
+            "Path to FFprobe. Clear to auto-detect."
         )
-        advanced_form.addRow(
+        tools_form.addRow(
             "FFprobe executable:",
             self._make_path_picker_row(
                 self.txt_ffprobe_path,
@@ -585,9 +761,10 @@ class SettingsDialog(QDialog):
         self.txt_vgmstream_path = QLineEdit(str(getattr(self._config, "vgmstream_path", "") or ""))
         self.txt_vgmstream_path.setPlaceholderText("Auto (tools/vgmstream or PATH)")
         self.txt_vgmstream_path.setToolTip(
-            "Optional vgmstream CLI executable for XMA2 decode. Leave empty for auto-detection."
+            "Optional vgmstream CLI for XMA2 audio decoding.\n"
+            "Leave empty for auto-detection."
         )
-        advanced_form.addRow(
+        tools_form.addRow(
             "vgmstream executable:",
             self._make_path_picker_row(
                 self.txt_vgmstream_path,
@@ -595,27 +772,12 @@ class SettingsDialog(QDialog):
             ),
         )
 
-        third_party_root = getattr(self._config, "third_party_tools_root", None)
-        self.txt_third_party_root = QLineEdit(str(third_party_root) if third_party_root else "")
-        self.txt_third_party_root.setPlaceholderText("Auto (./tools)")
-        self.txt_third_party_root.setToolTip(
-            "Optional root directory for JDNext third-party tools. Leave empty for default auto path."
-        )
-        advanced_form.addRow(
-            "3rd-party tools root:",
-            self._make_path_picker_row(
-                self.txt_third_party_root,
-                browse_title="Select third-party tools root",
-                select_directory=True,
-            ),
-        )
-
         self.txt_assetstudio_cli = QLineEdit(str(getattr(self._config, "assetstudio_cli_path", "") or ""))
-        self.txt_assetstudio_cli.setPlaceholderText("Auto (search under 3rd-party tools root)")
+        self.txt_assetstudio_cli.setPlaceholderText("Auto (search under third-party tools folder)")
         self.txt_assetstudio_cli.setToolTip(
-            "Optional direct AssetStudioModCLI executable path for JDNext bundle extraction."
+            "Optional AssetStudioModCLI path for JDNext bundle extraction."
         )
-        advanced_form.addRow(
+        tools_form.addRow(
             "AssetStudio CLI:",
             self._make_path_picker_row(
                 self.txt_assetstudio_cli,
@@ -623,31 +785,94 @@ class SettingsDialog(QDialog):
             ),
         )
 
+        advanced_layout.addLayout(tools_form)
+
+        # ----- Service Connections section -----
+        connections_section_label = QLabel("Service Connections")
+        connections_section_label.setStyleSheet("font-weight: bold; margin-top: 8px;")
+        advanced_layout.addWidget(connections_section_label)
+
+        connections_form = QFormLayout()
+        connections_form.setLabelAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+        connections_form.setHorizontalSpacing(12)
+        connections_form.setVerticalSpacing(10)
+
+        self.txt_discord_url = QLineEdit()
+        self.txt_discord_url.setText(self._config.discord_channel_url)
+        self.txt_discord_url.setPlaceholderText("https://discord.com/channels/...")
+        self.txt_discord_url.setToolTip(
+            "URL of the Discord channel where the JDU asset bot lives.\n"
+            "Required for Fetch mode.\n"
+            "Copy from your browser's address bar while in the channel."
+        )
+        connections_form.addRow("Discord channel URL:", self.txt_discord_url)
+
+        self.txt_jdlo_auth = QLineEdit()
+        jdlo_auth_val = str(getattr(self._config, "jdlo_auth_path", "")) if getattr(self._config, "jdlo_auth_path", None) else ""
+        self.txt_jdlo_auth.setText(jdlo_auth_val)
+        self.txt_jdlo_auth.setPlaceholderText("Select jdlo_auth.ini")
+        self.txt_jdlo_auth.setToolTip(
+            "Path to your jdlo_auth.ini file (from JD2017 PC).\n"
+            "Required for JDLO Fetch modes."
+        )
+        connections_form.addRow(
+            "JDLO auth file:",
+            self._make_path_picker_row(
+                self.txt_jdlo_auth,
+                browse_title="Select jdlo_auth.ini",
+                select_directory=False,
+                file_filter="INI Files (*.ini);;All Files (*)",
+            ),
+        )
+
+        advanced_layout.addLayout(connections_form)
+
+        self.cb_fetch_background = QCheckBox("Hide the Fetch browser window (run in background)")
+        self.cb_fetch_background.setChecked(getattr(self._config, "fetch_background_mode", False))
+        self.cb_fetch_background.setToolTip(
+            "Runs Chromium off-screen so it doesn't steal focus.\n"
+            "Browser actions are logged to the console.\n\n"
+            "Turn this OFF if you need to manually intervene when\n"
+            "the bot gets stuck. The browser will appear on-screen\n"
+            "if re-login is needed."
+        )
+        advanced_layout.addWidget(self.cb_fetch_background)
+
+        # ----- Network Timing section -----
+        network_section_label = QLabel("Network Timing")
+        network_section_label.setStyleSheet("font-weight: bold; margin-top: 8px;")
+        advanced_layout.addWidget(network_section_label)
+
+        network_form = QFormLayout()
+        network_form.setLabelAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+        network_form.setHorizontalSpacing(12)
+        network_form.setVerticalSpacing(10)
+
         self.spin_download_timeout = QSpinBox()
         self.spin_download_timeout.setRange(15, 3600)
         self.spin_download_timeout.setValue(int(getattr(self._config, "download_timeout_s", 600)))
         self.spin_download_timeout.setSuffix(" s")
         self.spin_download_timeout.setToolTip(
-            "Maximum wait time for network downloads before timeout."
+            "How long to wait for a download before giving up."
         )
-        advanced_form.addRow("Download timeout:", self.spin_download_timeout)
+        network_form.addRow("Download timeout (max wait):", self.spin_download_timeout)
 
         self.spin_max_retries = QSpinBox()
         self.spin_max_retries.setRange(0, 12)
         self.spin_max_retries.setValue(int(getattr(self._config, "max_retries", 3)))
         self.spin_max_retries.setToolTip(
-            "How many retry attempts are allowed for failed downloads."
+            "Number of retry attempts for failed downloads."
         )
-        advanced_form.addRow("Download retries:", self.spin_max_retries)
+        network_form.addRow("Max download retries:", self.spin_max_retries)
 
         self.spin_retry_base_delay = QSpinBox()
         self.spin_retry_base_delay.setRange(0, 60)
         self.spin_retry_base_delay.setValue(int(getattr(self._config, "retry_base_delay_s", 2)))
         self.spin_retry_base_delay.setSuffix(" s")
         self.spin_retry_base_delay.setToolTip(
-            "Base delay used for retry backoff after failed network requests."
+            "Wait time before retrying a failed download."
         )
-        advanced_form.addRow("Retry base delay:", self.spin_retry_base_delay)
+        network_form.addRow("Delay between retries:", self.spin_retry_base_delay)
 
         self.spin_inter_request_delay = QDoubleSpinBox()
         self.spin_inter_request_delay.setRange(0.0, 20.0)
@@ -656,9 +881,9 @@ class SettingsDialog(QDialog):
         self.spin_inter_request_delay.setValue(float(getattr(self._config, "inter_request_delay_s", 1.5)))
         self.spin_inter_request_delay.setSuffix(" s")
         self.spin_inter_request_delay.setToolTip(
-            "Delay inserted between sequential download requests."
+            "Delay between consecutive download requests."
         )
-        advanced_form.addRow("Inter-request delay:", self.spin_inter_request_delay)
+        network_form.addRow("Pause between downloads:", self.spin_inter_request_delay)
 
         self.spin_fetch_login_timeout = QSpinBox()
         self.spin_fetch_login_timeout.setRange(30, 1800)
@@ -667,16 +892,54 @@ class SettingsDialog(QDialog):
         self.spin_fetch_login_timeout.setToolTip(
             "How long Fetch mode waits for Discord login before giving up."
         )
-        advanced_form.addRow("Fetch login timeout:", self.spin_fetch_login_timeout)
+        network_form.addRow("Discord login wait time:", self.spin_fetch_login_timeout)
 
         self.spin_fetch_bot_timeout = QSpinBox()
         self.spin_fetch_bot_timeout.setRange(10, 600)
         self.spin_fetch_bot_timeout.setValue(int(getattr(self._config, "fetch_bot_response_timeout_s", 60)))
         self.spin_fetch_bot_timeout.setSuffix(" s")
         self.spin_fetch_bot_timeout.setToolTip(
-            "How long Fetch mode waits for bot links before timing out."
+            "How long Fetch mode waits for the bot to respond with links."
         )
-        advanced_form.addRow("Fetch bot response timeout:", self.spin_fetch_bot_timeout)
+        network_form.addRow("Bot reply wait time:", self.spin_fetch_bot_timeout)
+
+        advanced_layout.addLayout(network_form)
+
+        # ----- Legacy Features section -----
+        legacy_section_label = QLabel("Legacy Features")
+        legacy_section_label.setStyleSheet("font-weight: bold; margin-top: 8px;")
+        advanced_layout.addWidget(legacy_section_label)
+
+        self.cb_legacy_sync = QCheckBox("Enable Legacy Sync Refinement")
+        self.cb_legacy_sync.setChecked(
+            getattr(self._config, "enable_legacy_sync_refinement", False)
+        )
+        self.cb_legacy_sync.setToolTip(
+            "Shows the 'Readjust Offset' button and Sync Refinement section in the main window.\n"
+            "This is generally not needed anymore as most modes have correct syncing."
+        )
+        advanced_layout.addWidget(self.cb_legacy_sync)
+
+        # ----- Developer section -----
+        dev_section_label = QLabel("Developer")
+        dev_section_label.setStyleSheet("font-weight: bold; margin-top: 8px;")
+        advanced_layout.addWidget(dev_section_label)
+
+        self.cb_style_debug = QCheckBox("Show widget outlines for styling (debug mode)")
+        self.cb_style_debug.setChecked(
+            getattr(self._config, "style_debug_mode", False)
+        )
+        self.cb_style_debug.setToolTip(
+            "Adds colored borders and labels to help map widgets to\n"
+            "stylesheet selectors. Auto-reloads styles on save.\n"
+            "Use while tuning colors, then disable for normal appearance."
+        )
+        advanced_layout.addWidget(self.cb_style_debug)
+
+        dev_form = QFormLayout()
+        dev_form.setLabelAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+        dev_form.setHorizontalSpacing(12)
+        dev_form.setVerticalSpacing(10)
 
         self.spin_overlay_timeout = QSpinBox()
         self.spin_overlay_timeout.setRange(200, 6000)
@@ -684,156 +947,163 @@ class SettingsDialog(QDialog):
         self.spin_overlay_timeout.setValue(int(getattr(self._config, "window_size_overlay_timeout_ms", 1100)))
         self.spin_overlay_timeout.setSuffix(" ms")
         self.spin_overlay_timeout.setToolTip(
-            "How long the floating window size indicator remains visible after resize stops."
+            "How long the floating dimensions overlay stays visible after resizing stops."
         )
-        advanced_form.addRow("Window size overlay timeout:", self.spin_overlay_timeout)
+        dev_form.addRow("Size indicator display time:", self.spin_overlay_timeout)
 
-        self.spin_preview_fps = QSpinBox()
-        self.spin_preview_fps.setRange(12, 120)
-        self.spin_preview_fps.setValue(int(getattr(self._config, "preview_fps", 25)))
-        self.spin_preview_fps.setToolTip(
-            "Default preview FPS when source metadata does not force a specific value."
-        )
-        advanced_form.addRow("Preview FPS:", self.spin_preview_fps)
-
-        self.spin_preview_startup_comp = QDoubleSpinBox()
-        self.spin_preview_startup_comp.setRange(0.0, 1000.0)
-        self.spin_preview_startup_comp.setDecimals(1)
-        self.spin_preview_startup_comp.setSingleStep(5.0)
-        self.spin_preview_startup_comp.setValue(float(getattr(self._config, "preview_startup_compensation_ms", 100.0)))
-        self.spin_preview_startup_comp.setSuffix(" ms")
-        self.spin_preview_startup_comp.setToolTip(
-            "Playback startup compensation applied when preview begins."
-        )
-        advanced_form.addRow("Preview startup compensation:", self.spin_preview_startup_comp)
-
-        self.spin_preview_audio_only_offset = QDoubleSpinBox()
-        self.spin_preview_audio_only_offset.setRange(-2000.0, 2000.0)
-        self.spin_preview_audio_only_offset.setDecimals(1)
-        self.spin_preview_audio_only_offset.setSingleStep(5.0)
-        self.spin_preview_audio_only_offset.setValue(float(getattr(self._config, "preview_only_audio_offset_ms", -125.0)))
-        self.spin_preview_audio_only_offset.setSuffix(" ms")
-        self.spin_preview_audio_only_offset.setToolTip(
-            "Offset nudge used when previewing audio-only mode."
-        )
-        advanced_form.addRow("Audio-only preview offset:", self.spin_preview_audio_only_offset)
-
-        self.spin_audio_preview_fade = QDoubleSpinBox()
-        self.spin_audio_preview_fade.setRange(0.0, 10.0)
-        self.spin_audio_preview_fade.setDecimals(2)
-        self.spin_audio_preview_fade.setSingleStep(0.1)
-        self.spin_audio_preview_fade.setValue(float(getattr(self._config, "audio_preview_fade_s", 2.0)))
-        self.spin_audio_preview_fade.setSuffix(" s")
-        self.spin_audio_preview_fade.setToolTip(
-            "Fade duration used for generated audio preview assets."
-        )
-        advanced_form.addRow("Audio preview fade:", self.spin_audio_preview_fade)
-
-        advanced_layout.addLayout(advanced_form)
+        advanced_layout.addLayout(dev_form)
         advanced_layout.addStretch()
 
         tabs.addTab(tab_advanced, "Advanced")
 
-        # ----- Integrations tab -----
-        tab_integrations = QWidget()
-        integrations_layout = QVBoxLayout(tab_integrations)
-        integrations_layout.setContentsMargins(10, 10, 10, 10)
-        integrations_layout.setSpacing(10)
+        # ================================================================
+        # TAB 5: MAINTENANCE & UPDATES  —  Data management, version updates
+        # ================================================================
+        tab_maintenance = QWidget()
+        tab_maintenance_layout = QVBoxLayout(tab_maintenance)
+        tab_maintenance_layout.setContentsMargins(0, 0, 0, 0)
+        tab_maintenance_layout.setSpacing(0)
 
-        integrations_form = QFormLayout()
-        integrations_form.setLabelAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
-        integrations_form.setHorizontalSpacing(12)
-        integrations_form.setVerticalSpacing(10)
+        maintenance_scroll = QScrollArea(tab_maintenance)
+        maintenance_scroll.setWidgetResizable(True)
+        maintenance_scroll.setFrameShape(QScrollArea.Shape.NoFrame)
+        tab_maintenance_layout.addWidget(maintenance_scroll)
 
-        self.txt_discord_url = QLineEdit()
-        self.txt_discord_url.setText(self._config.discord_channel_url)
-        self.txt_discord_url.setPlaceholderText("https://discord.com/channels/...")
-        self.txt_discord_url.setToolTip(
-            "The URL of the Discord channel where the JDU asset bot lives.\n"
-            "Required for Fetch (Codename) mode.\n"
-            "Copy from your browser's address bar while in the channel."
+        maintenance_content = QWidget()
+        maintenance_scroll.setWidget(maintenance_content)
+
+        maintenance_layout = QVBoxLayout(maintenance_content)
+        maintenance_layout.setContentsMargins(10, 10, 10, 10)
+        maintenance_layout.setSpacing(10)
+
+        maintenance_note = QLabel(
+            "Manage installed data, import song lists, and check for new versions."
         )
-        integrations_form.addRow("Discord channel URL:", self.txt_discord_url)
-        integrations_layout.addLayout(integrations_form)
+        maintenance_note.setWordWrap(True)
+        maintenance_layout.addWidget(maintenance_note)
 
-        localization_row = QHBoxLayout()
-        localization_row.addWidget(QLabel("Update in-game localization from JSON:"))
-        self.btn_update_localization = QPushButton("Update In-Game Localization...")
+        # ----- Import & Bulk Install section -----
+        import_section_label = QLabel("Import & Bulk Install")
+        import_section_label.setStyleSheet("font-weight: bold; margin-top: 4px;")
+        maintenance_layout.addWidget(import_section_label)
+
+        import_form = QFormLayout()
+        import_form.setLabelAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+        import_form.setHorizontalSpacing(12)
+        import_form.setVerticalSpacing(10)
+
+        self.btn_update_localization = QPushButton("Select Localization JSON")
         self.btn_update_localization.clicked.connect(self._on_update_localization)
-        localization_row.addWidget(self.btn_update_localization)
-        localization_row.addStretch()
-        integrations_layout.addLayout(localization_row)
+        self.btn_update_localization.setToolTip(
+            "Updates in-game text such as 'Alternate Version' or 'Official Choreo'."
+        )
+        l_layout1 = QHBoxLayout()
+        l_layout1.setContentsMargins(0, 0, 0, 0)
+        l_layout1.addWidget(self.btn_update_localization)
+        l_layout1.addStretch()
+        import_form.addRow("Update Localization from JSON:", l_layout1)
 
-        songdb_row = QHBoxLayout()
-        songdb_row.addWidget(QLabel("Update JDNext song database cache from JSON:"))
-        self.btn_update_songdb = QPushButton("Update Song Database...")
+        self.btn_update_songdb = QPushButton("Select JDNext songdb")
         self.btn_update_songdb.clicked.connect(self._on_update_songdb)
-        songdb_row.addWidget(self.btn_update_songdb)
-        songdb_row.addStretch()
-        integrations_layout.addLayout(songdb_row)
+        self.btn_update_songdb.setToolTip(
+            "Loads JDNext song database entries from a JSON file."
+        )
+        l_layout2 = QHBoxLayout()
+        l_layout2.setContentsMargins(0, 0, 0, 0)
+        l_layout2.addWidget(self.btn_update_songdb)
+        l_layout2.addStretch()
+        import_form.addRow("Import JDNext Metadata via JDNext songdb:", l_layout2)
 
-        bulk_jdu_row = QHBoxLayout()
-        bulk_jdu_row.addWidget(QLabel("Bulk install all JDU maps from songdb JSON:"))
-        self.btn_bulk_install_jdu_songdb = QPushButton("Install All JDU Maps...")
+        self.btn_bulk_install_jdu_songdb = QPushButton("Select JDU songdb JSON")
         self.btn_bulk_install_jdu_songdb.clicked.connect(self._on_bulk_install_jdu_songdb)
         self.btn_bulk_install_jdu_songdb.setToolTip(
-            "Pick a JDU songdb JSON and queue every codename through Fetch (Codename) mode."
+            "Pick a JDU songdb JSON and queue every codename through Fetch mode."
         )
-        bulk_jdu_row.addWidget(self.btn_bulk_install_jdu_songdb)
-        bulk_jdu_row.addStretch()
-        integrations_layout.addLayout(bulk_jdu_row)
+        l_layout3 = QHBoxLayout()
+        l_layout3.setContentsMargins(0, 0, 0, 0)
+        l_layout3.addWidget(self.btn_bulk_install_jdu_songdb)
+        l_layout3.addStretch()
+        import_form.addRow("Attempt Install all JDU maps:", l_layout3)
 
-        bulk_jdnext_row = QHBoxLayout()
-        bulk_jdnext_row.addWidget(QLabel("Bulk install all JDNext maps from songdb JSON:"))
-        self.btn_bulk_install_jdnext_songdb = QPushButton("Install All JDNext Maps...")
+        self.btn_bulk_install_jdnext_songdb = QPushButton("Select JDNext songdb JSON")
         self.btn_bulk_install_jdnext_songdb.clicked.connect(self._on_bulk_install_jdnext_songdb)
         self.btn_bulk_install_jdnext_songdb.setToolTip(
-            "Pick a JDNext songdb JSON and queue every mapName through Fetch JDNext mode."
+            "Pick a JDNext songdb JSON and queue every map through Fetch JDNext mode."
         )
-        bulk_jdnext_row.addWidget(self.btn_bulk_install_jdnext_songdb)
-        bulk_jdnext_row.addStretch()
-        integrations_layout.addLayout(bulk_jdnext_row)
+        l_layout4 = QHBoxLayout()
+        l_layout4.setContentsMargins(0, 0, 0, 0)
+        l_layout4.addWidget(self.btn_bulk_install_jdnext_songdb)
+        l_layout4.addStretch()
+        import_form.addRow("Attempt Install all JDNext maps:", l_layout4)
 
-        clean_data_row = QHBoxLayout()
-        clean_data_row.addWidget(QLabel("Reset installed custom maps and caches:"))
+        self.btn_bulk_install_jdlo_songdb = QPushButton("Select JDLO songs.json")
+        self.btn_bulk_install_jdlo_songdb.clicked.connect(self._on_bulk_install_jdlo_songdb)
+        self.btn_bulk_install_jdlo_songdb.setToolTip(
+            "Pick a JDLO songs.json and queue every map through Fetch JDLO mode."
+        )
+        l_layout5 = QHBoxLayout()
+        l_layout5.setContentsMargins(0, 0, 0, 0)
+        l_layout5.addWidget(self.btn_bulk_install_jdlo_songdb)
+        l_layout5.addStretch()
+        import_form.addRow("Attempt Install all JDLO maps:", l_layout5)
+
+        maintenance_layout.addLayout(import_form)
+
+        # ----- Cleanup section -----
+        cleanup_section_label = QLabel("Cleanup")
+        cleanup_section_label.setStyleSheet("font-weight: bold; margin-top: 8px;")
+        maintenance_layout.addWidget(cleanup_section_label)
+
+        cleanup_form = QFormLayout()
+        cleanup_form.setLabelAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+        cleanup_form.setHorizontalSpacing(12)
+        cleanup_form.setVerticalSpacing(10)
+
         self.btn_clean_data = QPushButton("Clean Game Data...")
         self.btn_clean_data.clicked.connect(self._on_clean_game_data)
-        clean_data_row.addWidget(self.btn_clean_data)
-        clean_data_row.addStretch()
-        integrations_layout.addLayout(clean_data_row)
+        self.btn_clean_data.setToolTip(
+            "Deletes custom map files and resets caches in the game directory."
+        )
+        c_layout1 = QHBoxLayout()
+        c_layout1.setContentsMargins(0, 0, 0, 0)
+        c_layout1.addWidget(self.btn_clean_data)
+        c_layout1.addStretch()
+        cleanup_form.addRow("Remove all installed custom maps and cached data:", c_layout1)
 
-        downloads_row = QHBoxLayout()
-        downloads_row.addWidget(QLabel("Clear downloaded source maps folder:"))
-        self.btn_clear_mapdownloads = QPushButton("Clear mapDownloads...")
+        self.btn_clear_mapdownloads = QPushButton("Delete Downloads...")
         self.btn_clear_mapdownloads.clicked.connect(self._on_clear_map_downloads)
-        downloads_row.addWidget(self.btn_clear_mapdownloads)
-        downloads_row.addStretch()
-        integrations_layout.addLayout(downloads_row)
+        self.btn_clear_mapdownloads.setToolTip(
+            "Removes the mapDownloads folder contents."
+        )
+        c_layout2 = QHBoxLayout()
+        c_layout2.setContentsMargins(0, 0, 0, 0)
+        c_layout2.addWidget(self.btn_clear_mapdownloads)
+        c_layout2.addStretch()
+        cleanup_form.addRow("Delete downloaded map files:", c_layout2)
 
-        cache_row = QHBoxLayout()
-        cache_row.addWidget(QLabel("Clear installer cache and readjust index:"))
         self.btn_clear_cache = QPushButton("Clear Cache...")
         self.btn_clear_cache.clicked.connect(self._on_clear_cache)
-        cache_row.addWidget(self.btn_clear_cache)
-        cache_row.addStretch()
-        integrations_layout.addLayout(cache_row)
+        self.btn_clear_cache.setToolTip(
+            "Deletes the installer cache and regenerates the map index."
+        )
+        c_layout3 = QHBoxLayout()
+        c_layout3.setContentsMargins(0, 0, 0, 0)
+        c_layout3.addWidget(self.btn_clear_cache)
+        c_layout3.addStretch()
+        cleanup_form.addRow("Clear cache and rebuild index:", c_layout3)
 
-        integrations_layout.addStretch()
+        maintenance_layout.addLayout(cleanup_form)
 
-        tabs.addTab(tab_integrations, "Integrations")
-
-        # ----- Updates tab -----
-        tab_updates = QWidget()
-        updates_layout = QVBoxLayout(tab_updates)
-        updates_layout.setContentsMargins(10, 10, 10, 10)
-        updates_layout.setSpacing(10)
+        # ----- Updates section -----
+        updates_section_label = QLabel("Updates")
+        updates_section_label.setStyleSheet("font-weight: bold; margin-top: 8px;")
+        maintenance_layout.addWidget(updates_section_label)
 
         updates_note = QLabel(
-            "Check for new versions from the GitHub repository. "
-            "Updates are applied via git pull (if available) or zip download."
+            "Check for new versions online. Updates are downloaded automatically."
         )
         updates_note.setWordWrap(True)
-        updates_layout.addWidget(updates_note)
+        maintenance_layout.addWidget(updates_note)
 
         # Version info (read-only)
         self._lbl_update_branch = QLabel("Branch: detecting...")
@@ -841,22 +1111,19 @@ class SettingsDialog(QDialog):
         self._lbl_update_source = QLabel("Source: detecting...")
         for lbl in (self._lbl_update_branch, self._lbl_update_commit, self._lbl_update_source):
             lbl.setStyleSheet("color: #888; font-size: 11px;")
-            updates_layout.addWidget(lbl)
+            maintenance_layout.addWidget(lbl)
         self._populate_version_info()
 
-        # Check on launch toggle
-        self.cb_check_updates_on_launch = QCheckBox("Check for updates on launch")
+        self.cb_check_updates_on_launch = QCheckBox("Automatically check for updates on startup")
         self.cb_check_updates_on_launch.setChecked(
             getattr(self._config, "check_updates_on_launch", True)
         )
         self.cb_check_updates_on_launch.setToolTip(
-            "When enabled, the installer will silently check for updates\n"
-            "every time it starts. You will only be notified if a new\n"
-            "version is available."
+            "Silently checks for updates every time the installer starts.\n"
+            "You'll only be notified if a new version is available."
         )
-        updates_layout.addWidget(self.cb_check_updates_on_launch)
+        maintenance_layout.addWidget(self.cb_check_updates_on_launch)
 
-        # Branch selector
         branch_form = QFormLayout()
         branch_form.setLabelAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
         branch_form.setHorizontalSpacing(12)
@@ -880,7 +1147,6 @@ class SettingsDialog(QDialog):
         branch_widget = QWidget()
         branch_widget.setLayout(branch_row)
         branch_form.addRow("Update branch:", branch_widget)
-        updates_layout.addLayout(branch_form)
 
         # Pre-populate branch combo with current branch
         self._populate_branch_combo_initial()
@@ -894,16 +1160,19 @@ class SettingsDialog(QDialog):
 
         # Manual check button
         check_row = QHBoxLayout()
+        check_row.setContentsMargins(0, 0, 0, 0)
         self.btn_check_updates = QPushButton("Check for Updates")
         self.btn_check_updates.setMinimumWidth(160)
         self.btn_check_updates.clicked.connect(self._on_check_updates)
         check_row.addWidget(self.btn_check_updates)
         check_row.addStretch()
-        updates_layout.addLayout(check_row)
+        branch_form.addRow("", check_row)
 
-        updates_layout.addStretch()
+        maintenance_layout.addLayout(branch_form)
 
-        tabs.addTab(tab_updates, "Updates")
+        maintenance_layout.addStretch()
+
+        tabs.addTab(tab_maintenance, "Maintenance && Updates")
 
         tabs.setCurrentIndex(0)
 
@@ -926,13 +1195,36 @@ class SettingsDialog(QDialog):
         layout.addLayout(btn_layout)
 
     def _on_save(self) -> None:
+        new_dl = Path(self.txt_download_root.text().strip() or "./mapDownloads")
+        new_cache = Path(self.txt_cache_dir.text().strip() or "./cache")
+        new_temp = Path(self.txt_temp_dir.text().strip() or "./temp")
+
+        moves = []
+        if new_dl != self._config.download_root:
+            dl_path = self._resolve_config_path(self._config.download_root)
+            if dl_path.exists() and any(True for _ in dl_path.iterdir()):
+                moves.append((dl_path, self._resolve_config_path(new_dl)))
+        if new_cache != self._config.cache_directory:
+            cache_path = self._resolve_config_path(self._config.cache_directory)
+            if cache_path.exists() and any(True for _ in cache_path.iterdir()):
+                moves.append((cache_path, self._resolve_config_path(new_cache)))
+
+        self._config.download_root = new_dl
+        self._config.cache_directory = new_cache
+        self._config.temp_directory = new_temp
+
         self._config.skip_preflight = self.cb_skip_preflight.isChecked()
+        self._config.enable_legacy_sync_refinement = self.cb_legacy_sync.isChecked()
         self._config.suppress_offset_notification = self.cb_suppress.isChecked()
         self._config.cleanup_behavior = self._combo_value(self.combo_cleanup)
         self._config.locked_status_behavior = self._combo_value(self.combo_locked_status)
         self._config.show_preflight_success_popup = self.cb_preflight_popup.isChecked()
         self._config.show_install_summary_popup = self.cb_install_summary.isChecked()
         self._config.show_quickstart_on_launch = self.cb_quickstart.isChecked()
+        self._config.convert_jdnext_gestures = self.cb_convert_jdnext_gestures.isChecked()
+        self._config.fetch_background_mode = self.cb_fetch_background.isChecked()
+        self._config.albumcoach_behavior = self._combo_value(self.combo_albumcoach)
+        self._config.jdnext_cover_behavior = self._combo_value(self.combo_jdnext_cover)
         self._config.log_detail_level = self._combo_value(self.combo_log_detail)
         self._config.theme = self._combo_value(self.combo_theme)
         self._config.enforce_min_window_size = self.cb_enforce_min_size.isChecked()
@@ -940,18 +1232,23 @@ class SettingsDialog(QDialog):
         self._config.min_window_height = self.spin_min_height.value()
         self._config.show_window_size_overlay = self.cb_size_overlay.isChecked()
         self._config.style_debug_mode = self.cb_style_debug.isChecked()
-        self._config.video_quality = self.combo_quality.currentText()
+        display_text = self.combo_quality.currentText()
+        self._config.video_quality = self._quality_display_to_internal.get(display_text, display_text)
+        self._config.video_fallback_behavior = str(self.combo_fallback_behavior.currentData())
         self._config.ffmpeg_hwaccel = self.combo_hwaccel.currentText()
         self._config.vp9_handling_mode = str(self.combo_vp9_mode.currentData())
         self._config.preview_video_mode = self._combo_value(self.combo_preview_mode)
         self._config.discord_channel_url = self.txt_discord_url.text().strip()
+        
+        jdlo_path = self.txt_jdlo_auth.text().strip()
+        self._config.jdlo_auth_path = Path(jdlo_path) if jdlo_path else None
         self._config.ffmpeg_path = self.txt_ffmpeg_path.text().strip() or "ffmpeg"
         self._config.ffprobe_path = self.txt_ffprobe_path.text().strip() or "ffprobe"
         self._config.vgmstream_path = self.txt_vgmstream_path.text().strip() or None
-        self._config.assetstudio_cli_path = self.txt_assetstudio_cli.text().strip() or None
-        third_party_root_text = self.txt_third_party_root.text().strip()
-        self._config.third_party_tools_root = (
-            Path(third_party_root_text).expanduser() if third_party_root_text else None
+        self._config.assetstudio_cli_path = (
+            Path(self.txt_assetstudio_cli.text().strip())
+            if self.txt_assetstudio_cli.text().strip()
+            else None
         )
         self._config.download_timeout_s = self.spin_download_timeout.value()
         self._config.max_retries = self.spin_max_retries.value()
@@ -961,7 +1258,6 @@ class SettingsDialog(QDialog):
         self._config.fetch_bot_response_timeout_s = self.spin_fetch_bot_timeout.value()
         self._config.window_size_overlay_timeout_ms = self.spin_overlay_timeout.value()
         self._config.preview_fps = self.spin_preview_fps.value()
-        self._config.preview_startup_compensation_ms = self.spin_preview_startup_comp.value()
         self._config.preview_only_audio_offset_ms = self.spin_preview_audio_only_offset.value()
         self._config.audio_preview_fade_s = self.spin_audio_preview_fade.value()
         self._config.check_updates_on_launch = self.cb_check_updates_on_launch.isChecked()
@@ -969,6 +1265,36 @@ class SettingsDialog(QDialog):
         if selected_branch:
             self._config.update_branch = selected_branch
         
+        if moves:
+            reply = QMessageBox.question(
+                self,
+                "Migrate Files?",
+                "You have changed one or more storage directories.\n\n"
+                "Would you like to automatically move your existing files from the old locations to the new locations?",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            )
+            if reply == QMessageBox.StandardButton.Yes:
+                def _task(set_status: Callable[[str], None]) -> None:
+                    for src, dst in moves:
+                        set_status(f"Moving {src.name}...")
+                        if dst.exists():
+                            shutil.copytree(src, dst, dirs_exist_ok=True)
+                            shutil.rmtree(src)
+                        else:
+                            shutil.move(src, dst)
+                
+                def _on_success(_: object) -> None:
+                    self.accept()
+                
+                self._run_background_task(
+                    window_title="Migrating Files",
+                    initial_status="Moving files to new storage locations...",
+                    task=_task,
+                    on_success=_on_success,
+                    error_title="Migration Failed",
+                )
+                return
+
         self.accept()
 
     # ==================================================================
@@ -1171,46 +1497,38 @@ class SettingsDialog(QDialog):
             "Confirm Localization Update",
             "Use this file to update in-game localization?\n\n"
             f"Source: {selected_file}\n\n"
-            "A backup of ConsoleSave.json will be created before updating.",
+            "This will update ConsoleSave.json and any relevant .loc8 files.",
             QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
             QMessageBox.StandardButton.No,
         )
         if confirm != QMessageBox.StandardButton.Yes:
             return
 
-        try:
-            console_save_path = resolve_console_save_path(Path(self._config.game_directory))
-        except Exception as exc:
-            logger.exception("Localization update failed: %s", exc)
-            QMessageBox.critical(
-                self,
-                "Localization Update Failed",
-                f"Could not update localization:\n{exc}",
-            )
-            return
-
         def _task() -> object:
-            return update_console_localization(Path(selected_file), console_save_path)
+            return update_localization(Path(selected_file), Path(self._config.game_directory))
 
         def _on_success(result: object) -> None:
             logger.info(
-                "Localization updated: %s updated, %s added, backup=%s",
+                "Localization updated: %s updated, %s added, %s loc8 files updated",
                 result.updated_existing,
                 result.added_new,
-                result.backup_path,
+                result.updated_loc8_files,
             )
+            backup_msg = f"ConsoleSave Backup: {result.backup_path}\n" if result.backup_path else ""
             QMessageBox.information(
                 self,
                 "Localization Updated",
                 "Localization update completed successfully.\n\n"
-                f"Updated IDs: {result.updated_existing}\n"
-                f"New IDs: {result.added_new}\n\n"
-                f"Backup: {result.backup_path}",
+                f"Updated Console IDs: {result.updated_existing}\n"
+                f"New Console IDs: {result.added_new}\n"
+                f"Updated loc8 files: {result.updated_loc8_files}\n"
+                f"loc8 IDs patched: {result.loc8_added_or_updated}\n\n"
+                f"{backup_msg}",
             )
 
         self._run_background_task(
             window_title="Updating Localization",
-            initial_status="Updating ConsoleSave localization",
+            initial_status="Updating ConsoleSave and loc8 localization",
             task=_task,
             on_success=_on_success,
             error_title="Localization Update Failed",
@@ -1347,10 +1665,11 @@ class SettingsDialog(QDialog):
             )
             return
 
+        display_name = "JDNext" if source_game == "jdnext" else ("JDLO" if source_game == "jdlo" else "JDU")
         QMessageBox.information(
             self,
             "Bulk Install Started",
-            f"Queued {len(codenames)} map(s) for {'JDNext' if source_game == 'jdnext' else 'JDU'} fetch install.",
+            f"Queued {len(codenames)} map(s) for {display_name} fetch install.",
         )
         self.reject()
 
@@ -1366,6 +1685,13 @@ class SettingsDialog(QDialog):
             source_game="jdnext",
             title="Select JDNext song database JSON",
             extractor=extract_jdnext_songdb_codenames,
+        )
+
+    def _on_bulk_install_jdlo_songdb(self) -> None:
+        self._run_songdb_bulk_install(
+            source_game="jdlo",
+            title="Select JDLO songs.json",
+            extractor=extract_jdlo_songdb_codenames,
         )
 
     def _on_clean_game_data(self) -> None:

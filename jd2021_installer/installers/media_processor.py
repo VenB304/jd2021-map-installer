@@ -810,6 +810,71 @@ def generate_cover_tga(
     return res
 
 
+def synthesize_jdnext_cover_art(
+    map_bkg_path: Path,
+    title_path: Path,
+    canvas_size: tuple[int, int] = (1024, 1024),
+) -> "Image.Image":
+    """Composite a proper 1:1 cover from map_bkg and Title for JDNext maps.
+
+    Algorithm
+    ---------
+    - Layer 1 (map_bkg): scaled to fill the canvas height (aspect preserved,
+      horizontal overflow is simply clipped by alpha_composite).
+    - Layer 2 (Title): left/right transparent columns cropped via getbbox(),
+      then scaled so that the cropped width occupies 70 % of the canvas
+      (leaving 15 % margin on each side), centred both horizontally and
+      vertically.
+
+    Parameters
+    ----------
+    map_bkg_path:
+        Path to the map background image (any PIL-readable format).
+    title_path:
+        Path to the Title asset (transparent PNG expected).
+    canvas_size:
+        ``(W, H)`` of the output image. Default 1024×1024.
+
+    Returns
+    -------
+    PIL.Image.Image
+        RGBA composite ready to be saved as TGA.
+    """
+    try:
+        from PIL import Image as _Image
+    except ImportError:
+        raise MediaProcessingError("Pillow is not installed. Run: pip install Pillow")
+
+    W, H = canvas_size
+    canvas = _Image.new("RGBA", (W, H), (0, 0, 0, 255))
+
+    # --- Layer 1: map_bkg — scale to fill canvas height, center horizontally ---
+    bkg = _Image.open(map_bkg_path).convert("RGBA")
+    scale = H / bkg.height
+    bkg_w = int(bkg.width * scale)
+    bkg_resized = bkg.resize((bkg_w, H), _Image.Resampling.LANCZOS)
+    bkg_x = (W - bkg_w) // 2
+    canvas.alpha_composite(bkg_resized, (bkg_x, 0))
+
+    # --- Layer 2: Title — crop left/right transparency, scale to 70% width ---
+    title = _Image.open(title_path).convert("RGBA")
+    bbox = title.getbbox()
+    if bbox:
+        # Only crop horizontal transparency; preserve full vertical extent
+        title = title.crop((bbox[0], 0, bbox[2], title.height))
+
+    target_w = int(W * 0.70)
+    scale_t = target_w / title.width
+    title_h = int(title.height * scale_t)
+    title_resized = title.resize((target_w, title_h), _Image.Resampling.LANCZOS)
+
+    title_x = (W - target_w) // 2
+    title_y = (H - title_h) // 2
+    canvas.alpha_composite(title_resized, (title_x, title_y))
+
+    return canvas
+
+
 # ---------------------------------------------------------------------------
 # vgmstream — Xbox 360 XMA2 audio decoding
 # ---------------------------------------------------------------------------
@@ -1146,44 +1211,47 @@ def copy_moves(
         return True, "ok"
 
     moves_target_root = Path(target_dir) / "timeline" / "moves"
+    durango_moves_dir = moves_target_root / "durango"
+    wiiu_moves_dir = moves_target_root / "wiiu"
     pc_moves_dir = moves_target_root / "pc"
     total_copied = 0
     skipped_gesture_names: set[str] = set()
 
-    def _copy_with_mirror_and_pc(src_file: Path, platform_name: str) -> bool:
-        """Copy to original platform folder and duplicate into PC folder.
+    def _copy_to_canonical(src_file: Path, platform_name: str) -> bool:
+        """Copy to the canonical output folder based on file extension.
 
-        Original layout is preserved at timeline/moves/<platform>/, while PC
-        gets a flattened copy to satisfy engines/tools expecting that location.
+        Gesture files are placed into durango/ and mirrored to pc/.
+        MSM files are placed into wiiu/.
         """
-        copied_any = False
+        ext_low = src_file.suffix.lower()
+        if ext_low == ".gesture":
+            canon_dir = durango_moves_dir
+        elif ext_low == ".msm":
+            canon_dir = wiiu_moves_dir
+        else:
+            canon_dir = durango_moves_dir
 
-        rel_from_platform = src_file.relative_to(src_root / platform_name)
+        dest = canon_dir / src_file.name
+        copied = False
+        if not dest.exists():
+            dest.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(src_file, dest)
+            copied = True
 
-        original_dest = moves_target_root / platform_name.lower() / rel_from_platform
-        if not original_dest.exists():
-            original_dest.parent.mkdir(parents=True, exist_ok=True)
-            shutil.copy2(src_file, original_dest)
-            copied_any = True
+        # Mirror gesture files to pc/ so the engine finds them
+        # when RUNNER.bat simulates the PC platform.
+        if ext_low == ".gesture":
+            pc_dest = pc_moves_dir / src_file.name
+            if not pc_dest.exists():
+                pc_dest.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copy2(src_file, pc_dest)
+                copied = True
 
-        pc_dest = pc_moves_dir / src_file.name
-        if not pc_dest.exists():
-            pc_dest.parent.mkdir(parents=True, exist_ok=True)
-            shutil.copy2(src_file, pc_dest)
-            copied_any = True
+        return copied
 
-        return copied_any
-
-    def _copy_to_original_platform(src_file: Path, platform_name: str) -> bool:
-        """Copy a file only to the preserved source platform folder."""
-        rel_from_platform = src_file.relative_to(src_root / platform_name)
-        original_dest = moves_target_root / platform_name.lower() / rel_from_platform
-        if original_dest.exists():
-            return False
-
-        original_dest.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copy2(src_file, original_dest)
-        return True
+    def _copy_to_platform_preserve(src_file: Path, platform_name: str) -> bool:
+        """Copy a file to its canonical folder (durango for gestures, wiiu for msm)."""
+        return _copy_to_canonical(src_file, platform_name)
 
     def _collect_expected_gestures_from_dtape() -> set[str]:
         """Extract expected gesture filenames from installed dance tape paths."""
@@ -1238,7 +1306,7 @@ def copy_moves(
                     plat_upper,
                 )
                 for gesture_file in skipped:
-                    if _copy_to_original_platform(gesture_file, plat_name):
+                    if _copy_to_platform_preserve(gesture_file, plat_name):
                         total_copied += 1
         elif plat_upper in KINECT_GESTURE_PLATFORMS:
             for gesture_file in plat_dir.rglob("*.gesture"):
@@ -1251,23 +1319,23 @@ def copy_moves(
                         reason,
                     )
                     continue
-                if _copy_with_mirror_and_pc(gesture_file, plat_name):
+                if _copy_to_canonical(gesture_file, plat_name):
                     total_copied += 1
         else:
             # Non-Kinect gestures are still preserved and duplicated for users
             # who need cross-platform originals alongside the PC mirror.
             for gesture_file in plat_dir.rglob("*.gesture"):
-                if _copy_with_mirror_and_pc(gesture_file, plat_name):
+                if _copy_to_canonical(gesture_file, plat_name):
                     total_copied += 1
 
         for msm_file in plat_dir.rglob("*.msm"):
-            if _copy_with_mirror_and_pc(msm_file, plat_name):
+            if _copy_to_canonical(msm_file, plat_name):
                 total_copied += 1
 
     # Pass 2: Substitute non-Kinect naming variants with already accepted gestures
     # (disabled when gesture import is explicitly skipped)
     if not skip_gestures:
-        pc_gestures = {f.name for f in pc_moves_dir.glob("*.gesture")}
+        durango_gestures = {f.name for f in durango_moves_dir.glob("*.gesture")} if durango_moves_dir.is_dir() else set()
 
         for plat_dir in src_root.iterdir():
             if (
@@ -1278,14 +1346,17 @@ def copy_moves(
 
             for gesture_file in plat_dir.glob("*.gesture"):
                 fname = gesture_file.name
-                if fname in pc_gestures or (pc_moves_dir / fname).exists():
+                if fname in durango_gestures or (durango_moves_dir / fname).exists():
                     continue
 
                 stem = gesture_file.stem
                 base = stem.rstrip("0123456789")
-                sub_src = pc_moves_dir / (base + ".gesture")
+                sub_src = durango_moves_dir / (base + ".gesture")
 
                 if base != stem and sub_src.exists():
+                    durango_moves_dir.mkdir(parents=True, exist_ok=True)
+                    shutil.copy2(sub_src, durango_moves_dir / fname)
+                    # Mirror to pc/
                     pc_moves_dir.mkdir(parents=True, exist_ok=True)
                     shutil.copy2(sub_src, pc_moves_dir / fname)
                     total_copied += 1
@@ -1299,13 +1370,14 @@ def copy_moves(
     expected_names = {
         name
         for name in expected_names
-        if name and not (pc_moves_dir / name).exists()
+        if name and not (durango_moves_dir / name).exists()
     }
 
     if expected_names:
         def _pick_template_gesture() -> Optional[Path]:
             bundled_candidates = [
                 Path(__file__).resolve().parents[2] / "assets" / "gesture_templates" / "discorope.gesture",
+                Path(__file__).resolve().parents[2] / "assets" / "gesture_templates" / "durango_template.gesture",
             ]
             for candidate in bundled_candidates:
                 if candidate.exists():
@@ -1341,23 +1413,18 @@ def copy_moves(
                 len(expected_names),
             )
         else:
+            durango_moves_dir.mkdir(parents=True, exist_ok=True)
             pc_moves_dir.mkdir(parents=True, exist_ok=True)
-            durango_moves_dir = moves_target_root / "durango"
             created = 0
             for name in sorted(expected_names):
-                dest = pc_moves_dir / name
+                dest = durango_moves_dir / name
                 if dest.exists():
                     continue
                 shutil.copy2(template, dest)
-
-                # JDNext flow skips gesture import and relies on generated files.
-                # Mirror generated gestures into durango for platform parity.
-                if skip_gestures:
-                    durango_dest = durango_moves_dir / name
-                    durango_dest.parent.mkdir(parents=True, exist_ok=True)
-                    if not durango_dest.exists():
-                        shutil.copy2(template, durango_dest)
-
+                # Mirror to pc/ for PC-simulated platform
+                pc_dest = pc_moves_dir / name
+                if not pc_dest.exists():
+                    shutil.copy2(template, pc_dest)
                 created += 1
 
             if created:
@@ -1367,9 +1434,14 @@ def copy_moves(
                     created,
                     template.name,
                 )
+                if skip_gestures and not skipped_gesture_names:
+                    logger.info(
+                        "While camera gesture conversion is turned on, %s will be used because the map being installed does not have camera gestures.",
+                        template.name,
+                    )
 
     if total_copied:
-        logger.debug("Merged %d gesture/msm file(s) from %s into PC/", total_copied, src_root)
+        logger.debug("Merged %d gesture/msm file(s) from %s into durango/wiiu", total_copied, src_root)
 
     return total_copied
 

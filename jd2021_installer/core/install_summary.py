@@ -58,7 +58,7 @@ class InstallSummary:
             return "Required files are missing. Install is risky and may not be playable."
         if self.missing_optional_count > 0:
             return "Only optional files are missing. Install should work with reduced polish."
-        return "All required and optional checklist items were found."
+        return "All required and optional checklist items were fulfilled."
 
 
 def _exists_any(base_dir: Path, rel_candidates: list[str]) -> bool:
@@ -210,17 +210,7 @@ def _optional_items(base_dir: Path, codename: str) -> list[InstallChecklistItem]
         ),
         InstallChecklistItem(
             label="Map preview video",
-            present=(
-                _exists_any(
-                    base_dir,
-                    [
-                        f"VideosCoach/{codename}_MapPreview.webm",
-                        f"videoscoach/{codename}_MapPreview.webm",
-                        f"videoscoach/{codename}_mappreview.webm",
-                    ],
-                )
-                or (_has_main_video(base_dir, codename) and _has_trk_preview_markers(base_dir, codename))
-            ),
+            present=_has_main_video(base_dir, codename) and _has_trk_preview_markers(base_dir, codename),
             required=False,
         ),
         InstallChecklistItem(

@@ -486,7 +486,9 @@ def _try_jdnext_missing_fallbacks(
     if expected_scene:
         expected_scene_name = get_filename_from_url(expected_scene)
         if expected_scene_name not in downloaded:
-            local_cache = Path(__file__).resolve().parents[2] / "temp" / "jdnext_downloads"
+            candidate_temp = Path(config.temp_directory).expanduser()
+            root_dir = Path(__file__).resolve().parents[2]
+            local_cache = (candidate_temp if candidate_temp.is_absolute() else (root_dir / candidate_temp)) / "jdnext_downloads"
             candidates = []
             if local_cache.exists():
                 candidates.extend(local_cache.glob("*mapPackage*.bundle"))
@@ -578,6 +580,7 @@ def _build_quality_search_order(
     selected = (selected_quality or "ULTRA_HD").upper()
     cfg = config or AppConfig()
     vp9_mode = getattr(cfg, "vp9_handling_mode", "reencode_to_vp8")
+    fallback_behavior = getattr(cfg, "video_fallback_behavior", "fallback_down")
 
     if selected.endswith("_HD"):
         selected_tier = selected[:-3]
@@ -589,17 +592,27 @@ def _build_quality_search_order(
     if selected_tier not in tiers:
         selected_tier = "ULTRA"
 
+    # Determine base ordered tiers depending on fallback mode
+    start_idx = tiers.index(selected_tier)
+    
     # Compatibility mode: avoid VP9 tiers entirely, pick the next HD tier down.
     if vp9_mode == "fallback_compatible_down" and is_jdnext_url_set:
-        start_idx = tiers.index(selected_tier)
         if not selected_is_hd:
             start_idx = min(start_idx + 1, len(tiers) - 1)
-        return [f"{tier}_HD" for tier in tiers[start_idx:]]
+        
+        if fallback_behavior == "fallback_up":
+            ordered_tiers = list(reversed(tiers[:start_idx + 1])) + tiers[start_idx + 1:]
+        else:
+            ordered_tiers = tiers[start_idx:]
+            
+        return [f"{tier}_HD" for tier in ordered_tiers]
 
     prefer_hd_first = selected_is_hd
 
-    start_idx = tiers.index(selected_tier)
-    ordered_tiers = tiers[start_idx:]
+    if fallback_behavior == "fallback_up":
+        ordered_tiers = list(reversed(tiers[:start_idx + 1])) + tiers[start_idx + 1:]
+    else:
+        ordered_tiers = tiers[start_idx:]
 
     order: List[str] = []
     for tier in ordered_tiers:
@@ -1447,11 +1460,25 @@ def _extract_requester_mentions_from_embed(html: str) -> Set[str]:
     """Extract @mention display names from embed markup/text."""
     mentions: Set[str] = set()
 
+    # Simple @mention tokens (single-word usernames like @ven)
     for match in re.findall(r"@([A-Za-z0-9_.\-]{2,32})", html or ""):
         name = (match or "").strip().lower()
         if name:
             mentions.add(name)
-            
+
+    # Discord renders mentions inside <span> elements with mention-related
+    # class names.  Extract the full text which may contain spaces
+    # (e.g. "tonton loup").
+    for match in re.findall(
+        r'<span[^>]*class="[^"]*mention[^"]*"[^>]*>@?([^<]+)</span>',
+        html or "",
+        re.IGNORECASE,
+    ):
+        name = (match or "").strip().lower()
+        if name:
+            mentions.add(name)
+
+    # "username ... used /command" pattern in interaction headers
     interaction_match = re.search(r'class="username[^>]*>([^<]+)</span>\s*used', html, re.IGNORECASE)
     if interaction_match:
         name = interaction_match.group(1).strip().lower()
@@ -1466,6 +1493,10 @@ def _embed_matches_requester(html: str, requester_handles: Optional[List[str]]) 
 
     If no requester handles are known, this check is neutral (True).
     If embed has no @mentions, this check is also neutral to avoid false negatives.
+
+    Uses substring containment rather than exact matching because display names
+    may contain spaces (e.g. "tonton loup") and the simple @regex may only
+    capture the first word.
     """
     if not requester_handles:
         return True
@@ -1482,7 +1513,18 @@ def _embed_matches_requester(html: str, requester_handles: Optional[List[str]]) 
     if not mentions:
         return True
 
-    return bool(mentions.intersection(expected))
+    # Exact match first
+    if mentions.intersection(expected):
+        return True
+
+    # Substring containment: "tonton loup" in expected should match
+    # "tonton" in mentions (partial @regex capture), and vice versa.
+    for m in mentions:
+        for e in expected:
+            if m in e or e in m:
+                return True
+
+    return False
 
 
 async def _get_logged_in_requester_handles(page) -> List[str]:
@@ -1491,21 +1533,28 @@ async def _get_logged_in_requester_handles(page) -> List[str]:
         """() => {
             const out = new Set();
 
+            // Bottom-left account panel: look for the username section
             const accountBtn = document.querySelector('[aria-label*="Set Status"], [aria-label*="User Settings"]');
             if (accountBtn) {
                 const t = (accountBtn.textContent || '').trim();
                 if (t) out.add(t);
             }
 
-            const display = document.querySelector('[class*="nameTag"], [class*="username"], [class*="userTag"]');
-            if (display) {
-                const t = (display.textContent || '').trim();
-                if (t) out.add(t);
+            // Various selectors for the username display in Discord's
+            // bottom-left panel (layout changes across Discord versions).
+            const selectors = [
+                '[class*="nameTag"]',
+                '[class*="panelTitleContainer"] [class*="username"]',
+                'section[aria-label*="User area"] [class*="username"]',
+                '[class*="userTag"]',
+            ];
+            for (const sel of selectors) {
+                const el = document.querySelector(sel);
+                if (el) {
+                    const t = (el.textContent || '').trim();
+                    if (t) out.add(t);
+                }
             }
-
-            const bodyText = (document.body?.innerText || '').split('\\n').slice(-40).join('\\n');
-            const m = bodyText.match(/@([A-Za-z0-9_.-]{2,32})/g) || [];
-            for (const token of m) out.add(token);
 
             return Array.from(out);
         }"""
@@ -1516,10 +1565,13 @@ async def _get_logged_in_requester_handles(page) -> List[str]:
         token = (raw or "").strip()
         if not token:
             continue
-        for part in re.split(r"\s+|#", token):
-            part = part.strip().lstrip("@").lower()
-            if re.fullmatch(r"[a-z0-9_.\-]{2,32}", part):
-                handles.add(part)
+        # Strip the #discriminator suffix if present (e.g. "User#1234" → "User")
+        # but do NOT split by whitespace — display names can contain spaces
+        # (e.g. "tonton loup" is one user, not two).
+        name = re.split(r"#\d{4}$", token)[0].strip().lstrip("@")
+        name_lower = name.lower()
+        if name_lower and len(name_lower) >= 2:
+            handles.add(name_lower)
 
     return sorted(handles)
 
@@ -1763,6 +1815,13 @@ async def _fetch_command_with_retry(
     """Send a slash command, wait for bot response, extract and validate HTML.
 
     Retries up to ``max_retries`` times if the response has no valid CDN links.
+
+    Scanning strategy for multi-user channels:
+    1. Skip bot error messages that reference a *different* codename.
+    2. Validate that the embed contains our requested codename + valid CDN links.
+    3. Use requester identity as a secondary hint — log a warning but don't
+       hard-reject, since identity detection is fragile (display names with
+       spaces, varying Discord layouts, etc.).
     """
     for attempt in range(max_retries + 1):
         if attempt > 0:
@@ -1786,14 +1845,7 @@ async def _fetch_command_with_retry(
                 html = await _extract_embed_html(page, embed_id)
                 cursor_id = embed_id
 
-                if not _embed_matches_requester(html, requester_handles):
-                    logger.debug(
-                        "Skipping %s response %s: embed mentions a different requester.",
-                        label,
-                        embed_id,
-                    )
-                    continue
-
+                # 1. Check for bot error messages first.
                 error_message = _extract_embed_error_message(html)
                 if error_message:
                     if _embed_mentions_expected_codename(html, codename):
@@ -1808,26 +1860,41 @@ async def _fetch_command_with_retry(
                     )
                     continue
 
+                # 2. Validate codename + CDN links (the most reliable signal).
                 is_valid, reason = _is_valid_embed_response(
                     html,
                     require_gameplay_video=require_gameplay_video,
                     expected_codename=codename,
                     allow_textual_codename_fallback=allow_textual_codename_fallback,
                 )
-                if is_valid:
-                    logger.debug("Extracted %s embed HTML.", label)
-                    return html
+                if not is_valid:
+                    logger.debug(
+                        "Skipping %s response %s: %s",
+                        label,
+                        embed_id,
+                        reason,
+                    )
+                    try:
+                        Path("LAST_FAILED_EMBED.html").write_text(html, encoding="utf-8")
+                    except Exception:
+                        pass
+                    continue
 
-                logger.debug(
-                    "Skipping %s response %s: %s",
-                    label,
-                    embed_id,
-                    reason,
-                )
-                try:
-                    Path("LAST_FAILED_EMBED.html").write_text(html, encoding="utf-8")
-                except Exception:
-                    pass
+                # 3. Requester identity is a secondary hint, not a hard gate.
+                #    In multi-user channels, another user might query the same
+                #    codename — but if the embed passes codename + CDN validation,
+                #    it contains the data we need regardless of who triggered it.
+                if not _embed_matches_requester(html, requester_handles):
+                    logger.debug(
+                        "Note: %s response %s was likely triggered by another user, "
+                        "but it matches our requested codename '%s'. Accepting.",
+                        label,
+                        embed_id,
+                        codename,
+                    )
+
+                logger.debug("Extracted %s embed HTML.", label)
+                return html
 
             raise WebExtractionError(
                 f"Timed out waiting for a {label} response matching codename '{codename}'."
@@ -2193,24 +2260,73 @@ class WebPlaywrightExtractor(BaseExtractor):
             )
 
         profile_dir = str(self._config.browser_profile_dir.resolve())
+        background_mode = getattr(self._config, "fetch_background_mode", False)
+
+        # When background mode is enabled, use INFO level so actions are
+        # visible in the GUI log console (since the browser itself is hidden).
+        _log = logger.info if background_mode else logger.debug
+
+        launch_args = [
+            "--disable-blink-features=AutomationControlled",
+        ]
+        if background_mode:
+            # Move the browser far off-screen so it's invisible but the
+            # viewport stays at full size (unlike minimize which collapses
+            # the viewport to 0×0, breaking Playwright interactions).
+            launch_args.append("--window-position=-32000,-32000")
+            _log("Background mode: browser will run off-screen.")
 
         async with async_playwright() as p:
             context = await p.chromium.launch_persistent_context(
                 profile_dir,
                 headless=False,
                 viewport={"width": 1280, "height": 800},
-                args=["--disable-blink-features=AutomationControlled"],
+                args=launch_args,
             )
 
             page = context.pages[0] if context.pages else await context.new_page()
 
             try:
-                logger.debug("Fetching codename: %s", codename)
+                _log("Fetching codename: %s", codename)
 
                 # Navigate to Discord channel
-                logger.debug("Navigating to Discord channel...")
+                _log("Navigating to Discord channel...")
                 await page.goto(channel_url, wait_until="domcontentloaded")
-                await _wait_for_login(page, self._config.fetch_login_timeout_s)
+
+                if background_mode:
+                    # In background mode, try a quick login check first.
+                    # If the session expired, bring the browser on-screen
+                    # for manual re-login, then move it back off-screen.
+                    try:
+                        await _wait_for_login(page, timeout_s=15)
+                        _log("Discord session is valid (already logged in).")
+                    except Exception:
+                        _log(
+                            "Discord session expired or not found. "
+                            "Bringing browser on-screen for manual login..."
+                        )
+                        try:
+                            cdp = await context.new_cdp_session(page)
+                            await cdp.send("Browser.setWindowBounds", {
+                                "windowId": 1,
+                                "bounds": {"left": 100, "top": 100, "windowState": "normal"},
+                            })
+                        except Exception as cdp_exc:
+                            logger.debug("CDP setWindowBounds failed: %s", cdp_exc)
+
+                        await _wait_for_login(page, self._config.fetch_login_timeout_s)
+                        _log("Login successful. Moving browser back off-screen.")
+
+                        try:
+                            cdp = await context.new_cdp_session(page)
+                            await cdp.send("Browser.setWindowBounds", {
+                                "windowId": 1,
+                                "bounds": {"left": -32000, "top": -32000, "windowState": "normal"},
+                            })
+                        except Exception as cdp_exc:
+                            logger.debug("CDP setWindowBounds (hide) failed: %s", cdp_exc)
+                else:
+                    await _wait_for_login(page, self._config.fetch_login_timeout_s)
 
                 # Wait for channel messages to load
                 try:
@@ -2225,14 +2341,14 @@ class WebPlaywrightExtractor(BaseExtractor):
                 bot_timeout = self._config.fetch_bot_response_timeout_s
                 requester_handles = await _get_logged_in_requester_handles(page)
                 if requester_handles:
-                    logger.debug("Requester identity detected: %s", ", ".join(requester_handles))
+                    _log("Requester identity detected: %s", ", ".join(requester_handles))
                 else:
-                    logger.debug("Requester identity not detected; proceeding without requester filter.")
+                    _log("Requester identity not detected; proceeding without requester filter.")
 
                 nohud_html: Optional[str] = None
                 jdnext_metadata_payloads: Dict[str, Dict[str, str]] = {}
                 if self._source_game == "jdnext":
-                    logger.debug("[1/1] /asset server:jdnext %s", codename)
+                    _log("[1/1] Sending /asset server:jdnext %s", codename)
                     assets_html = await _fetch_command_with_retry(
                         page,
                         command="asset",
@@ -2244,19 +2360,22 @@ class WebPlaywrightExtractor(BaseExtractor):
                         allow_textual_codename_fallback=True,
                         requester_handles=requester_handles,
                     )
+                    _log("Received /asset response for %s.", codename)
                     assets_accessory_id = await _get_last_accessory_id(page)
                     if assets_accessory_id:
                         try:
+                            _log("Fetching JDNext metadata buttons...")
                             jdnext_metadata_payloads = await _fetch_jdnext_button_metadata(
                                 page,
                                 assets_accessory_id=assets_accessory_id,
                                 timeout_s=bot_timeout,
                             )
+                            _log("JDNext metadata captured: %s", ", ".join(jdnext_metadata_payloads.keys()) or "none")
                         except Exception as meta_exc:
-                            logger.debug("JDNext metadata button capture failed: %s", meta_exc)
+                            _log("JDNext metadata button capture failed: %s", meta_exc)
                 else:
                     # Step 1: /assets jdu <codename>
-                    logger.debug("[1/2] /assets jdu %s", codename)
+                    _log("[1/2] Sending /assets jdu %s", codename)
                     assets_html = await _fetch_command_with_retry(
                         page,
                         command="assets",
@@ -2266,10 +2385,11 @@ class WebPlaywrightExtractor(BaseExtractor):
                         bot_timeout_s=bot_timeout,
                         requester_handles=requester_handles,
                     )
+                    _log("Received /assets response for %s.", codename)
                     await page.wait_for_timeout(500)
 
                     # Step 2: /nohud <codename>
-                    logger.debug("[2/2] /nohud %s", codename)
+                    _log("[2/2] Sending /nohud %s", codename)
                     nohud_html = await _fetch_command_with_retry(
                         page,
                         command="nohud",
@@ -2279,8 +2399,8 @@ class WebPlaywrightExtractor(BaseExtractor):
                         bot_timeout_s=bot_timeout,
                         requester_handles=requester_handles,
                     )
+                    _log("Received /nohud response for %s.", codename)
 
-                # Save HTML to output dir for caching / debugging
                 # Save HTML to download dir for caching / debugging / portability
                 # We use download_root which is 'mapDownloads', grouped by source game.
                 download_dir = self._download_dir_for_codename(codename)
@@ -2305,7 +2425,7 @@ class WebPlaywrightExtractor(BaseExtractor):
                         json.dumps(metadata_summary, indent=2, sort_keys=True),
                         encoding="utf-8",
                     )
-                logger.debug("Saved HTML to %s", download_dir)
+                _log("Saved HTML to %s", download_dir)
 
             finally:
                 try:

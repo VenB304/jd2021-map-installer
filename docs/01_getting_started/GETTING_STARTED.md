@@ -63,7 +63,9 @@ If `setup.bat` fails or you want full control, follow **Manual Setup**.
 
 ### Step 1 — Install Python
 
-Install **Python 3.10+** from <https://www.python.org/downloads/> and enable **Add Python to PATH**.
+Install **Python 3.12+** from <https://www.python.org/downloads/> and enable **Add Python to PATH**.
+
+If you plan to use `setup.bat`, it can also provision a portable Python 3.14.0 runtime automatically when no supported interpreter is available.
 
 Verify:
 
@@ -82,13 +84,13 @@ pip install -r requirements.txt
 ```
 
 Core packages include:
-- **PyQt6** (≥6.5) — GUI framework
-- **Playwright** (≥1.40) — Fetch mode browser automation
-- **Pydantic** (≥2.0) — Configuration validation
-- **Pillow** (≥10.0) — Image processing (cover art, pictograms, textures)
-- **requests** (≥2.31) — HTTP downloads
-- **UnityPy** (≥1.23) — JDNext bundle extraction fallback
-- **fsspec** (≥2024.0) — Filesystem abstraction
+- **PyQt6** (6.10.2) — GUI framework
+- **Playwright** (1.58.0) — Fetch mode browser automation
+- **Pydantic** (2.12.5) — Configuration validation
+- **Pillow** (12.1.1) — Image processing (cover art, pictograms, textures)
+- **requests** (2.33.0) — HTTP downloads
+- **UnityPy** (1.25.0) — JDNext bundle extraction fallback
+- **fsspec** (2026.3.0) — Filesystem abstraction
 
 ---
 

@@ -28,6 +28,7 @@ This is the primary reference for new users. It combines setup, GUI orientation,
    - Create a Python virtual environment
    - Install required Python packages
    - Download and configure FFmpeg if not already present
+   - Provision a portable Python 3.14.0 runtime if no supported Python 3.12+ interpreter is available
 3. **Double-click `RUN.bat`** to start the installer.
 
 If you prefer a terminal:

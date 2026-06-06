@@ -173,7 +173,12 @@ def test_archive_worker_uses_extraction_root_for_normalize_search_root(
 
     captured: dict[str, Path | str | None] = {}
 
-    def _fake_normalize(directory, codename, search_root=None):  # type: ignore[no-untyped-def]
+    def _fake_normalize(
+        directory,
+        codename,
+        search_root=None,
+        supplemental_roots=None,
+    ):  # type: ignore[no-untyped-def]
         captured["directory"] = Path(directory)
         captured["codename"] = codename
         captured["search_root"] = Path(search_root) if search_root else None

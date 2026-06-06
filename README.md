@@ -4,7 +4,7 @@
 
 ![Screenshot](./assets/images/tool-screenshot.png)
 
-A Windows-first desktop application built on **PyQt6** that turns raw map assets — whether scraped from the web, unpacked from Xbox 360 IPK archives, or extracted from **Just Dance Next** Unity bundles — into fully playable JD2021 PC maps.  
+A Windows-first desktop application built on **PyQt6** that turns raw map assets — whether scraped from the web, unpacked from IPK archives, or extracted from **Just Dance Next** Unity bundles — into fully playable JD2021 PC maps.  
 No manual file wrangling required.
 
 ---
@@ -13,36 +13,36 @@ No manual file wrangling required.
 
 | | |
 |---|---|
-| 🎨 **Modern PyQt6 Interface** | Dark-themed, split-panel GUI with live log output, a granular progress checklist, real-time preview, and sync-refinement tools — all on background threads so the UI never freezes. |
-| 🆕 **JDNext Support** | Full pipeline for Just Dance Next maps: fetch asset pages, extract Unity bundles via AssetStudioMod, parse `.btape` text files, and convert everything to UbiArt format. |
-| 🔄 **Unified Pipeline** | Every source flows through the same **Extract → Normalize → Install** pipeline, producing a canonical `NormalizedMapData` regardless of origin. |
-| 📦 **Multi-Mode Ingestion** | Seven distinct input modes cover every acquisition workflow — from one-click codename fetch to granular manual file selection. |
-| 🎬 **Media Processing** | Automatic video transcoding (8 quality tiers with fallback), audio conversion, XMA2 decode via vgmstream, preview generation, and image format conversion powered by FFmpeg, FFprobe, and Pillow. |
+| 🎨 **Modern Interface** | A dark-themed GUI that provides a real-time progress checklist and log output while keeping the application responsive during downloads and extraction. |
+| 🌍 **Multi-Source Support** | Install maps from Just Dance Unlimited, Just Dance Next, JDLO, or IPK archives, converting them to a compatible format for JD2021 PC. |
+| 🎬 **Media Processing** | Automatically transcodes videos, converts image formats, generates menu previews, and applies audio gain adjustments to match the base game's volume. |
+| 📝 **Localization** | Updates the game's `.loc8` files so that song titles, artists, and coach names display correctly in the menus. |
+| 📦 **Batch Processing** | Select a directory of files or maps to process and install multiple songs in sequence. |
 
 ---
 
 ## 🎮 Supported Modes
 
-| Mode | Source | What It Does |
-|------|--------|-------------|
-| **Fetch (Codename)** | JDU via Playwright | Enter codenames → headless Chromium scrapes JDHelper for asset & NOHUD HTML, downloads everything, and installs automatically. |
-| **HTML Files** | Saved `.html` exports | Load pre-saved asset + NOHUD HTML files from JDHelper. Useful when files are already downloaded. |
-| **IPK Archive** | `.ipk` file | Extracts maps from Xbox 360 IPK archives with zlib/LZMA decompression and binary CKD parsing. |
-| **Batch (Directory)** | Folder of maps | Point to a directory containing any mix of IPK files, HTML exports, or pre-extracted map folders — processes them all in sequence. |
-| **Manual (Directory)** | Pre-extracted files | Full granular control: pick individual audio, video, tape, and asset files by hand. Supports JDU, IPK, and mixed source layouts. |
-| **Fetch JDNext** | JDNext via Playwright | Enter codenames → fetches JDNext asset pages, extracts Unity bundles,  and converts to UbiArt. |
-| **HTML Files JDNext** | Saved JDNext `.html` | Same as Fetch JDNext but from pre-saved HTML. |
+| Mode | What you provide | What the app does |
+|------|------------------|-------------------|
+| **Fetch (Codename)** | A map codename | Downloads and installs the map from Just Dance Unlimited. |
+| **Fetch JDNext** | A map codename | Downloads the map from Just Dance Next and converts it to UbiArt format. |
+| **Fetch JDLO** | A map codename | Downloads and installs the map from the Just Dance Legacy Online (JDLO) servers. |
+| **HTML Files** | Saved `.html` pages | Map source files that are already downloaded from Fetch Modes. Allows you to install maps without having to Fetch again. |
+| **IPK Archive** | An `.ipk` file | Extracts and installs a map from an IPK archive. |
+| **Batch (Directory)** | A folder of maps | Processes and installs multiple maps or map folders found in a single directory. |
+| **Manual (Directory)** | Extracted files | Allows you to manually select specific audio, video, and data files to build a map. |
 
 ---
 
 ## 📋 Prerequisites
 
 - **Windows 10/11** (64-bit)
-- **Python 3.10+** with `pip`
+- **Python 3.12+** with `pip` and a current tested stack on Python 3.14.0
 - **Git** (for first-time setup dependency cloning)
 - **Internet connection** (for Fetch modes and first-time tool downloads)
 
-> FFmpeg, vgmstream, Playwright Chromium, and AssetStudioModCLI are all installed automatically by `setup.bat`. You can also install them manually — see [Third-Party Tools](docs/04_reference/THIRD_PARTY_TOOLS.md).
+> `setup.bat` will provision a portable Python 3.14.0 runtime if no supported interpreter is found. FFmpeg, vgmstream, Playwright Chromium, and AssetStudioModCLI are all installed automatically by `setup.bat`. You can also install them manually — see [Third-Party Tools](docs/04_reference/THIRD_PARTY_TOOLS.md).
 
 ---
 
@@ -125,16 +125,6 @@ All documentation lives in the [`docs/`](docs/README.md) folder:
 
 ---
 
-## ⚠️ Known Limitations
-
-- **JD2021 PC only** — installed maps target the PC development build and are not compatible with console versions.
-- **IPK video offset is approximate** — Xbox 360 binary CKDs store `videoStartTime = 0.0`; the pipeline synthesizes a default from musictrack markers, but manual sync tuning may be needed.
-- **JDNext extraction relies on third-party staging** — requires AssetStudioModCLI under `tools/`; `setup.bat` handles this automatically.
-- **JDHelper links expire quickly** — HTML mode files must be used within ~30 minutes of export from the JDHelper Discord bot. If files are already downloaded, ignore this warning.
-- **Toolchain completeness affects fidelity** — missing FFmpeg/FFprobe or vgmstream will degrade media conversion, previews, and fallback paths.
-
----
-
 ## 🙏 Credits
 
 This project builds on the work of the Just Dance modding community:
@@ -149,11 +139,22 @@ This project builds on the work of the Just Dance modding community:
 - **[AssetStudioMod](https://github.com/aelurum/AssetStudio)** / **AssetStudioModCLI** — Unity bundle extraction for JDNext maps
 - **[Unity2UbiArt](https://github.com/Itaybl14/Unity2UbiArt)** — Unity-to-UbiArt conversion workflow
 - **[UnityPy](https://github.com/K0lb3/UnityPy)** — Python Unity asset parsing for JDNext bundle inspection
+- **[JDLO](https://jdlo.ovosimpatico.com/)** — This installer pulls maps from the Just Dance Legacy Online (JDLO) CDN. Special Thanks to Ovo and the JDLO Team for making this integration possible.
+- **[OpenParty](https://github.com/ibratabian17/openparty)** — Community-driven independent Just Dance Unlimited server alternative.
+- **ubiart-loc8-converter** — UbiArt localization file converter used for decompressing and patching `.loc8` files.
 
 Special thanks to the authors and contributors of these tools for making Just Dance modding possible.
 
 ---
 
+## 🤖 AI Acknowledgement
+
+This project was built with significant assistance from AI coding tools — primarily **Google Gemini**, **Claude** (Anthropic), and **Codex** (OpenAI) — used throughout development for architecture design, code generation, debugging, and documentation. Human direction, domain knowledge, and creative decisions drove the project; AI accelerated the implementation.
+
+Transparency matters. If you're exploring the codebase, know that vibe coding helped shape it. ✌️
+
+---
+
 <p align="center">
-  <sub>Made with 💜 for the Just Dance modding community</sub>
+  <sub>Made with 💜 (and a little 🤖) for the Just Dance modding community</sub>
 </p>

@@ -21,6 +21,7 @@ class AppConfig(BaseModel):
     cache_directory: Path = Path("./cache")
     temp_directory: Path = Path("./temp")
     app_icon_path: Path = Path("./assets/app_icon.jpg")
+    gesture_template_path: Path = Path("./assets/gesture_templates/durango_template.gesture")
 
     # Video quality preference (descending fallback)
     video_quality: str = Field(
@@ -29,9 +30,10 @@ class AppConfig(BaseModel):
     )
 
     # UI/UX settings
+    enable_legacy_sync_refinement: bool = False
     skip_preflight: bool = False
     suppress_offset_notification: bool = False
-    cleanup_behavior: str = Field(default="ask", pattern=r"^(ask|delete|keep)$")
+    cleanup_behavior: str = Field(default="ask", pattern=r"^(ask|delete|keep|aggressive)$")
     locked_status_behavior: str = Field(default="ask", pattern=r"^(ask|force3|keep)$")
     show_preflight_success_popup: bool = True
     show_install_summary_popup: bool = True
@@ -45,6 +47,22 @@ class AppConfig(BaseModel):
     show_window_size_overlay: bool = False
     style_debug_mode: bool = False
     window_size_overlay_timeout_ms: int = 1100
+    # Converted gestures are still ass
+    convert_jdnext_gestures: bool = False 
+    # AlbumCoach compositing behavior for JDNext multi-coach maps:
+    # "ask" = prompt per map, "always_customize" = always show editor,
+    # "always_default" = use automatic compositing silently.
+    albumcoach_behavior: str = Field(
+        default="ask", pattern=r"^(ask|always_customize|always_default)$"
+    )
+    # Cover art synthesis behavior for JDNext maps:
+    # "synthesized" = always composite from map_bkg + Title asset
+    # "original"    = always use original cover art as-is (may be squished)
+    # "ask"         = prompt per map (default)
+    jdnext_cover_behavior: str = Field(
+        default="ask", pattern=r"^(ask|synthesized|original)$"
+    )
+    # Scoring conversion behavior: handled via gesture template selection
 
     # Download settings
     download_timeout_s: int = 600
@@ -62,8 +80,8 @@ class AppConfig(BaseModel):
     max_jd_version: int = 2021
     min_jd_version: int = 2014
     preview_fps: int = 25
-    preview_startup_compensation_ms: float = 100.0
-    preview_only_audio_offset_ms: float = -100.0
+
+    preview_only_audio_offset_ms: float = 0.0
     audio_preview_fade_s: float = 2.0
 
     # Discord Fetch Mode (replaces Node.js JDH_Downloader)
@@ -71,23 +89,34 @@ class AppConfig(BaseModel):
     browser_profile_dir: Path = Path("./.browser-profile")
     fetch_login_timeout_s: int = 300
     fetch_bot_response_timeout_s: int = 60
+    fetch_background_mode: bool = False
 
     # Update checker settings
     check_updates_on_launch: bool = True
     update_branch: str = ""  # empty = auto-detect from git or state file
+    
+    # JDLO Integration
+    jdlo_auth_path: Optional[Path] = None
 
     # FFmpeg configuration
     ffmpeg_path: str = "ffmpeg"
     ffprobe_path: str = "ffprobe"
     vgmstream_path: Optional[str] = None
     assetstudio_cli_path: Optional[str] = None
-    third_party_tools_root: Optional[Path] = Path("./tools")
     ffmpeg_hwaccel: str = Field(default="auto", pattern=r"^(auto|none)$")
     vp9_handling_mode: str = Field(
         default="fallback_compatible_down",
         pattern=r"^(reencode_to_vp8|fallback_compatible_down)$",
     )
     preview_video_mode: str = Field(default="original", pattern=r"^(proxy_low|original)$")
+    
+    # Missing/incompatible quality fallback behavior
+    # "fallback_down" = Try lower qualities if the selected one is missing/incompatible
+    # "fallback_up" = Try higher qualities before falling back to lower qualities
+    video_fallback_behavior: str = Field(
+        default="fallback_down", 
+        pattern=r"^(fallback_down|fallback_up)$"
+    )
 
     class Config:
         env_prefix = "JD2021_"
@@ -134,4 +163,4 @@ QUALITY_PATTERNS = {
     "LOW":      "_LOW.webm",
 }
 
-SCENE_PLATFORM_PREFERENCE = ["DURANGO", "SCARLETT", "NX"]
+SCENE_PLATFORM_PREFERENCE = ["DURANGO", "NX", "PC", "ORBIS", "SCARLETT", "PROSPERO", "WIIU", "X360"]

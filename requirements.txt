@@ -1,10 +1,12 @@
-# JD2021 Map Installer v2 - Dependencies
-PyQt6>=6.5
-Pillow>=10.0
-playwright>=1.40
-pydantic>=2.0
-requests>=2.31
-UnityPy>=1.23
-fsspec>=2024.0
-pytest>=7.0
-pytest-qt>=4.2
+# JD2021 Map Installer v2 - Pinned dependencies for the current working stack
+# Tested with Python 3.14.0
+PyQt6==6.10.2
+Pillow==12.1.1
+playwright==1.58.0
+pydantic==2.12.5
+requests==2.33.0
+UnityPy==1.25.0
+fsspec==2026.3.0
+pytest==9.0.2
+pytest-qt==4.5.0
+scipy==1.17.1

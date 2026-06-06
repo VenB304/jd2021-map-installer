@@ -44,6 +44,7 @@ from PyQt6.QtWidgets import (
     QWidget,
     QLabel,
     QDialog,
+    QCheckBox,
     QListWidget,
     QListWidgetItem,
     QPushButton,
@@ -51,6 +52,7 @@ from PyQt6.QtWidgets import (
     QFileDialog,
     QProgressDialog,
     QSizePolicy,
+    QScrollArea,
 )
 
 from jd2021_installer.core.config import AppConfig
@@ -107,6 +109,7 @@ _SETTINGS_CHANGE_LABELS: dict[str, str] = {
     "show_preflight_success_popup": "Pre-flight success popup",
     "show_install_summary_popup": "Install summary popup",
     "show_quickstart_on_launch": "Quick-start on launch",
+    "albumcoach_behavior": "AlbumCoach compositing",
     "log_detail_level": "Log detail level",
     "theme": "Theme",
     "enforce_min_window_size": "Enforce minimum window size",
@@ -133,10 +136,10 @@ _SETTINGS_CHANGE_LABELS: dict[str, str] = {
     "ffmpeg_path": "FFmpeg executable",
     "ffprobe_path": "FFprobe executable",
     "vgmstream_path": "vgmstream executable",
-    "third_party_tools_root": "3rd-party tools root",
     "assetstudio_cli_path": "AssetStudio CLI",
     "check_updates_on_launch": "Check updates on launch",
     "update_branch": "Update branch",
+    "fetch_background_mode": "Fetch background browser",
 }
 
 _SETTINGS_CHANGE_ORDER: tuple[str, ...] = (
@@ -147,6 +150,7 @@ _SETTINGS_CHANGE_ORDER: tuple[str, ...] = (
     "show_preflight_success_popup",
     "show_install_summary_popup",
     "show_quickstart_on_launch",
+    "albumcoach_behavior",
     "log_detail_level",
     "theme",
     "enforce_min_window_size",
@@ -173,10 +177,10 @@ _SETTINGS_CHANGE_ORDER: tuple[str, ...] = (
     "ffmpeg_path",
     "ffprobe_path",
     "vgmstream_path",
-    "third_party_tools_root",
     "assetstudio_cli_path",
     "check_updates_on_launch",
     "update_branch",
+    "fetch_background_mode",
 )
 
 _READY_STATUS_VALUE = 3
@@ -300,8 +304,12 @@ class MainWindow(QMainWindow):
         # Give threads a moment to finish, but don't hang if they are stuck
         for thread in list(self._active_threads):
             if thread.isRunning():
+                thread.requestInterruption()
                 thread.quit()
                 thread.wait(1000)
+                if thread.isRunning():
+                    logger.warning("Forcefully terminating stuck thread.")
+                    thread.terminate()
         
         self._save_settings()
         event.accept()
@@ -556,6 +564,13 @@ class MainWindow(QMainWindow):
             )
             return False
 
+        # Refresh python module caches so newly installed packages can be found immediately
+        import importlib
+        importlib.invalidate_caches()
+        # Also re-evaluate site-packages to ensure .pth files and sys.path are updated
+        import site
+        site.main()
+
         still_missing = self._find_missing_python_dependencies()
         if still_missing:
             QMessageBox.warning(
@@ -749,11 +764,9 @@ class MainWindow(QMainWindow):
             self._preview_widget.set_tool_paths(
                 ffmpeg_path=resolved_ffmpeg or self._config.ffmpeg_path,
                 ffprobe_path=resolved_ffprobe or self._config.ffprobe_path,
-                ffplay_path=resolved_ffplay or "ffplay",
                 ffmpeg_hwaccel=getattr(self._config, "ffmpeg_hwaccel", "auto"),
                 preview_video_mode=getattr(self._config, "preview_video_mode", "proxy_low"),
                 preview_fps=getattr(self._config, "preview_fps", 24),
-                preview_startup_compensation_ms=getattr(self._config, "preview_startup_compensation_ms", 100.0),
             )
 
         if persist and updated:
@@ -1022,11 +1035,9 @@ class MainWindow(QMainWindow):
         self._preview_widget.set_tool_paths(
             ffmpeg_path=self._config.ffmpeg_path,
             ffprobe_path=self._config.ffprobe_path,
-            ffplay_path="ffplay",
             ffmpeg_hwaccel=getattr(self._config, "ffmpeg_hwaccel", "auto"),
             preview_video_mode=getattr(self._config, "preview_video_mode", "proxy_low"),
             preview_fps=getattr(self._config, "preview_fps", 24),
-            preview_startup_compensation_ms=getattr(self._config, "preview_startup_compensation_ms", 100.0),
         )
         self._preview_widget.setObjectName("mainWindowPreviewWidget")
         self._preview_widget.setMinimumHeight(300)
@@ -1077,6 +1088,22 @@ class MainWindow(QMainWindow):
 
         self._config_panel.set_video_quality(self._config.video_quality)
         self._set_preview_controls_ready(False)
+        self._update_legacy_sync_visibility()
+
+    def _update_legacy_sync_visibility(self) -> None:
+        """Toggle visibility of legacy sync refinement UI based on config."""
+        show_legacy = getattr(self._config, "enable_legacy_sync_refinement", False)
+        self._sync_hint_label.setVisible(show_legacy)
+        self._sync_refinement.set_legacy_visible(show_legacy)
+        self._action_panel.set_readjust_visible(show_legacy)
+        
+        # If the log console isn't expanding properly, we might need to adjust stretch here,
+        # but the layout was defined with stretch=0 for sync and stretch=0 for log console.
+        # Wait, if both are stretch=0, hiding one will let the stretch=1 preview widget expand.
+        # Let's dynamically set stretch so log console expands if legacy sync is hidden.
+        right_layout = self._log_console.parentWidget().layout()
+        if isinstance(right_layout, QVBoxLayout):
+            right_layout.setStretchFactor(self._log_console, 1 if not show_legacy else 0)
 
     # ==================================================================
     # SIGNAL / SLOT WIRING  (Phase 4)
@@ -1134,10 +1161,6 @@ class MainWindow(QMainWindow):
             return
 
         self._current_target = normalized_target or None
-        if normalized_target:
-            logger.debug("Target selected: %s", normalized_target)
-        elif previous_target:
-            logger.debug("Target cleared")
         self._set_preview_controls_ready(False)
 
     def _on_game_dir_changed(self, path: str) -> None:
@@ -1198,23 +1221,25 @@ class MainWindow(QMainWindow):
 
     def _collect_source_target_issues(self) -> list[str]:
         """Validate mode-specific source inputs and refresh the active target."""
-        issues: list[str] = []
         from jd2021_installer.ui.widgets.mode_selector import (
             MODE_FETCH,
             MODE_JDNEXT,
+            MODE_FETCH_JDLO,
             MODE_HTML,
             MODE_HTML_JDNEXT,
+            MODE_HTML_JDLO,
             MODE_IPK,
             MODE_BATCH,
             MODE_MANUAL,
         )
 
+        issues: list[str] = []
         source_state = self._mode_selector.get_current_state()
         idx = int(source_state.get("mode_index", MODE_FETCH))
         fields = source_state.get("fields", {})
 
-        if idx in (MODE_FETCH, MODE_JDNEXT):
-            fetch_mode_key = "jdnext" if idx == MODE_JDNEXT else "fetch"
+        if idx in (MODE_FETCH, MODE_JDNEXT, MODE_FETCH_JDLO):
+            fetch_mode_key = "jdnext" if idx == MODE_JDNEXT else ("fetch_jdlo" if idx == MODE_FETCH_JDLO else "fetch")
             fetch_fields = fields.get(fetch_mode_key, {}) if isinstance(fields, dict) else {}
             raw = str(fetch_fields.get("codenames", "")).strip()
             codenames = [c.strip() for c in raw.split(",") if c.strip()]
@@ -1227,8 +1252,9 @@ class MainWindow(QMainWindow):
                 self._current_target = ",".join(codenames)
             return issues
 
-        if idx == MODE_HTML:
-            html_fields = fields.get("html", {}) if isinstance(fields, dict) else {}
+        if idx in (MODE_HTML, MODE_HTML_JDLO):
+            html_key = "html_jdlo" if idx == MODE_HTML_JDLO else "html"
+            html_fields = fields.get(html_key, {}) if isinstance(fields, dict) else {}
             asset_html = str(html_fields.get("asset", "")).strip()
             nohud_html = str(html_fields.get("nohud", "")).strip()
             if not asset_html or not nohud_html:
@@ -1261,6 +1287,12 @@ class MainWindow(QMainWindow):
                 issues.append("Select an IPK archive first.")
             elif not Path(target).is_file():
                 issues.append(f"IPK file was not found: {target}")
+            bundle = str(ipk_fields.get("bundle", "")).strip()
+            if bundle and not Path(bundle).is_file():
+                issues.append(f"Bundle IPK file was not found: {bundle}")
+            bundlelogic = str(ipk_fields.get("bundlelogic", "")).strip()
+            if bundlelogic and not Path(bundlelogic).is_file():
+                issues.append(f"BundleLogic IPK file was not found: {bundlelogic}")
             else:
                 self._current_target = target
             return issues
@@ -1326,9 +1358,9 @@ class MainWindow(QMainWindow):
             self._set_status("Pre-flight failed")
             return
 
-        from jd2021_installer.ui.widgets.mode_selector import MODE_FETCH, MODE_JDNEXT
+        from jd2021_installer.ui.widgets.mode_selector import MODE_FETCH, MODE_JDNEXT, MODE_FETCH_JDLO
         source_state = self._mode_selector.get_current_state()
-        include_fetch_checks = int(source_state.get("mode_index", -1)) in (MODE_FETCH, MODE_JDNEXT)
+        include_fetch_checks = int(source_state.get("mode_index", -1)) in (MODE_FETCH, MODE_JDNEXT, MODE_FETCH_JDLO)
         if not self._ensure_runtime_dependencies(include_fetch_checks=include_fetch_checks):
             self._set_status("Pre-flight failed")
             return
@@ -1538,19 +1570,41 @@ class MainWindow(QMainWindow):
             return
 
         code_lines = "\n".join(f"- {code}" for code in selected_codes)
-        confirm = QMessageBox.question(
-            self,
-            "Confirm Uninstall",
-            (
-                f"Remove {len(selected_codes)} selected map(s)?\n\n"
-                f"{code_lines}\n\n"
-                "This will delete map files and cooked cache, unregister from SkuScene, "
-                "remove installer cache, and remove each map from the readjust index."
-            ),
-            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
-            QMessageBox.StandardButton.No,
+        confirm = QDialog(self)
+        confirm.setWindowTitle("Confirm Uninstall")
+        confirm.setMinimumSize(450, 350)
+        
+        layout = QVBoxLayout(confirm)
+        
+        lbl_top = QLabel(f"Remove {len(selected_codes)} selected map(s)?")
+        layout.addWidget(lbl_top)
+        
+        scroll = QScrollArea(confirm)
+        scroll.setWidgetResizable(True)
+        lbl_codes = QLabel(code_lines)
+        lbl_codes.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+        scroll.setWidget(lbl_codes)
+        layout.addWidget(scroll)
+        
+        lbl_bottom = QLabel(
+            "This will delete map files and cooked cache, unregister from SkuScene,\n"
+            "remove installer cache, and remove each map from the readjust index."
         )
-        if confirm != QMessageBox.StandardButton.Yes:
+        layout.addWidget(lbl_bottom)
+        
+        btns = QHBoxLayout()
+        btns.addStretch()
+        btn_yes = QPushButton("Yes")
+        btn_yes.clicked.connect(confirm.accept)
+        btns.addWidget(btn_yes)
+        btn_no = QPushButton("No")
+        btn_no.clicked.connect(confirm.reject)
+        btns.addWidget(btn_no)
+        btn_no.setDefault(True)
+        
+        layout.addLayout(btns)
+        
+        if confirm.exec() != QDialog.DialogCode.Accepted:
             return
 
         self._preview_widget.stop()
@@ -1559,6 +1613,7 @@ class MainWindow(QMainWindow):
         self._feedback_panel.set_checklist_steps(selected_codes)
         self._feedback_panel.set_progress(0)
         self._set_status("Uninstalling selected maps...")
+        self._start_file_logging(",".join(selected_codes), action="uninstall")
         self.append_log(f"Starting uninstall for {len(selected_codes)} map(s)...")
 
         worker = UninstallMapsWorker(
@@ -1657,6 +1712,7 @@ class MainWindow(QMainWindow):
             self._apply_theme()
             self._refresh_media_tool_configuration(persist=True)
             self._save_settings()
+            self._update_legacy_sync_visibility()
             if not getattr(self._config, "show_window_size_overlay", True):
                 self._hide_size_overlay()
             self._config_panel.set_video_quality(self._config.video_quality)
@@ -1686,12 +1742,18 @@ class MainWindow(QMainWindow):
             self._set_status("No valid codenames were provided for bulk install.")
             return False
 
-        from jd2021_installer.ui.widgets.mode_selector import MODE_FETCH, MODE_JDNEXT
+        from jd2021_installer.ui.widgets.mode_selector import MODE_FETCH, MODE_JDNEXT, MODE_FETCH_JDLO
 
         mode_source = (source_game or "jdu").strip().lower()
-        is_jdnext = mode_source == "jdnext"
-        mode_index = MODE_JDNEXT if is_jdnext else MODE_FETCH
-        mode_key = "jdnext" if is_jdnext else "fetch"
+        if mode_source == "jdnext":
+            mode_index = MODE_JDNEXT
+            mode_key = "jdnext"
+        elif mode_source == "jdlo":
+            mode_index = MODE_FETCH_JDLO
+            mode_key = "fetch_jdlo"
+        else:
+            mode_index = MODE_FETCH
+            mode_key = "fetch"
 
         self._mode_selector.set_mode_index(mode_index)
         self._mode_selector.set_mode_codenames(mode_key, ",".join(clean_codenames))
@@ -2112,6 +2174,8 @@ class MainWindow(QMainWindow):
         self._preview_widget.reset()
         self._set_preview_controls_ready(False)
         self._feedback_panel.reset()
+        if hasattr(self, "_log_console") and self._log_console is not None:
+            self._log_console.clear()
         self._set_status("State reset.")
 
     # ==================================================================
@@ -2120,6 +2184,7 @@ class MainWindow(QMainWindow):
 
     def _on_install_requested(self) -> None:
         """Launch the Extract → Normalize → Install pipeline."""
+        self.append_log("Installation request received. Starting pre-flight checks...")
         if self._active_worker is not None:
             self._set_status("Please wait for the current operation to finish.")
             return
@@ -2133,12 +2198,12 @@ class MainWindow(QMainWindow):
             return
 
         # v1 parity: codename whitespace sanitization prompt before fetch scrape starts.
-        from jd2021_installer.ui.widgets.mode_selector import MODE_FETCH, MODE_JDNEXT
+        from jd2021_installer.ui.widgets.mode_selector import MODE_FETCH, MODE_JDNEXT, MODE_FETCH_JDLO
         source_state = self._mode_selector.get_current_state()
         source_fields = source_state.get("fields", {})
         mode_index = int(source_state.get("mode_index", -1))
-        if mode_index in (MODE_FETCH, MODE_JDNEXT):
-            fetch_mode_key = "jdnext" if mode_index == MODE_JDNEXT else "fetch"
+        if mode_index in (MODE_FETCH, MODE_JDNEXT, MODE_FETCH_JDLO):
+            fetch_mode_key = "jdnext" if mode_index == MODE_JDNEXT else ("fetch_jdlo" if mode_index == MODE_FETCH_JDLO else "fetch")
             fetch_fields = source_fields.get(fetch_mode_key, {}) if isinstance(source_fields, dict) else {}
             raw_value = str(fetch_fields.get("codenames", ""))
             if re.search(r"\s", raw_value):
@@ -2174,10 +2239,10 @@ class MainWindow(QMainWindow):
                 "\n".join(f"• {w}" for w in game_warnings),
             )
 
-        from jd2021_installer.ui.widgets.mode_selector import MODE_FETCH, MODE_JDNEXT
+        from jd2021_installer.ui.widgets.mode_selector import MODE_FETCH, MODE_JDNEXT, MODE_FETCH_JDLO, MODE_LABELS
         source_state = self._mode_selector.get_current_state()
         mode_index = int(source_state.get("mode_index", -1))
-        include_fetch_checks = mode_index in (MODE_FETCH, MODE_JDNEXT)
+        include_fetch_checks = mode_index in (MODE_FETCH, MODE_JDNEXT, MODE_FETCH_JDLO)
         if not self._ensure_runtime_dependencies(include_fetch_checks=include_fetch_checks):
             return
 
@@ -2186,7 +2251,8 @@ class MainWindow(QMainWindow):
         self._clear_offset_review_state()
 
         # Start dynamic per-map logging immediately if target is available
-        self._start_file_logging(self._current_target)
+        mode_label = MODE_LABELS[mode_index] if 0 <= mode_index < len(MODE_LABELS) else ""
+        self._start_file_logging(self._current_target, mode_name=mode_label)
 
         # Intercept batch mode - it has a completely different pipeline structure
         from jd2021_installer.ui.widgets.mode_selector import MODE_BATCH
@@ -2195,13 +2261,22 @@ class MainWindow(QMainWindow):
             return
 
         # Multi-codename Fetch should use the same multi-map review/apply flow as Batch/IPK bundle.
-        from jd2021_installer.ui.widgets.mode_selector import MODE_FETCH, MODE_JDNEXT
-        if mode_index in (MODE_FETCH, MODE_JDNEXT):
-            fetch_mode_key = "jdnext" if mode_index == MODE_JDNEXT else "fetch"
+        from jd2021_installer.ui.widgets.mode_selector import MODE_FETCH, MODE_JDNEXT, MODE_FETCH_JDLO
+        if mode_index in (MODE_FETCH, MODE_JDNEXT, MODE_FETCH_JDLO):
+            fetch_mode_key = "jdnext" if mode_index == MODE_JDNEXT else ("fetch_jdlo" if mode_index == MODE_FETCH_JDLO else "fetch")
             fetch_source = "jdnext" if mode_index == MODE_JDNEXT else "jdu"
             fetch_fields = source_fields.get(fetch_mode_key, {}) if isinstance(source_fields, dict) else {}
             raw_fetch = str(fetch_fields.get("codenames", "")).strip()
-            fetch_codenames = [c.strip() for c in raw_fetch.split(",") if c.strip()]
+            fetch_codenames = []
+            for c in raw_fetch.split(","):
+                c = c.strip()
+                if not c:
+                    continue
+                match = re.search(r'\(([^)]+)\)$', c)
+                if match:
+                    fetch_codenames.append(match.group(1).strip())
+                else:
+                    fetch_codenames.append(c)
             if len(fetch_codenames) > 1:
                 self._sync_refinement.set_ipk_mode(is_ipk=False)
                 self._start_batch_install(
@@ -2209,6 +2284,7 @@ class MainWindow(QMainWindow):
                     map_names=fetch_codenames,
                     fetch_codenames=fetch_codenames,
                     fetch_source=fetch_source,
+                    source_mode=fetch_mode_key,
                 )
                 return
 
@@ -2229,10 +2305,20 @@ class MainWindow(QMainWindow):
                 selected_maps = BundleSelectDialog.show_dialog(Path(self._current_target).name, maps_found, self)
                 if not selected_maps:
                     return # User cancelled
+
+                bundle_ipk, bundlelogic_ipk = self._resolve_ipk_bundle_inputs(
+                    source_fields,
+                    Path(self._current_target),
+                )
                 
                 # Defer to batch installer to handle everything cleanly
                 self._sync_refinement.set_ipk_mode(is_ipk=True)
-                self._start_batch_install(selected_maps=set(selected_maps), map_names=sorted(list(selected_maps)))
+                self._start_batch_install(
+                    selected_maps=set(selected_maps),
+                    map_names=sorted(list(selected_maps)),
+                    bundle_ipk=bundle_ipk,
+                    bundlelogic_ipk=bundlelogic_ipk,
+                )
                 return
 
         # Resolve the correct extractor based on mode
@@ -2244,6 +2330,26 @@ class MainWindow(QMainWindow):
         if extractor is None:
             return
 
+        from jd2021_installer.extractors.manual_extractor import ManualExtractor
+        if isinstance(extractor, ManualExtractor) and getattr(extractor, "_is_multi_map", False):
+            from jd2021_installer.ui.widgets.bundle_dialog import BundleSelectDialog
+            selected_maps = BundleSelectDialog.show_dialog(
+                Path(self._current_target).name if self._current_target else "Manual Source",
+                extractor.bundle_maps,
+                self
+            )
+            if not selected_maps:
+                return # User cancelled
+
+            # Hand off to batch installer which uses self._current_target as the source root
+            self._sync_refinement.set_ipk_mode(is_ipk=False)
+            self._start_batch_install(
+                selected_maps=set(selected_maps),
+                map_names=sorted(list(selected_maps)),
+                source_mode="Manual",
+            )
+            return
+
         # Prepare UI
         self._lock_ui(True)
         self._feedback_panel.reset()
@@ -2252,18 +2358,28 @@ class MainWindow(QMainWindow):
 
         # Create worker + thread
         worker_codename: str | None = None
-        if mode_index in (MODE_FETCH, MODE_JDNEXT):
-            fetch_mode_key = "jdnext" if mode_index == MODE_JDNEXT else "fetch"
+        if mode_index in (MODE_FETCH, MODE_JDNEXT, MODE_FETCH_JDLO):
+            fetch_mode_key = "jdnext" if mode_index == MODE_JDNEXT else ("fetch_jdlo" if mode_index == MODE_FETCH_JDLO else "fetch")
             fetch_fields = source_fields.get(fetch_mode_key, {}) if isinstance(source_fields, dict) else {}
             raw_codenames = str(fetch_fields.get("codenames", "")).strip()
             fetch_codenames = [c.strip() for c in raw_codenames.split(",") if c.strip()]
             if len(fetch_codenames) == 1:
                 worker_codename = fetch_codenames[0]
 
+        bundle_ipk: Optional[Path] = None
+        bundlelogic_ipk: Optional[Path] = None
+        if mode_index == MODE_IPK and Path(self._current_target).is_file():
+            bundle_ipk, bundlelogic_ipk = self._resolve_ipk_bundle_inputs(
+                source_fields,
+                Path(self._current_target),
+            )
+
         worker = ExtractAndNormalizeWorker(
             extractor=extractor,
             output_dir=self._config.temp_directory / "_extraction",
             codename=worker_codename,
+            bundle_ipk=bundle_ipk,
+            bundlelogic_ipk=bundlelogic_ipk,
         )
         thread = QThread()
         worker.moveToThread(thread)
@@ -2299,15 +2415,12 @@ class MainWindow(QMainWindow):
         if map_data is None:
             return  # error already handled
 
+        self._rename_log_file_with_codename(map_data.codename)
         self._current_map = map_data
         self._completed_install_maps = [map_data]
         self._feedback_panel.update_checklist_step("Extracting map data...", StepStatus.DONE)
         self._feedback_panel.update_checklist_step("Parsing CKDs and metadata...", StepStatus.DONE)
         self._feedback_panel.update_checklist_step("Normalizing assets...", StepStatus.DONE)
-        self._feedback_panel.update_checklist_step(
-            "Decoding XMA2 audio...", StepStatus.IN_PROGRESS
-        )
-
         # Update UI offsets from calculated normalization data
         logger.info("Setting UI offsets from normalization: audio=%.1f ms, video=%.1f ms", 
                     map_data.sync.audio_ms, map_data.sync.video_ms)
@@ -2330,6 +2443,13 @@ class MainWindow(QMainWindow):
             self._lock_ui(False)
             self._stop_file_logging()
             return
+
+        self._feedback_panel.update_checklist_step(
+            "Decoding XMA2 audio...", StepStatus.IN_PROGRESS
+        )
+
+        # Pre-install AlbumCoach customization for JDNext multi-coach maps.
+        self._apply_albumcoach_customization(map_data)
         
         # Start install worker
         self._start_install_worker(map_data)
@@ -2402,6 +2522,100 @@ class MainWindow(QMainWindow):
             )
         return True
 
+    def _apply_albumcoach_customization(self, map_data: NormalizedMapData) -> None:
+        """Offer AlbumCoach customization for JDNext multi-coach maps lacking one.
+
+        Conditions to trigger:
+          1. Map is from a JDNext source.
+          2. Map has ≥ 2 coach images.
+          3. No cover_albumcoach_path already provided by the source.
+          4. Setting is not ``always_default``.
+        """
+        if not getattr(map_data, "is_jdnext_source", False):
+            return
+
+        coach_images = [p for p in map_data.media.coach_images if p.exists()]
+        if len(coach_images) < 2:
+            return
+
+        # Deduplicate by coach number — media discovery may find multiple
+        # format variants (.png, .tga, .tga.ckd) for the same coach.
+        import re as _re
+        coaches_by_idx: dict[int, Path] = {}
+        fallback_idx = 1
+        for cpath in coach_images:
+            m = _re.search(r"coach[_-]?(\d+)", cpath.name.lower())
+            idx = int(m.group(1)) if m else fallback_idx
+            if not m:
+                while fallback_idx in coaches_by_idx:
+                    fallback_idx += 1
+                idx = fallback_idx
+            # Prefer .png over encoded formats
+            if idx not in coaches_by_idx or cpath.suffix.lower() == ".png":
+                coaches_by_idx[idx] = cpath
+        coach_images = [coaches_by_idx[k] for k in sorted(coaches_by_idx)]
+        if len(coach_images) < 2:
+            return
+
+        if map_data.media.cover_albumcoach_path and map_data.media.cover_albumcoach_path.exists():
+            return
+
+        behavior = getattr(self._config, "albumcoach_behavior", "ask")
+        if behavior == "always_default":
+            return
+
+        codename = map_data.codename
+
+        if behavior == "always_customize":
+            # Skip the ask dialog, go straight to the editor.
+            from jd2021_installer.ui.widgets.albumcoach_dialog import AlbumCoachCustomizerDialog
+
+            self.append_log(
+                f"[{codename}] Opening AlbumCoach customizer (always_customize)."
+            )
+            dlg = AlbumCoachCustomizerDialog(coach_images, parent=self,
+                                              theme=getattr(self._config, "theme", "dark"))
+            dlg.exec()
+            result_image = dlg.result_image
+            never_ask = False
+            new_behavior = ""
+        else:
+            # "ask" — show the two-step prompt.
+            from jd2021_installer.ui.widgets.albumcoach_dialog import AlbumCoachCustomizerDialog
+
+            self.append_log(
+                f"[{codename}] JDNext multi-coach map detected without albumcoach. "
+                "Prompting user."
+            )
+            result_image, never_ask, new_behavior = AlbumCoachCustomizerDialog.prompt(
+                coach_images, parent=self,
+                theme=getattr(self._config, "theme", "dark"),
+            )
+
+        # Handle "never ask again" preference persistence.
+        if never_ask and new_behavior:
+            self._config.albumcoach_behavior = new_behavior
+            self._save_settings()
+            self.append_log(
+                f"[{codename}] AlbumCoach preference saved: {new_behavior}"
+            )
+
+        if result_image is not None:
+            # Save the user-customized image to temp and set the path so the
+            # pipeline copies it into the target instead of auto-synthesizing.
+            import tempfile
+            tmp_dir = Path(tempfile.mkdtemp(prefix="jd2021_albumcoach_"))
+            dst = tmp_dir / f"{codename}_cover_albumcoach.png"
+            result_image.save(str(dst))
+            map_data.media.cover_albumcoach_path = dst
+            self.append_log(
+                f"[{codename}] Custom AlbumCoach composite applied."
+            )
+        else:
+            self.append_log(
+                f"[{codename}] Using default AlbumCoach compositing."
+            )
+
     def _ask_batch_locked_status_policy(self) -> Optional[bool]:
         """Ask once for batch mode: force non-3 statuses to 3 or preserve originals."""
         behavior = getattr(self._config, "locked_status_behavior", "ask")
@@ -2437,6 +2651,7 @@ class MainWindow(QMainWindow):
             source_mode=self._current_mode,
             config=self._config,
         )
+        worker.jdnext_cover_prompt_requested.connect(self._on_jdnext_cover_prompt_requested)
         thread = QThread()
         worker.moveToThread(thread)
 
@@ -2453,6 +2668,76 @@ class MainWindow(QMainWindow):
         self._active_threads.add(thread)
         self._active_worker = worker
         thread.start()
+
+    def _on_jdnext_cover_prompt_requested(self, request: object) -> None:
+        if not isinstance(request, dict):
+            return
+
+        codename = str(request.get("codename") or "unknown")
+        event = request.get("event")
+        choice = "synthesized"
+        never_ask = False
+
+        try:
+            dlg_result: dict = {"choice": "synthesized"}
+
+            dlg = QDialog(self)
+            dlg.setWindowTitle("JDNext Cover Art")
+            dlg.setModal(True)
+            dlg.setFixedWidth(440)
+
+            root = QVBoxLayout(dlg)
+            root.setContentsMargins(20, 16, 20, 16)
+            root.setSpacing(12)
+
+            msg = QLabel(
+                f"<b>{codename}</b> is a JDNext map with a non-square cover.<br><br>"
+                "Would you like to synthesize a proper 1:1 cover from the map "
+                "background and Title assets?"
+            )
+            msg.setWordWrap(True)
+            root.addWidget(msg)
+
+            cb_never = QCheckBox("Remember my choice for all future maps")
+            cb_never.setToolTip(
+                "Saves your choice to Settings → JDNext cover art.\n"
+                "You can change it later."
+            )
+            root.addWidget(cb_never)
+
+            btn_row = QHBoxLayout()
+            btn_row.addStretch()
+
+            btn_synth = QPushButton("Use Synthesized Cover")
+            btn_synth.setMinimumWidth(160)
+            btn_synth.clicked.connect(
+                lambda: (dlg_result.__setitem__("choice", "synthesized"), dlg.accept())
+            )
+            btn_row.addWidget(btn_synth)
+
+            btn_orig = QPushButton("Use Original Cover")
+            btn_orig.setMinimumWidth(140)
+            btn_orig.clicked.connect(
+                lambda: (dlg_result.__setitem__("choice", "original"), dlg.accept())
+            )
+            btn_row.addWidget(btn_orig)
+
+            root.addLayout(btn_row)
+            dlg.exec()
+
+            choice = str(dlg_result.get("choice") or "synthesized")
+            never_ask = cb_never.isChecked()
+
+            if never_ask and choice in {"synthesized", "original"}:
+                self._config.jdnext_cover_behavior = choice
+                self._save_settings()
+        except Exception as exc:
+            self.append_log(f"[{codename}] JDNext cover prompt failed: {exc}")
+        finally:
+            request["choice"] = choice
+            request["never_ask"] = never_ask
+            if hasattr(event, "set"):
+                event.set()
 
     def _on_status_updated(self, msg: str) -> None:
         """Map backend status messages to checklist steps for visual feedback."""
@@ -2704,12 +2989,16 @@ class MainWindow(QMainWindow):
             return "Fetch JDNext"
         if "jdnext" in mode_low and "html" in mode_low:
             return "HTML JDNext"
+        if "jdlo" in mode_low and "fetch" in mode_low:
+            return "Fetch JDLO"
+        if "jdlo" in mode_low and "html" in mode_low:
+            return "HTML JDLO"
         if "jdnext" in mode_low:
             return "JDNext"
         if "fetch" in mode_low:
-            return "Fetch"
+            return "Fetch JDU"
         if "html" in mode_low:
-            return "HTML"
+            return "HTML JDU"
         if "ipk" in mode_low:
             return "IPK Archive"
         if "batch" in mode_low:
@@ -2816,15 +3105,13 @@ class MainWindow(QMainWindow):
                 loop_start, loop_end = self._get_preview_loop_seconds(self._current_map)
                 preview_fps = self._get_preview_fps_for_map(self._current_map)
                 is_jdnext_preview = self._is_jdnext_source_map(self._current_map)
-                startup_compensation_ms: Optional[float] = 0.0 if is_jdnext_preview else None
                 
                 logger.debug(
-                    "Preview launch: v_override=%.3f, a_offset=%.3f, preview_nudge=%.3f, fps=%.3f, startup_comp_ms=%s",
+                    "Preview launch: v_override=%.3f, a_offset=%.3f, preview_nudge=%.3f, fps=%.3f",
                     v_override,
                     a_offset,
                     preview_nudge_s,
                     preview_fps,
-                    "0.0" if startup_compensation_ms == 0.0 else "default",
                 )
 
                 self._preview_widget.launch(
@@ -2834,7 +3121,6 @@ class MainWindow(QMainWindow):
                     loop_start=loop_start,
                     loop_end=loop_end,
                     preview_fps=preview_fps,
-                    startup_compensation_ms=startup_compensation_ms,
                     accurate_seek=is_jdnext_preview,
                 )
             else:
@@ -2885,12 +3171,8 @@ class MainWindow(QMainWindow):
             loop_start, loop_end = self._get_preview_loop_seconds(self._current_map)
             preview_fps = self._get_preview_fps_for_map(self._current_map)
             is_jdnext_preview = self._is_jdnext_source_map(self._current_map)
-            startup_compensation_ms: Optional[float] = 0.0 if is_jdnext_preview else None
             
-            logger.debug(
-                "Debounced preview restart (startup_comp_ms=%s)...",
-                "0.0" if startup_compensation_ms == 0.0 else "default",
-            )
+            logger.debug("Debounced preview restart...")
             self._preview_widget.launch(
                 str(self._current_map.media.video_path),
                 str(self._current_map.media.audio_path),
@@ -2900,7 +3182,6 @@ class MainWindow(QMainWindow):
                 loop_start=loop_start,
                 loop_end=loop_end,
                 preview_fps=preview_fps,
-                startup_compensation_ms=startup_compensation_ms,
                 accurate_seek=is_jdnext_preview,
             )
 
@@ -3122,7 +3403,7 @@ class MainWindow(QMainWindow):
         behavior = self._config.cleanup_behavior
         should_delete = False
         
-        if behavior == "delete":
+        if behavior in ("delete", "aggressive"):
             should_delete = True
         elif behavior == "keep":
             should_delete = False
@@ -3156,6 +3437,13 @@ class MainWindow(QMainWindow):
                 if download_dir.exists():
                     import shutil
                     shutil.rmtree(download_dir, ignore_errors=True)
+                
+                # 1c. Aggressive cache wipe
+                if getattr(self._config, "cleanup_behavior", "ask") == "aggressive":
+                    map_cache = self._config.cache_directory / self._current_map.codename
+                    if map_cache.exists():
+                        import shutil
+                        shutil.rmtree(map_cache, ignore_errors=True)
             
             # 2. Clean up _batch_temp if it exists
             batch_temp = self._config.cache_directory / "_batch_temp"
@@ -3180,8 +3468,10 @@ class MainWindow(QMainWindow):
         from jd2021_installer.ui.widgets.mode_selector import (
             MODE_FETCH,
             MODE_JDNEXT,
+            MODE_FETCH_JDLO,
             MODE_HTML,
             MODE_HTML_JDNEXT,
+            MODE_HTML_JDLO,
             MODE_IPK,
             MODE_BATCH,
             MODE_MANUAL,
@@ -3201,12 +3491,30 @@ class MainWindow(QMainWindow):
 
             # Provide a codename hint for bundle selection parity when available.
             desired_codename = re.sub(
-                r"_(x360|durango|scarlett|nx|orbis|prospero|pc)$",
+                r"_(x360|durango|scarlett|nx|orbis|prospero|pc|ps3|wiiu)$",
                 "",
                 ipk_path.stem,
                 flags=re.IGNORECASE,
             )
             return ArchiveIPKExtractor(ipk_path, desired_codename=desired_codename)
+
+        if idx == MODE_FETCH_JDLO:
+            from jd2021_installer.extractors.jdlo_extractor import JDLOExtractor
+            fetch_fields = source_fields.get("fetch_jdlo", {}) if isinstance(source_fields, dict) else {}
+            raw_codenames = str(fetch_fields.get("codenames", "")).strip()
+            
+            parsed_codenames = []
+            for c in raw_codenames.split(","):
+                c = c.strip()
+                if not c:
+                    continue
+                match = re.search(r'\(([^)]+)\)$', c)
+                if match:
+                    parsed_codenames.append(match.group(1).strip())
+                else:
+                    parsed_codenames.append(c)
+                    
+            return JDLOExtractor(codenames=parsed_codenames, config=self._config)
 
         if idx in (MODE_FETCH, MODE_JDNEXT):
             from jd2021_installer.extractors.web_playwright import WebPlaywrightExtractor
@@ -3222,6 +3530,17 @@ class MainWindow(QMainWindow):
                 config=self._config,
                 quality=self._config.video_quality,
             )
+
+        if idx == MODE_HTML_JDLO:
+            from jd2021_installer.extractors.jdlo_extractor import JDLOOfflineExtractor
+            html_fields = source_fields.get("html_jdlo", {}) if isinstance(source_fields, dict) else {}
+            asset_html = str(html_fields.get("asset", ""))
+            
+            if not asset_html:
+                QMessageBox.warning(self, "Missing File", "Please select the JDLO Asset HTML file.")
+                return None
+                
+            return JDLOOfflineExtractor(asset_html=asset_html, config=self._config)
 
         if idx == MODE_HTML:
             from jd2021_installer.extractors.web_playwright import WebPlaywrightExtractor
@@ -3310,12 +3629,52 @@ class MainWindow(QMainWindow):
         )
         return None
 
+    def _resolve_ipk_bundle_inputs(
+        self,
+        source_fields: dict,
+        ipk_path: Optional[Path],
+    ) -> tuple[Optional[Path], Optional[Path]]:
+        if not ipk_path or not ipk_path.is_file():
+            return None, None
+
+        ipk_fields = source_fields.get("ipk", {}) if isinstance(source_fields, dict) else {}
+        raw_bundle = str(ipk_fields.get("bundle", "")).strip()
+        raw_bundlelogic = str(ipk_fields.get("bundlelogic", "")).strip()
+
+        bundle_path = Path(raw_bundle) if raw_bundle else None
+        bundlelogic_path = Path(raw_bundlelogic) if raw_bundlelogic else None
+
+        from jd2021_installer.extractors.archive_ipk import find_bundle_ipks
+
+        if not bundle_path or not bundlelogic_path:
+            bundle_guess, bundlelogic_guess = find_bundle_ipks(ipk_path.parent, exclude=ipk_path)
+            if not bundle_path:
+                bundle_path = bundle_guess
+            if not bundlelogic_path:
+                bundlelogic_path = bundlelogic_guess
+
+        ipk_resolved = ipk_path.resolve()
+        if bundle_path and bundle_path.exists() and bundle_path.resolve() == ipk_resolved:
+            bundle_path = None
+        if bundlelogic_path and bundlelogic_path.exists() and bundlelogic_path.resolve() == ipk_resolved:
+            bundlelogic_path = None
+
+        if bundle_path and not bundle_path.is_file():
+            bundle_path = None
+        if bundlelogic_path and not bundlelogic_path.is_file():
+            bundlelogic_path = None
+
+        return bundle_path, bundlelogic_path
+
     def _start_batch_install(
         self,
         selected_maps: set[str] | None = None,
         map_names: list[str] | None = None,
         fetch_codenames: list[str] | None = None,
         fetch_source: str = "jdu",
+        bundle_ipk: Optional[Path] = None,
+        bundlelogic_ipk: Optional[Path] = None,
+        source_mode: str = "",
     ) -> None:
         """Launches the dedicated Batch mode worker."""
         if not self._current_target:
@@ -3345,6 +3704,9 @@ class MainWindow(QMainWindow):
             fetch_codenames=fetch_codenames,
             fetch_source=fetch_source,
             force_unlock_locked_status=force_unlock_locked_status,
+            bundle_ipk=bundle_ipk,
+            bundlelogic_ipk=bundlelogic_ipk,
+            source_mode=source_mode,
         )
         thread = QThread()
         worker.moveToThread(thread)
@@ -3383,9 +3745,10 @@ class MainWindow(QMainWindow):
         logger.debug("Thread cleaned up: %s", label)
         if thread in self._active_threads:
             self._active_threads.remove(thread)
-        self._active_worker = None
+        if not self._active_threads:
+            self._active_worker = None
 
-    def _start_file_logging(self, current_target: str) -> None:
+    def _start_file_logging(self, current_target: str, mode_name: str = "", action: str = "install") -> None:
         """Starts a dynamic FileHandler log for this installation."""
         if self._file_logger_handlers:
             self._stop_file_logging()
@@ -3412,8 +3775,12 @@ class MainWindow(QMainWindow):
         import datetime
         timestamp = datetime.datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
 
-        file_prefix = "install_"
-        file_suffix = f"_{timestamp}.log"
+        safe_mode = "".join(c for c in mode_name if c.isalnum() or c in ("-", "_")).strip()
+        if safe_mode:
+            file_prefix = f"{timestamp}_{action}_{safe_mode}_"
+        else:
+            file_prefix = f"{timestamp}_{action}_"
+        file_suffix = ".log"
         max_filename_len = 180
         max_segment_len = max(8, max_filename_len - len(file_prefix) - len(file_suffix))
         if len(codename) > max_segment_len:
@@ -3447,6 +3814,45 @@ class MainWindow(QMainWindow):
         self._config.log_detail_level = apply_log_detail(self._config.log_detail_level)
         for log_path in log_paths:
             logger.info("Install log file: %s", log_path)
+
+    def _rename_log_file_with_codename(self, new_codename: str) -> None:
+        """Rename the current log file(s) replacing the original target name with the true codename."""
+        if not self._file_logger_handlers or not new_codename:
+            return
+
+        import os
+        safe_codename = "".join(c for c in new_codename if c.isalnum() or c in ("-", "_")).strip()
+        if not safe_codename:
+            return
+
+        for handler in list(self._file_logger_handlers):
+            if not isinstance(handler, logging.FileHandler):
+                continue
+            
+            old_path = Path(handler.baseFilename)
+            old_name = old_path.name
+            if not old_name.endswith(".log"):
+                continue
+            
+            name_without_ext = old_name[:-4]
+            last_underscore = name_without_ext.rfind("_")
+            if last_underscore == -1:
+                continue
+            
+            new_name = name_without_ext[:last_underscore+1] + safe_codename + ".log"
+            new_path = old_path.parent / new_name
+            
+            if new_path == old_path or new_path.exists():
+                continue
+            
+            try:
+                handler.close()
+                os.rename(old_path, new_path)
+                handler.baseFilename = str(new_path.resolve())
+                handler.stream = handler._open()
+                logger.info("Log file renamed to incorporate detected codename: %s", new_path.name)
+            except Exception as e:
+                logger.debug("Failed to rename log file to %s: %s", new_name, e)
 
     def _stop_file_logging(self) -> None:
         """Removes the active FileHandler and cleanly closes handles."""

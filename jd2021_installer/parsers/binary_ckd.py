@@ -22,6 +22,7 @@ from typing import List, Optional, Union
 
 from jd2021_installer.core.exceptions import BinaryCKDParseError
 from jd2021_installer.core.models import (
+    AutodanceTemplate,
     BeatClip,
     BeatsTape,
     CinematicTape,
@@ -36,6 +37,7 @@ from jd2021_installer.core.models import (
     MusicTrackStructure,
     PictogramClip,
     SongDescription,
+    SoundComponentTemplate,
     SoundSetClip,
     TapeReferenceClip,
 )
@@ -250,59 +252,75 @@ def _parse_musictrack_from_reader(r: BinaryReader) -> MusicTrackStructure:
 
 def _parse_songdesc_from_reader(r: BinaryReader) -> SongDescription:
     """Parse JD_SongDescTemplate after the Actor header."""
-    r.u32()  # unk1
-
-    map_name = r.len_string()
-    jd_version = r.u32()
-    original_jd_version = r.u32()
-
-    # Related albums (skip)
-    for _ in range(r.u32()):
-        r.len_string()
-
-    # Unknown58 array – 13 × u32 per entry (skip)
-    for _ in range(r.u32()):
-        for _ in range(13):
-            r.u32()
-
-    artist = r.len_string()
-    dancer_name = r.len_string()
-    title = r.len_string()
-
-    num_coach = r.u32()
-    main_coach = r.i32()
-    difficulty = r.u32()
-    background_type = r.u32()
-    lyrics_type = r.i32()
-    energy = r.u32()
-    r.f32()  # unk17
-
-    # Tags (skip processing but count entries)
-    n_tags = r.u32()
-    for _ in range(n_tags):
-        r.u32()  # tag_unk1
-        r.u32()  # tag CRC
-        r.u32()  # tag_unk21
-        r.u32()  # tag_unk22
-    tags = ["Main"]  # Binary CKDs don't store decoded tag names
-
-    # DefaultColors
+    map_name = ""
+    jd_version = 0
+    original_jd_version = 0
+    artist = ""
+    dancer_name = ""
+    title = ""
+    num_coach = 1
+    main_coach = -1
+    difficulty = 1
+    background_type = 0
+    lyrics_type = 0
+    energy = 1
+    tags = ["Main"]
     default_colors = DefaultColors()
-    for _ in range(r.u32()):
-        name_crc = r.u32()
-        rgba = [r.f32() for _ in range(4)]
-        if name_crc == _THEME_CRC:
-            default_colors.theme = rgba
-        elif name_crc == _LYRICS_CRC:
-            default_colors.lyrics = rgba
-        else:
-            default_colors.extra[f"0x{name_crc:08X}"] = rgba
 
-    # Paths (consume but discard)
-    for _ in range(r.u32()):
-        r.split_path()
-    for _ in range(r.u32()):
-        r.split_path()
+    try:
+        r.u32()  # unk1
+
+        map_name = r.len_string()
+        jd_version = r.u32()
+        original_jd_version = r.u32()
+
+        # Related albums (skip)
+        for _ in range(r.u32()):
+            r.len_string()
+
+        # Unknown58 array – 13 × u32 per entry (skip)
+        for _ in range(r.u32()):
+            for _ in range(13):
+                r.u32()
+
+        artist = r.len_string()
+        dancer_name = r.len_string()
+        title = r.len_string()
+
+        num_coach = r.u32()
+        main_coach = r.i32()
+        difficulty = r.u32()
+        background_type = r.u32()
+        lyrics_type = r.i32()
+        energy = r.u32()
+        r.f32()  # unk17
+
+        # Tags (skip processing but count entries)
+        n_tags = r.u32()
+        for _ in range(n_tags):
+            r.u32()  # tag_unk1
+            r.u32()  # tag CRC
+            r.u32()  # tag_unk21
+            r.u32()  # tag_unk22
+
+        # DefaultColors
+        for _ in range(r.u32()):
+            name_crc = r.u32()
+            rgba = [r.f32() for _ in range(4)]
+            if name_crc == _THEME_CRC:
+                default_colors.theme = rgba
+            elif name_crc == _LYRICS_CRC:
+                default_colors.lyrics = rgba
+            else:
+                default_colors.extra[f"0x{name_crc:08X}"] = rgba
+
+        # Paths (consume but discard)
+        for _ in range(r.u32()):
+            r.split_path()
+        for _ in range(r.u32()):
+            r.split_path()
+    except struct.error:
+        pass
 
     return SongDescription(
         map_name=map_name,
@@ -392,6 +410,9 @@ def parse_dtape(data: bytes, map_name: str) -> DanceTape:
                 duration=entry_duration,
                 effect_type=effecttype,
             ))
+        else:
+            logger.debug(f"parse_dtape: unknown clip class {entry_class}, breaking to avoid desync")
+            break
 
     return DanceTape(clips=clips, map_name=map_name)
 
@@ -448,6 +469,9 @@ def parse_ktape(data: bytes, map_name: str) -> KaraokeTape:
                 end_time_tolerance=end_time_tol,
                 semitone_tolerance=semitone_tol,
             ))
+        else:
+            logger.debug(f"parse_ktape: unknown clip class {entry_class}, breaking to avoid desync")
+            break
 
     return KaraokeTape(clips=clips, map_name=map_name)
 
@@ -565,6 +589,9 @@ def parse_btape(data: bytes, map_name: str) -> BeatsTape:
                 duration=entry_duration,
                 beat_type=clip_type,
             ))
+        else:
+            logger.debug(f"parse_btape: unknown clip class {entry_class}, breaking to avoid desync")
+            break
 
     return BeatsTape(clips=clips, map_name=map_name)
 
@@ -598,7 +625,8 @@ ParseResult = Union[
     KaraokeTape,
     CinematicTape,
     BeatsTape,
-    dict,  # autodance / sound component (simple dict for now)
+    AutodanceTemplate,
+    SoundComponentTemplate,
 ]
 
 
@@ -666,7 +694,7 @@ def parse_binary_ckd(data: bytes, filename: str) -> ParseResult:
         if template_crc == _AUTODANCE_TEMPLATE_CRC:
             r.u32()  # unk1
             ad_map_name = r.len_string()
-            return {"type": "autodance", "map_name": ad_map_name}
+            return AutodanceTemplate(map_name=ad_map_name)
 
         if template_crc == _SOUND_COMPONENT_TEMPLATE_CRC:
             r.u32()  # unk1
@@ -677,7 +705,7 @@ def parse_binary_ckd(data: bytes, filename: str) -> ParseResult:
                 file_count = r.u32()
                 files = [r.split_path() for _ in range(file_count)]
                 sounds.append({"files": files})
-            return {"type": "sound_component", "sound_list": sounds}
+            return SoundComponentTemplate(sound_list=sounds)
 
         if template_crc == _TAPE_CRC and "btape" in name_lower:
             return parse_btape(data, map_name)

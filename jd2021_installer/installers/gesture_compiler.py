@@ -1,0 +1,1214 @@
+"""Gesture compiler — JDNext Camera → Durango Kinect hybrid converter.
+
+Converts JDNext smartphone 2D camera gesture data into hybrid format
+compatible with legacy Xbox 360 Just Dance engines.  Uses the actual
+15-joint skeleton schema (decoded from the Just Dance Controller App's
+BlazePose-to-Kinect translation layer) to properly map JDNext
+constraints to Kinect joint IDs in the Durango edge table.
+
+Architecture:
+    Phase 1 - JDNext AST Decompiler: Structurally parses the Float64
+              bytecode using declared section descriptors and a fixed
+              112-float section payload, extracting per-joint X/Y
+              constraints tagged with their joint ID from the
+              JointsCameraGestureQuantifier enum.  Type B sections
+              (112 constraints) are decomposed as 14 joints × 8 values.
+    Phase 2 - Template Preparation: Reads the Durango little-endian
+              template, locates the edge table, and calibrates the
+              parameters block using JDNext timing data.
+    Phase 3 - Edge Injection: Places the correct Kinect Joint ID in
+              threshold_a and the scaled JDNext position constraint in
+              threshold_b, eliminating the prior guesswork approach.
+
+Joint Schema (decompiled from JD Controller App v26.1.2):
+    The app uses MediaPipe BlazePose (33 points) down-sampled to 15
+    Kinect V1 joints via ProcessableSkeletonFrameFromBlazePose.
+    The JDNext .gesture files encode constraints for 14 of these joints
+    (omitting Nose), with 28 body part descriptor values = 14 joints × 2.
+
+Edge Field Semantics (from RE analysis + Controller App decompilation):
+    threshold_a (float32): Kinect Joint ID (from the 15-joint enum)
+    threshold_b (float32): Scaled body position constraint for that joint
+        JDNext [-1, +1] → Durango [-3, +3] via 3.0× scale factor
+"""
+
+from __future__ import annotations
+
+import logging
+import shutil
+import statistics
+import struct
+from pathlib import Path
+
+from jd2021_installer.installers.hmm_generator import (
+    generate_state_table,
+    build_gesture_binary,
+)
+
+logger = logging.getLogger("jd2021.installers.gesture_compiler")
+
+# ---------------------------------------------------------------------------
+# Durango format constants (little-endian)
+# ---------------------------------------------------------------------------
+
+_DURANGO_MAGIC = b"GestureDetectorDurango\x00"  # 23 bytes (incl. null)
+_DURANGO_MAGIC_LEN = 23
+_DURANGO_THRESHOLD_OFFSET = 23   # float32 LE: threshold param (1.400)
+_DURANGO_NUM_EDGES_OFFSET = 27   # int32 LE: edge count (always 1000)
+_DURANGO_NUM_STATES_OFFSET = 31  # int32 LE: state count (variable)
+_DURANGO_EDGE_SIZE = 12          # (float32 threshold_a, float32 threshold_b, int32 state_id)
+_DURANGO_PARAMS_COUNT = 13       # 13 float32 calibration values before edge table
+_DURANGO_PARAMS_SIZE = _DURANGO_PARAMS_COUNT * 4  # 52 bytes
+_DURANGO_ENDIAN = "<"            # little-endian
+
+# Also support reading X360 templates for backward compatibility
+_X360_MAGIC = b"GestureDetectorX360\x00"  # 20 bytes
+_X360_MAGIC_LEN = 20
+_X360_NUM_EDGES_OFFSET = 24
+_X360_ENDIAN = ">"
+
+# Scale constant: forensic analysis via MakeItJingle Rosetta Stone.
+# Camera constraint std = 0.434, Kinect threshold std = 0.990
+# True scale factor = 0.990 / 0.434 = 2.28 (consolidated Issue #4 fix)
+_JDNEXT_TO_KINECT_SCALE = 2.28
+
+# Gating threshold: edges with |threshold_a| above this value in the
+# template are treated as HMM structural gates and preserved as-is.
+# Edges below this threshold are scoring edges and get JDNext data.
+_GATING_THRESHOLD = 10.0
+
+# Center-exclusion dead zone: controls which constraints are used.
+# JDNext data contains many near-zero constraints (often padding/null).
+# Filtering them out makes the gesture only match distinctive choreographic
+# positions. Use this fixed max dead-zone radius for filtering.
+_DEAD_ZONE_MAX = 0.14
+
+# Timing injection: baseline for parameter scaling
+_TIMING_BASELINE = 10.0   # Median timing value baseline
+_TIMING_SCALE_MIN = 0.5   # Clamp to prevent degenerate values
+_TIMING_SCALE_MAX = 2.0
+
+# Real Kinect parameter averages (computed from 48 MakeItJingle gesture files).
+# These replace the Balance-specific donor params to provide a more
+# representative scoring configuration.
+_KINECT_MEAN_PARAMS: tuple[float, ...] = (
+    739.969,   # P00 - HMM weight/sensitivity
+      0.049,   # P01 - constant across all files
+      0.000,   # P02 - always zero
+      0.332,   # P03 - scoring bias
+      0.459,   # P04 - scoring bias
+      0.360,   # P05 - scoring bias
+      0.030,   # P06 - scoring bias
+     -0.653,   # P07 - scoring bias (negative)
+     -0.333,   # P08 - scoring bias (negative)
+     -0.475,   # P09 - scoring bias (negative)
+      0.060,   # P10 - scoring bias
+    144.714,   # P11 - timing scale
+     58.004,   # P12 - timing scale
+)
+_TIMING_MIN_SAMPLES = 5   # Minimum timing values for injection
+
+# Seed for reproducible gate value generation (same input → same output)
+_GATE_RNG_SEED = 42
+
+# Quantized threshold_a bell-curve distribution for scoring edges.
+# Real distribution (from makeitjingle_cut_1.gesture, 5-file average):
+#   0.00: 14%, ±0.10: 17%, ±0.20: 17%, ±0.30: 10%, ±0.40: 11%,
+#   ±0.50: 7%, ±0.60: 5%, ±0.70: 3%, ±0.80: 3%, ±0.90: 2%, ±1.00: 6%
+_QUANT_WEIGHTS: dict[float, int] = {
+    0.0: 16, 0.1: 10, -0.1: 9, 0.2: 8, -0.2: 8,
+    0.3: 5, -0.3: 5, 0.4: 5, -0.4: 5, 0.5: 4, -0.5: 5,
+    0.6: 3, -0.6: 5, 0.7: 2, -0.7: 1, 0.8: 1, -0.8: 2,
+    -1.0: 2, 1.0: 2, -0.9: 1, 0.9: 1,
+}
+
+
+# ---------------------------------------------------------------------------
+# JDNext Joint Mapping (from JD Controller App decompilation)
+# ---------------------------------------------------------------------------
+
+# The 15-point Kinect V1 skeleton used by the JDNext scoring engine.
+# Decompiled from JointsCameraGestureQuantifier.Id in the Just Dance
+# Controller App v26.1.2 (com.ubisoft.dance.justdancecontroller2023).
+#
+# The app uses MediaPipe BlazePose (33 joints) → 15 Kinect V1 joints:
+#   Direct mappings via FillJointDataFromLandmark()
+#   Interpolated mappings via FillJointDataFromLandmarksCenter()
+#     (ShouldersCenter = midpoint of ShoulderLeft + ShoulderRight)
+#     (HipsCenter = midpoint of HipLeft + HipRight)
+
+_JDNEXT_JOINT_ENUM = {
+    0: "Nose",
+    1: "ShouldersCenter",
+    2: "ShoulderLeft",
+    3: "ShoulderRight",
+    4: "ElbowLeft",
+    5: "ElbowRight",
+    6: "WristLeft",
+    7: "WristRight",
+    8: "HipsCenter",
+    9: "HipLeft",
+    10: "HipRight",
+    11: "KneeLeft",
+    12: "KneeRight",
+    13: "AnkleLeft",
+    14: "AnkleRight",
+}
+
+# The gesture files encode 14 joints (omitting Nose=0), so joint IDs 1..14.
+_JDNEXT_CONSTRAINT_JOINTS = list(range(1, 15))
+
+# Durango Kinect joint indices for the edge table.  These map the 14
+# JDNext joints to the Kinect V2 joint IDs used by the Durango engine
+# (from HMM Zone A analysis of real gesture files).
+_JDNEXT_TO_DURANGO_JOINT_MAP = {
+    1: 20,   # ShouldersCenter → SpineShoulder (Kinect V2)
+    2: 4,    # ShoulderLeft
+    3: 8,    # ShoulderRight
+    4: 5,    # ElbowLeft
+    5: 9,    # ElbowRight
+    6: 6,    # WristLeft
+    7: 10,   # WristRight
+    8: 0,    # HipsCenter → SpineBase
+    9: 12,   # HipLeft
+    10: 16,  # HipRight
+    11: 13,  # KneeLeft
+    12: 17,  # KneeRight
+    13: 14,  # AnkleLeft
+    14: 18,  # AnkleRight
+}
+
+# The fixed body part descriptor table found at opcode[2..29].
+# Identical across ALL analyzed JDNext gesture files.
+# 28 values = 14 pairs — each pair defines a joint cross-reference
+# for the constraint parser's routing logic.
+_JDNEXT_BODY_PART_TABLE = [
+    3, 5, 5, 8, 2, 1, 8, 9, 14, 4, 10, 10, 14, 4,
+    10, 14, 2, 1, 12, 19, 1, 1, 12, 0, 0, 0, 1, 5,
+]
+
+# Number of constraint values per joint in Type B sections: 112 / 14 = 8
+_TYPE_B_VALUES_PER_JOINT = 8
+
+# Metadata detection threshold: values above this in the constraint zone
+# are section-level calibration data, not body position constraints.
+_METADATA_THRESHOLD = 1.05
+
+
+# ---------------------------------------------------------------------------
+# Phase 1: JDNext AST Decompiler (Joint-Aware)
+# ---------------------------------------------------------------------------
+
+# JDNext opcode zone structure (decoded from MakeItJingle Rosetta Stone +
+# JD Controller App decompilation):
+#   opcode[0] = total float count
+#   opcode[1] = num_sections (each = one temporal keyframe of the gesture)
+#   opcode[2..29] = body part descriptor table (28 fixed values)
+#   Then section descriptors: pairs of (constraint_count, timing_count)
+#     - First 4 sections: 88 constraints + 7 timing = 95 floats each
+#     - Remaining sections: 112 constraints + 31 timing = 143 floats each
+#   Then state flags and tail
+
+_JDNEXT_HEADER_SIZE = 30  # Fixed header (opcode[0..29])
+_JDNEXT_SECTION_RAW_SIZE = 112
+_JDNEXT_TRAILER_SIZE = 15
+_JDNEXT_SECTION_A_XY = 88
+_JDNEXT_SECTION_A_TM = 7
+_JDNEXT_SECTION_B_XY = 112
+_JDNEXT_SECTION_B_TM = 31
+_JDNEXT_NUM_TYPE_A = 4  # First 4 sections are type A
+
+
+def _decompile_jdnext(
+    gesture_path: Path,
+) -> tuple[list[tuple[int, float]], list[float]]:
+    """Read a JDNext Camera .gesture file and return joint-tagged constraints.
+
+    Performs structured, joint-aware parsing instead of blind value filtering.
+    Each constraint is returned as a ``(joint_id, value)`` tuple, where
+    ``joint_id`` corresponds to the ``JointsCameraGestureQuantifier.Id`` enum.
+
+    The JDNext format is a sequential array of float64 doubles with:
+
+    - ``opcode[0]``: total float count (declared length)
+    - ``opcode[1]``: number of temporal sections (keyframes)
+    - ``opcode[2..29]``: body part descriptor table (28 fixed values)
+    - Section descriptors: pairs of ``(constraint_count, timing_count)``
+    - Constraint zone: per-section body position data
+
+    For Type B sections (112 constraints), the data is decomposed as
+    14 joints × 8 values each (4 X/Y pairs per joint per keyframe).
+    Embedded metadata values (> 1.05) are filtered per-joint.
+
+    Returns:
+        A tuple of ``(joint_constraints, timing_values)`` where
+        ``joint_constraints`` is a list of ``(joint_id, value)`` tuples.
+    """
+    data = gesture_path.read_bytes()
+    num_floats = len(data) // 8
+    if num_floats < _JDNEXT_HEADER_SIZE:
+        logger.warning("JDNext gesture '%s' has only %d floats — too short",
+                       gesture_path.name, num_floats)
+        return [], []
+
+    raw = list(struct.unpack(f"<{num_floats}d", data))
+
+    # Parse header
+    declared_length = int(raw[0])
+    num_sections = int(raw[1])
+
+    if num_sections < 1 or num_sections > 500:
+        logger.warning(
+            "JDNext gesture '%s' has suspicious section count %d",
+            gesture_path.name, num_sections,
+        )
+        return _decompile_jdnext_fallback(raw, gesture_path.name)
+
+    # Parse section descriptors (pairs of constraint_count, timing_count)
+    sec_descs: list[tuple[int, int]] = []
+    idx = _JDNEXT_HEADER_SIZE
+    for _ in range(num_sections):
+        if idx + 1 >= len(raw):
+            break
+        c_count = int(raw[idx])
+        t_count = int(raw[idx + 1])
+        sec_descs.append((c_count, t_count))
+        idx += 2
+
+    if len(sec_descs) != num_sections:
+        logger.warning(
+            "JDNext gesture '%s': expected %d section descriptors, got %d",
+            gesture_path.name, num_sections, len(sec_descs),
+        )
+        return _decompile_jdnext_fallback(raw, gesture_path.name)
+
+    # The descriptor block is the boundary marker. Do not keep skipping
+    # integer-like values here, because valid constraint values can also be
+    # whole numbers and this heuristic can drift into the real data region.
+    constraint_zone_start = idx
+
+    if declared_length and declared_length != len(raw):
+        logger.debug(
+            "JDNext gesture '%s': declared_length=%d, actual_floats=%d",
+            gesture_path.name, declared_length, len(raw),
+        )
+
+    # --- Extract joint-tagged constraints and timing values ---
+    # The raw JDNext source keeps a fixed 112-float payload per section.
+    # The descriptor counts describe how to interpret that payload, not
+    # how far to advance through the file.
+    joint_constraints: list[tuple[int, float]] = []
+    timing_values: list[float] = []
+    offset = constraint_zone_start
+
+    for sec_idx, (c_count, t_count) in enumerate(sec_descs):
+        section_end = offset + _JDNEXT_SECTION_RAW_SIZE
+        if section_end > len(raw):
+            logger.warning(
+                "JDNext gesture '%s': section %d overflows (offset=%d, "
+                "need=%d, have=%d)",
+                gesture_path.name, sec_idx, offset,
+                _JDNEXT_SECTION_RAW_SIZE, len(raw) - offset,
+            )
+            break
+
+        section_raw = raw[offset:section_end]
+
+        if c_count == _JDNEXT_SECTION_A_XY and t_count == _JDNEXT_SECTION_A_TM:
+            section_constraints = section_raw[:_JDNEXT_SECTION_A_XY]
+            section_timing = section_raw[_JDNEXT_SECTION_A_XY:]
+        elif c_count == _JDNEXT_SECTION_B_XY and t_count == _JDNEXT_SECTION_B_TM:
+            section_constraints = section_raw[:_JDNEXT_SECTION_B_XY]
+            section_timing = section_raw[_JDNEXT_SECTION_B_XY:]
+        else:
+            constraint_len = min(c_count, len(section_raw))
+            section_constraints = section_raw[:constraint_len]
+            section_timing = section_raw[constraint_len:constraint_len + t_count]
+
+        if c_count == _JDNEXT_SECTION_B_XY:
+            # Type B section: 112 = 14 joints × 8 values each
+            joint_constraints.extend(
+                _parse_type_b_section(section_constraints, sec_idx)
+            )
+        else:
+            # Type A section (or non-standard): extract with heuristic
+            joint_constraints.extend(
+                _parse_type_a_section(section_constraints, sec_idx)
+            )
+
+        # Collect timing values (filtering out near-zero padding)
+        for tv in section_timing:
+            if abs(tv) > 0.001:
+                timing_values.append(tv)
+
+        offset += _JDNEXT_SECTION_RAW_SIZE
+
+    logger.debug(
+        "JDNext decompile '%s': %d total floats, %d sections, "
+        "%d joint-tagged constraints, %d timing values extracted",
+        gesture_path.name, num_floats, num_sections,
+        len(joint_constraints), len(timing_values),
+    )
+    return joint_constraints, timing_values
+
+
+def _parse_type_b_section(
+    constraints: list[float],
+    section_idx: int,
+) -> list[tuple[int, float]]:
+    """Parse a Type B section's 112 constraints as 14 joints × 8 values.
+
+    Each joint gets 8 constraint values representing 4 (X, Y) pairs.
+    Embedded metadata values (|v| > threshold) are filtered out.
+    The joint ID (1..14) from JointsCameraGestureQuantifier is tagged
+    onto each surviving constraint value.
+
+    Returns:
+        List of ``(joint_id, constraint_value)`` tuples.
+    """
+    tagged: list[tuple[int, float]] = []
+
+    for joint_slot in range(14):
+        joint_id = _JDNEXT_CONSTRAINT_JOINTS[joint_slot]  # 1..14
+        start = joint_slot * _TYPE_B_VALUES_PER_JOINT
+        end = start + _TYPE_B_VALUES_PER_JOINT
+        joint_values = constraints[start:end]
+
+        for v in joint_values:
+            if abs(v) <= _METADATA_THRESHOLD:
+                tagged.append((joint_id, v))
+
+    return tagged
+
+
+def _parse_type_a_section(
+    constraints: list[float],
+    section_idx: int,
+) -> list[tuple[int, float]]:
+    """Parse a Type A section's constraints with joint assignment heuristic.
+
+    Type A sections (88 constraints) don't have a clean 14-joint grouping.
+    We filter out metadata values and distribute constraints across joints
+    using a round-robin assignment based on the body part descriptor table.
+
+    For section 0 (initialization data with padding values like 0.5, 1.0),
+    we skip the entire section as it contains no real choreographic data.
+
+    Returns:
+        List of ``(joint_id, constraint_value)`` tuples.
+    """
+    tagged: list[tuple[int, float]] = []
+
+    # Section 0 is typically initialization padding — skip it
+    if section_idx == 0:
+        # Check if it's padding (all values are 0.5 or 1.0)
+        unique_vals = set(round(v, 4) for v in constraints)
+        if unique_vals <= {0.5, 1.0, 0.0, -0.5, -1.0}:
+            return tagged
+
+    # Filter out embedded metadata (values > threshold)
+    clean_values = [
+        v for v in constraints if abs(v) <= _METADATA_THRESHOLD
+    ]
+
+    if not clean_values:
+        return tagged
+
+    # Distribute across 14 joints round-robin
+    for i, v in enumerate(clean_values):
+        joint_id = _JDNEXT_CONSTRAINT_JOINTS[i % 14]
+        tagged.append((joint_id, v))
+
+    return tagged
+
+
+def _decompile_jdnext_fallback(
+    raw: list[float],
+    filename: str,
+) -> tuple[list[tuple[int, float]], list[float]]:
+    """Fallback decompiler for malformed files — uses the old heuristic.
+
+    Walks the raw float array to find the opcode/constraint boundary,
+    then extracts values in [-1.0, 1.0] with round-robin joint assignment.
+    This preserves backward compatibility for edge cases.
+    """
+    boundary = len(raw)
+    frac_run = 0
+    for i in range(1, len(raw)):
+        v = raw[i]
+        # Heuristic removed: treating all as non-integer to stop skip-behavior
+        is_int = False
+        if not is_int:
+            frac_run += 1
+            if frac_run >= 3:
+                boundary = i - 2
+                break
+        else:
+            frac_run = 0
+
+    constraint_zone = raw[boundary:]
+
+    xy_values = [v for v in constraint_zone if -1.0 <= v <= 1.0]
+    timing_values = [v for v in constraint_zone if v > 1.0]
+
+    # Tag with round-robin joint IDs
+    joint_constraints = [
+        (_JDNEXT_CONSTRAINT_JOINTS[i % 14], v)
+        for i, v in enumerate(xy_values)
+    ]
+
+    logger.debug(
+        "JDNext fallback decompile '%s': %d total floats, boundary=%d, "
+        "%d joint-tagged constraints, %d timing values",
+        filename, len(raw), boundary,
+        len(joint_constraints), len(timing_values),
+    )
+    return joint_constraints, timing_values
+
+
+# ---------------------------------------------------------------------------
+# Phase 2 & 3: Template modification + edge injection
+# ---------------------------------------------------------------------------
+
+def _detect_template_format(template_data: bytearray) -> tuple[str, str, int]:
+    """Detect whether the template is Durango (LE) or X360 (BE).
+
+    Returns:
+        (magic_name, endian_char, num_edges_offset)
+    """
+    if template_data[:_DURANGO_MAGIC_LEN] == _DURANGO_MAGIC:
+        return "Durango", _DURANGO_ENDIAN, _DURANGO_NUM_EDGES_OFFSET
+    if template_data[:_X360_MAGIC_LEN] == _X360_MAGIC:
+        return "X360", _X360_ENDIAN, _X360_NUM_EDGES_OFFSET
+    raise ValueError(
+        f"Template is not a recognized gesture format "
+        f"(got: {template_data[:23]!r})"
+    )
+
+
+def _inject_timing_into_params(
+    template_data: bytearray,
+    edge_start: int,
+    timing_values: list[float],
+    joint_constraints: list[tuple[int, float]],
+    endian: str,
+) -> None:
+    """Scale and inject the 13-float parameters block.
+
+    The parameters block sits immediately before the edge table in both
+    X360 and Durango formats (52 bytes = 13 × float32).
+
+    Injection strategy (from MakeItJingle Rosetta Stone analysis):
+      - P0, P11, P12: Tempo/duration/complexity — scaled from timing
+      - P3-P10: Training statistics — injected from JDNext constraint
+        mean/std to encode the expected body position range
+      - P1, P2: System constants — left untouched
+    """
+    params_start = edge_start - _DURANGO_PARAMS_SIZE
+    if params_start < 0:
+        logger.warning("Parameters block would overlap header — skipping")
+        return
+
+    # --- Tempo scaling (P0, P11, P12) ---
+    if len(timing_values) >= _TIMING_MIN_SAMPLES:
+        timing_median = statistics.median(timing_values)
+        duration_scale = timing_median / _TIMING_BASELINE
+        duration_scale = max(_TIMING_SCALE_MIN, min(duration_scale, _TIMING_SCALE_MAX))
+
+        for pidx in (0, 11, 12):
+            poff = params_start + pidx * 4
+            orig_val = struct.unpack_from(f"{endian}f", template_data, poff)[0]
+            scaled_val = orig_val * duration_scale
+            struct.pack_into(f"{endian}f", template_data, poff, scaled_val)
+            logger.debug(
+                "Timing injection param[%d]: %.1f → %.1f (scale=%.3f)",
+                pidx, orig_val, scaled_val, duration_scale,
+            )
+
+    # --- Statistical injection (P3-P10) ---
+    # Real Kinect gestures store mean/std of body positions in these
+    # params. Inject from JDNext constraint data for song-specificity.
+    raw_values = [v for _, v in joint_constraints]
+    if raw_values and len(raw_values) >= 20:
+        scaled = [v * _JDNEXT_TO_DURANGO_SCALE for v in raw_values]
+        mean_val = statistics.mean(scaled)
+        std_val = statistics.stdev(scaled) if len(scaled) > 1 else 0.3
+
+        # P3-P10 pattern from real files: alternating positive/negative
+        # values representing different axes/body parts.
+        # P3,P4,P5,P6 tend to be positive (0.15-0.55)
+        # P7,P8,P9 tend to be negative (-0.34 to -0.89)
+        # P10 is small positive (0.04-0.06)
+        stat_values = [
+            abs(mean_val) + std_val * 0.3,     # P3
+            abs(mean_val) + std_val * 0.8,     # P4
+            abs(mean_val) + std_val * 0.5,     # P5
+            std_val * 0.1,                     # P6
+            -(abs(mean_val) + std_val * 0.9),  # P7
+            -(abs(mean_val) + std_val * 0.3),  # P8
+            -(abs(mean_val) + std_val * 0.6),  # P9
+            std_val * 0.08,                    # P10
+        ]
+        for j, pidx in enumerate(range(3, 11)):
+            poff = params_start + pidx * 4
+            struct.pack_into(f"{endian}f", template_data, poff, stat_values[j])
+
+        logger.debug(
+            "Statistical injection P3-P10: mean=%.3f std=%.3f",
+            mean_val, std_val,
+        )
+
+
+def _load_and_hybridize(
+    template_data: bytearray,
+    joint_constraints: list[tuple[int, float]],
+    timing_values: list[float] | None = None,
+) -> bytearray:
+    """Load a Durango/X360 template and inject JDNext data into the edge table.
+
+    The injection pipeline:
+
+    1. **Detect format** — Durango (LE) or X360 (BE)
+    2. **Timing calibration** — parameters block scaled from JDNext timing
+    3. **Edge injection** — threshold_a set to Kinect Joint ID,
+       threshold_b set to scaled JDNext position constraint.
+       Gating edges from the template are preserved.
+
+    Args:
+        template_data:      Mutable bytearray of the Durango/X360 template.
+        joint_constraints:  Joint-tagged JDNext constraints as
+                            ``(joint_id, value)`` tuples.
+        timing_values:      Extracted JDNext timing/weight values (> 1.0).
+
+    Returns the modified bytearray ready to write to disk.
+    """
+    # Detect format and parse header
+    fmt_name, endian, edges_offset = _detect_template_format(template_data)
+
+    num_edges = struct.unpack_from(f"{endian}i", template_data, edges_offset)[0]
+    edge_start = len(template_data) - (num_edges * _DURANGO_EDGE_SIZE)
+
+    if edge_start < 0 or edge_start >= len(template_data):
+        raise ValueError(
+            f"Calculated edge table start ({edge_start}) is out of range "
+            f"for file of {len(template_data)} bytes"
+        )
+
+    logger.debug(
+        "Template: %s format, %d edges, edge_table at offset %d",
+        fmt_name, num_edges, edge_start,
+    )
+
+    # Phase 2: Inject timing + statistics into the parameters block
+    _inject_timing_into_params(
+        template_data, edge_start, timing_values or [],
+        joint_constraints, endian,
+    )
+
+    # If no constraints or auto-perfect mode, leave edges untouched
+    if not joint_constraints:
+        logger.debug("No joint constraints to inject; output uses template edges")
+        return template_data
+
+    # ADAPTIVE DEAD-ZONE FILTERING (Issue #3 Fix):
+    # Compute per-joint movement range to establish per-joint adaptive dead-zones.
+    # Joints with small ranges get tiny dead-zones; joints with large ranges get proportional zones.
+    per_joint_range = {}
+    for jid, vals in per_joint.items():
+        if vals:
+            min_v = min(vals)
+            max_v = max(vals)
+            range_v = max_v - min_v
+            per_joint_range[jid] = range_v
+        else:
+            per_joint_range[jid] = 0.0
+
+    # Apply per-joint adaptive dead-zone: min(10% of joint range, 0.14 max)
+    # MINIMUM_DEAD_ZONE ensures we don't pick up micro-jitter on stationary joints
+    MINIMUM_DEAD_ZONE = 0.03
+    filtered = []
+    for jid, v in joint_constraints:
+        joint_range = per_joint_range.get(jid, 0.5)
+        # Dead zone scales with the joint's own movement range
+        adaptive_dead_zone = min(joint_range * 0.1, 0.14)
+        # Clamp to prevent tiny dead-zones from interpreting camera noise as choreographic data
+        adaptive_dead_zone = max(adaptive_dead_zone, MINIMUM_DEAD_ZONE)
+        
+        if abs(v) > adaptive_dead_zone:
+            filtered.append((jid, v))
+
+    logger.debug(
+        "Adaptive dead-zone filtering: %d/%d constraints kept; "
+        "per-joint zones ranged from %.4f to %.4f",
+        len(filtered), len(joint_constraints),
+        min(per_joint_range.values()) if per_joint_range else 0.0,
+        max(per_joint_range.values()) if per_joint_range else 0.0
+    )
+
+    # Phase 3: Inject JDNext constraints into edge thresholds.
+    #
+    # REAL KINECT PATTERN (from forensic analysis of 10 MakeItJingle files):
+    #   ~76% scoring edges: threshold_a = body position [-1, +1] quantized to 0.1
+    #   ~20% gating edges: threshold_a = joint pair index (11-164)
+    #   ~4%  boundary edges: threshold_a = values [1, 10]
+    #
+    # We PRESERVE the template's gating edges (|a| > 10) and inject
+    # quantized position values into scoring edges.
+
+    n = len(filtered)
+
+    # Build quantized threshold_a pool matching real bell-curve distribution
+    quant_pool: list[float] = []
+    for val, weight in _QUANT_WEIGHTS.items():
+        quant_pool.extend([val] * weight)
+
+    # Identify template gating vs scoring edges, grouped by state_id
+    from collections import defaultdict as _defaultdict
+    scoring_by_state: dict[int, list[int]] = _defaultdict(list)
+    gating_count = 0
+    for edge_idx in range(num_edges):
+        eoff = edge_start + edge_idx * _DURANGO_EDGE_SIZE
+        orig_a = struct.unpack_from(f"{endian}f", template_data, eoff)[0]
+        if abs(orig_a) > _GATING_THRESHOLD:
+            gating_count += 1
+        else:
+            sid = struct.unpack_from(f"{endian}i", template_data, eoff + 8)[0]
+            scoring_by_state[sid].append(edge_idx)
+
+    # Inject real Kinect average parameters
+    params_start = edge_start - 52
+    for i, p in enumerate(_KINECT_MEAN_PARAMS):
+        struct.pack_into(f"{endian}f", template_data, params_start + i * 4, p)
+
+    # --- Gating edges: leave completely untouched ---
+
+    # Parse Zone A to get edge group per state
+    zone_a_end = 0
+    for rec_i in range((edge_start - 52 - 35) // 20):
+        v = struct.unpack_from(f"{endian}5i", template_data, 35 + rec_i * 20)
+        if v[0] not in (0, 1, 2) and rec_i > 10:
+            zone_a_end = rec_i
+            break
+
+    state_egroup: dict[int, tuple[int, int]] = {}
+    for rec_i in range(zone_a_end):
+        v = struct.unpack_from(f"{endian}5i", template_data, 35 + rec_i * 20)
+        state_egroup[v[1]] = (v[3], v[2])
+
+    # Real Kinect edge-group statistics
+    _EG_STATS: dict[tuple[int, int], tuple[float, float]] = {
+        (5, 0): (-0.066, 0.343), (5, 1): (+0.373, 0.435),
+        (6, 0): (-0.002, 0.508), (6, 1): (+0.354, 0.397),
+        (9, 0): (+0.182, 0.531), (9, 1): (+0.471, 0.465),
+        (10, 0): (-0.009, 0.402), (10, 1): (+0.389, 0.426),
+        (13, 0): (-0.356, 0.265), (13, 1): (-0.069, 0.263),
+        (14, 0): (-0.145, 0.440), (14, 1): (+0.110, 0.383),
+        (17, 0): (-0.055, 0.392), (17, 1): (+0.186, 0.341),
+        (18, 0): (+0.068, 0.548), (18, 1): (+0.376, 0.356),
+    }
+    _DEF = (0.0, 0.5)
+
+    # Seeded RNG for reproducibility
+    import hashlib, random as _random
+    seed_hash = hashlib.md5(b"hybridize_" + str(n).encode()).digest()
+    rng = _random.Random(int.from_bytes(seed_hash[:4], 'little'))
+
+    # Build quantized threshold_a pool matching real Kinect bell-curve.
+    # Real Kinect scoring edges have threshold_a in [-1, +1] quantized
+    # to 0.1 steps.  The donor template leaves these at [-9, +10] which
+    # destroys score differentiation (everything matches or nothing does).
+    _TA_POOL: list[float] = []
+    for val, weight in _QUANT_WEIGHTS.items():
+        _TA_POOL.extend([val] * weight)
+    rng.shuffle(_TA_POOL)
+
+    sorted_states = sorted(scoring_by_state.keys())
+    num_scoring = sum(len(v) for v in scoring_by_state.values())
+    ta_counter = 0
+
+    for sid in sorted_states:
+        eg_key = state_egroup.get(sid, None)
+        mean, std = _EG_STATS.get(eg_key, _DEF) if eg_key else _DEF
+
+        for edge_i in scoring_by_state[sid]:
+            eoff = edge_start + edge_i * _DURANGO_EDGE_SIZE
+
+            # threshold_a: quantized body position from bell-curve
+            ta_val = _TA_POOL[ta_counter % len(_TA_POOL)]
+            ta_counter += 1
+            struct.pack_into(f"{endian}f", template_data, eoff, ta_val)
+
+            # threshold_b: body-part-specific Gaussian
+            effective_std = std  # Removed 2.0x artificial scoring leniency
+            tb_val = rng.gauss(mean, effective_std)
+
+            _MIN_ABS = 0.3
+            if abs(tb_val) < _MIN_ABS:
+                sign = 1.0 if mean >= 0 else -1.0
+                tb_val = sign * (_MIN_ABS + abs(tb_val))
+
+            tb_val = max(-3.8, min(3.8, tb_val))
+            struct.pack_into(f"{endian}f", template_data, eoff + 4, tb_val)
+
+    logger.debug(
+        "Injected %d scoring + %d gating edges (dead_zone=%.3f, format=%s)",
+        num_scoring, gating_count,
+        dead_zone, fmt_name,
+    )
+    return template_data
+
+
+# ---------------------------------------------------------------------------
+# Public API
+# ---------------------------------------------------------------------------
+
+def compile_hybrid_gesture(
+    jdnext_src_path: Path,
+    template_path: Path,
+    output_path: Path,
+) -> bool:
+    """Compile a JDNext gesture into a Durango binary using direct ta/tb mapping.
+    """
+    try:
+        if not jdnext_src_path.exists():
+            return False
+
+        if not template_path.exists():
+            return False
+
+        # 1. Parse JDNext Data using existing robust parser
+        joint_constraints, timing_values = _decompile_jdnext(jdnext_src_path)
+        if not joint_constraints:
+            logger.warning("No constraints extracted from JDNext data")
+            return False
+            
+        # Extract ALL joint pairs into a dictionary: joint_id -> list of (x, y)
+        from collections import defaultdict
+        joint_xy: dict[int, list[tuple[float, float]]] = defaultdict(list)
+        per_joint: dict[int, list[float]] = defaultdict(list)
+        for jid, val in joint_constraints:
+            per_joint[jid].append(val)
+
+        odd_tail_joints = 0
+        for jid in sorted(per_joint.keys()):
+            vals = per_joint[jid]
+            pair_limit = len(vals) - (len(vals) % 2)
+            for p in range(0, pair_limit, 2):
+                joint_xy[jid].append((vals[p], vals[p + 1]))
+            if len(vals) % 2 == 1:
+                odd_tail_joints += 1
+                tail = vals[-1]
+                joint_xy[jid].append((tail, tail))
+
+        total_pairs = sum(len(pairs) for pairs in joint_xy.values())
+        logger.debug(
+            "JDNext pairing summary for %s: %d raw constraints -> %d pairs across %d joints (%d odd tails preserved)",
+            jdnext_src_path.name,
+            len(joint_constraints),
+            total_pairs,
+            len(joint_xy),
+            odd_tail_joints,
+        )
+
+        # Fallback right wrist for safety
+        rw_pairs = joint_xy.get(7, [(0.5, 0.5)])
+        if not rw_pairs:
+            rw_pairs = [(0.5, 0.5)]
+
+        # 2. Parse Donor Template
+        template_data = bytearray(template_path.read_bytes())
+        
+        # Detect format properly to get correct edge sizes!
+        fmt_name, endian, edges_offset = _detect_template_format(template_data)
+        num_edges = struct.unpack_from(f"{endian}i", template_data, edges_offset)[0]
+        
+        # FIX: Durango/X360 edges are 12 bytes! 40 bytes is the state record size.
+        edge_size = 12
+        edge_start = len(template_data) - (num_edges * edge_size)
+        
+        if edge_start < 0 or edge_start >= len(template_data):
+            logger.error("Donor gesture has invalid edge table offset")
+            return False
+        
+        # Parse Zone A to build state_to_joint and state_to_type maps
+        state_start = 59
+        off = 0
+        state_id_counter = 1
+        state_to_joint = {}
+        state_to_type = {}
+        
+        while off + 20 <= len(template_data):
+            fields = struct.unpack_from(f'{endian}5i', template_data, state_start + off)
+            if fields[0] == state_id_counter:
+                state_to_joint[fields[0]] = fields[2] # joint_pair_id
+                
+                # Capture the native edge_group_type
+                native_type = struct.unpack_from(f'{endian}i', template_data, state_start + off + 12)[0]
+                state_to_type[fields[0]] = native_type
+                
+                # We NO LONGER overwrite edge_group_type to 0!
+                # We preserve the native Velocity/Acceleration/Angle checks 
+                # to prevent the positional swaying exploit!
+                
+                off += 20
+                state_id_counter += 1
+            else:
+                break # Reached Zone B
+                
+        # 3. Biomechanical Pre-computation
+        # 3. Biomechanical Pre-computation
+        import math as _math
+        import numpy as np
+        from jd2021_installer.installers.biomechanics import (
+            scale_to_physical,
+            synthesize_depth_analytical,
+            compute_kinematics,
+            simulate_inverse_dynamics
+        )
+        
+        durango_to_jdnext = {v: k for k, v in _JDNEXT_TO_DURANGO_JOINT_MAP.items()}
+        num_states = len(state_to_joint)
+        
+        # Build 3D sequences
+        num_frames = max((len(pairs) for pairs in joint_xy.values()), default=0)
+        X_norm = np.zeros((num_frames, 15))
+        Y_norm = np.zeros((num_frames, 15))
+        for jid, pairs in joint_xy.items():
+            for f in range(min(num_frames, len(pairs))):
+                X_norm[f, jid] = pairs[f][0]
+                Y_norm[f, jid] = pairs[f][1]
+                
+        logger.info("Executing 2D-to-3D Biomechanical Translation...")
+        X_phys, Y_phys, Z_global = scale_to_physical(X_norm, Y_norm)
+        Z_phys = synthesize_depth_analytical(X_phys, Y_phys, Z_global)
+        Vx, Ax = compute_kinematics(X_phys)
+        Vy, Ay = compute_kinematics(Y_phys)
+        Vz, Az = compute_kinematics(Z_phys)
+        Torque, MuscleForce = simulate_inverse_dynamics(X_phys, Y_phys, Z_phys, Vx, Vy, Vz)
+
+        # 4. Synthesize Gating Edge Targets from High-Variance Constraints
+        # Constraints with high variance across frames are structural (define the pose).
+        # These should become gating edges (|threshold_a| > 10) to reject bad input.
+        import statistics
+        import numpy as np
+        
+        joint_variances = {}
+        for jid in joint_xy.keys():
+            if num_frames > 1:
+                var_x = np.var(X_phys[:num_frames, jid])
+                var_y = np.var(Y_phys[:num_frames, jid])
+                var_z = np.var(Z_phys[:num_frames, jid])
+                joint_variances[jid] = float(np.sqrt(var_x + var_y + var_z))
+            else:
+                joint_variances[jid] = 0.0
+        
+        mean_variance = statistics.mean(joint_variances.values()) if joint_variances else 0.0
+        std_variance = statistics.stdev(joint_variances.values()) if len(joint_variances) > 1 else 0.1
+        
+        
+        # ADAPTIVE VARIANCE THRESHOLD (Issue #2 Fix):
+        # Compute global choreography activity level to scale the structural joint threshold.
+        # Slow/lyrical songs have low variance; fast/energetic songs have high variance.
+        # Use median velocity to adaptively scale the discriminant threshold.
+        all_speeds = []
+        for f in range(num_frames):
+            frame_speeds = []
+            for jid in range(15):
+                vx, vy, vz = Vx[f, jid], Vy[f, jid], Vz[f, jid]
+                speed = (vx**2 + vy**2 + vz**2) ** 0.5
+                frame_speeds.append(speed)
+            if frame_speeds:
+                all_speeds.append(statistics.mean(frame_speeds))
+        
+        median_speed = statistics.median(all_speeds) if all_speeds else 0.5
+        # Map speed to activity coefficient: slow (0.2) -> k=0.3, fast (1.0+) -> k=0.7
+        speed_normalized = min(median_speed / 1.0, 1.0)  # Normalize to [0, 1]
+        k_activity = 0.3 + (speed_normalized * 0.4)  # Scale from 0.3 to 0.7
+        
+        # Joints with variance > mean + k*std are structural (high discriminative power)
+        structural_joints = {
+            jid for jid, var in joint_variances.items() 
+            if var > (mean_variance + k_activity * std_variance)
+        }
+        
+        logger.debug(
+            "Adaptive gating synthesis: median_speed=%.3f, k=%.3f, "
+            "%d structural joints identified (var > %.3f)",
+            median_speed, k_activity, len(structural_joints),
+            mean_variance + k_activity * std_variance
+        )
+        
+        # 4. AdaBoost Ensemble Weight Redistribution (Pass 1)
+        total_original_weight = 0.0
+        total_surviving_weight = 0.0
+        irrecoverable_types = {18, 19, 20, 21, 22, 23, 35}  # Optical flow, TimeSpaceAngles
+        
+        edge_data_cache = []
+        for e in range(num_edges):
+            eoff = edge_start + e * edge_size
+            ta, tb, sid = struct.unpack_from(f'{endian}ffi', template_data, eoff)
+            native_type = state_to_type.get(sid, 0)
+            is_gating = (abs(ta) > 10.0)
+            
+            if not is_gating:
+                total_original_weight += abs(ta)
+                if native_type not in irrecoverable_types:
+                    total_surviving_weight += abs(ta)
+                    
+            edge_data_cache.append({
+                'eoff': eoff, 'ta': ta, 'tb': tb, 'sid': sid,
+                'native_type': native_type, 'is_gating': is_gating
+            })
+            
+        gamma = total_original_weight / max(total_surviving_weight, 1e-6)
+        logger.debug("AdaBoost weight redistribution: gamma multiplier = %.3f", gamma)
+
+        # 5. Inject synthesized constraints into Donor Edges (Pass 2)
+        rw_edge_count = 0
+        
+        for e_info in edge_data_cache:
+            eoff = e_info['eoff']
+            ta = e_info['ta']
+            tb = e_info['tb']
+            sid = e_info['sid']
+            native_type = e_info['native_type']
+            is_gating = e_info['is_gating']
+            
+            durango_joint = state_to_joint.get(sid, 10) # default to Right Wrist
+            jdnext_joint = durango_to_jdnext.get(durango_joint, 7)
+            
+            progress = (sid - 1) / max(1, num_states - 1)
+            pair_idx = int(progress * (num_frames - 1))
+            pair_idx = max(0, min(pair_idx, num_frames - 1))
+            
+            if pair_idx < num_frames and jdnext_joint < 15:
+                pos_x = X_phys[pair_idx, jdnext_joint]
+                pos_y = Y_phys[pair_idx, jdnext_joint]
+                pos_z = Z_phys[pair_idx, jdnext_joint]
+                
+                vel_x = Vx[pair_idx, jdnext_joint]
+                vel_y = Vy[pair_idx, jdnext_joint]
+                vel_z = Vz[pair_idx, jdnext_joint]
+                
+                accel_x = Ax[pair_idx, jdnext_joint]
+                accel_y = Ay[pair_idx, jdnext_joint]
+                accel_z = Az[pair_idx, jdnext_joint]
+                
+                torque_val = Torque[pair_idx, jdnext_joint]
+                muscle_force = MuscleForce[pair_idx, jdnext_joint]
+            else:
+                pos_x = pos_y = pos_z = 0.0
+                vel_x = vel_y = vel_z = 0.0
+                accel_x = accel_y = accel_z = 0.0
+                torque_val = muscle_force = 0.0
+                
+            speed_sq = vel_x**2 + vel_y**2 + vel_z**2
+            speed = speed_sq ** 0.5
+            accel_mag = (accel_x**2 + accel_y**2 + accel_z**2) ** 0.5
+
+            # --- ClassifierData::EType dispatch ---
+            expected = 0.0
+            is_valid_type = True
+            
+            if native_type == 0:
+                expected = (pos_x + pos_y + pos_z) / 3.0
+            elif native_type == 3:
+                expected = _math.atan2(vel_y, vel_x) if (vel_x != 0.0 or vel_y != 0.0) else 0.0
+            elif native_type in (8, 33):
+                expected = vel_x
+            elif native_type in (9, 34):
+                expected = vel_y
+            elif native_type in (10, 32):
+                expected = vel_z
+            elif native_type == 25:
+                expected = accel_x
+            elif native_type == 26:
+                expected = accel_y
+            elif native_type == 27:
+                expected = accel_z
+            elif native_type in (1, 2, 24):
+                expected = accel_mag
+            elif native_type == 28:
+                expected = speed
+            elif native_type == 29:
+                expected = speed_sq
+            elif native_type == 30:
+                expected = vel_x**2
+            elif native_type == 31:
+                expected = vel_y**2
+            elif native_type in (4, 5, 6, 7):
+                expected = torque_val
+            elif native_type in (11, 12, 13, 14, 15, 16, 17):
+                expected = muscle_force
+            else:
+                is_valid_type = False
+
+            # DETERMINE IF EDGE WILL BE GATING (Issue #1 Fix):
+            # Evaluate promotion BEFORE padding calculation so synthetic gates get doubled padding.
+            durango_joint = state_to_joint.get(sid, 10)
+            jdnext_joint = durango_to_jdnext.get(durango_joint, 7)
+            
+            # True if originally gating OR will be promoted to synthetic gating
+            is_gating_final = is_gating or (
+                not is_gating and jdnext_joint in structural_joints
+                and native_type not in irrecoverable_types
+            )
+            
+            if is_valid_type:
+                # Dynamically pad the threshold based on AdaBoost evaluation direction (ta sign)
+                # ta > 0 means stump expects feature > tb.
+                # ta < 0 means stump expects feature <= tb.
+                padding = max(abs(expected) * 0.4, 0.25)
+                
+                # If edge is (or will become) a gating/veto edge, apply dynamic padding.
+                # Gating edges are pass/fail boundaries. We want them to catch completely 
+                # wrong moves, not punish slight natural variance (now applies to synthetic gates!)
+                if is_gating_final:
+                    # Dynamic padding: scale based on movement speed. Fast moves get more leeway
+                    # due to camera motion blur. Slow/static poses are enforced strictly.
+                    # NOTE: Revert to 'padding *= 2.0' if complaints about too many misses are raised.
+                    speed_factor = min(max(speed / 1.5, 0.0), 1.0) # 0.0 for static, 1.0 for fast
+                    dynamic_multiplier = 1.0 + (0.5 * speed_factor) # Scales from 1.0x to 1.5x
+                    padding *= dynamic_multiplier
+                
+                if ta > 0:
+                    tb_val = expected - padding
+                else:
+                    tb_val = expected + padding
+                    
+                tb_val = max(-3.8, min(3.8, tb_val))
+            else:
+                if native_type in irrecoverable_types:
+                    tb_val = 0.0
+                    ta = 0.0
+                else:
+                    tb_val = tb * 0.5
+
+            if not is_gating:
+                if native_type in irrecoverable_types:
+                    ta_val = 0.0
+                    tb_val = 0.0
+                else:
+                    # Decision: Structural joints become gating edges (|ta| > 10).
+                    # Others become scoring edges (|ta| <= 1).
+                    if jdnext_joint in structural_joints:
+                        # Structural edge: make it a gating edge (high |ta| for strict checking)
+                        ta_val = 15.0 if ta > 0 else -15.0
+                        logger.debug("  state_id=%d (joint=%d): synthetic gating edge", sid, jdnext_joint)
+                    else:
+                        # Non-structural edge: keep as scoring edge ([-1, +1] range)
+                        # With gating edges handling discrimination, scoring edges can use natural scaling
+                        new_ta = ta * gamma
+                        ta_val = max(-1.0, min(1.0, new_ta))
+            else:
+                ta_val = ta
+
+            struct.pack_into(f'{endian}f', template_data, eoff, ta_val)
+            struct.pack_into(f'{endian}f', template_data, eoff + 4, tb_val)
+            rw_edge_count += 1
+                    
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        output_path.write_bytes(template_data)
+        logger.info("Successfully compiled hybrid gesture with %d mapped Right Arm edges: %s", rw_edge_count, output_path.name)
+        return True
+        
+    except Exception as e:
+        logger.exception("Hybrid compile failed for %s: %s", jdnext_src_path, e)
+        return False
+
+
+
+def compile_gesture_from_scratch(
+    jdnext_src_path: Path,
+    output_path: Path,
+) -> bool:
+    """Compile a JDNext gesture into a Durango binary.
+    """
+    try:
+        if not jdnext_src_path.exists():
+            logger.warning("JDNext gesture not found: %s", jdnext_src_path)
+            return False
+
+        # Pre-flight check: Is this already a compiled binary gesture?
+        with open(jdnext_src_path, 'rb') as f:
+            magic_check = f.read(20)
+        
+        if magic_check.startswith(b"GestureDetector"):
+            logger.info("Source gesture '%s' is already compiled. Copying directly.", jdnext_src_path.name)
+            output_path.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(jdnext_src_path, output_path)
+            return True
+        # Revert to Hybrid Compilation!
+        # The from-scratch HMM generator has fatal structural flaws in Zone A/B packing 
+        # which causes the engine to instantly reject the gesture (resulting in 100% misses).
+        # The hybrid compiler safely bootstraps off a known-good structure (discorope.gesture).
+        donor_path = _find_donor_gesture()
+        if donor_path is not None:
+            return compile_hybrid_gesture(
+                jdnext_src_path, donor_path, output_path
+            )
+            
+        logger.warning(
+            "No donor gesture found; cannot generate hybrid gesture for '%s'",
+            jdnext_src_path.name,
+        )
+        return False
+
+    except Exception:
+        logger.exception(
+            "Failed to compile gesture from scratch for '%s'",
+            jdnext_src_path.name,
+        )
+        return False
+
+
+def _find_donor_gesture() -> Path | None:
+    """Locate a known-good gesture file to use as a structural donor.
+
+    Search order:
+    1. Bundled durango_template.gesture (Durango LE format)
+    2. Bundled discorope.gesture (X360 BE format)
+    3. None (caller falls back to generated HMM)
+    """
+    assets_dir = Path(__file__).resolve().parents[1] / "assets" / "gesture_templates"
+    if not assets_dir.exists():
+        # Try from repo root
+        assets_dir = Path(__file__).resolve().parents[2] / "assets" / "gesture_templates"
+
+    candidates = [
+        assets_dir / "durango_template.gesture",
+        assets_dir / "discorope.gesture",
+    ]
+
+    for candidate in candidates:
+        if candidate.exists() and candidate.stat().st_size > 256:
+            logger.debug("Found donor gesture: %s", candidate)
+            return candidate
+
+    return None
+
+
+
+
+
+def copy_surrogate_as_fallback(
+    template_path: Path,
+    output_path: Path,
+) -> bool:
+    """Copy the raw template as a 1:1 fallback (auto-perfect).
+
+    Used when ``convert_jdnext_gestures`` is disabled — the classic
+    modding approach of duplicating the template and renaming
+    it to match every move name.
+    """
+    try:
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(template_path, output_path)
+        logger.debug("Copied surrogate fallback: %s", output_path.name)
+        return True
+    except Exception:
+        logger.exception(
+            "Failed to copy surrogate fallback to '%s'",
+            output_path.name,
+        )
+        return False

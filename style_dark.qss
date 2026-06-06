@@ -54,31 +54,38 @@ QListWidget:focus {
 
 QSpinBox,
 QDoubleSpinBox {
-	padding-right: 22px;
-	padding-left: 22px;
+	padding-right: 28px;
+	padding-left: 28px;
 	text-align: center;
+	min-width: 80px;
+}
+
+QComboBox {
+	padding-right: 32px;
 }
 
 QSpinBox::up-button,
 QDoubleSpinBox::up-button {
-	subcontrol-origin: border;
+	subcontrol-origin: padding;
 	subcontrol-position: right;
 	border: none;
 	background: #2c3240;
-	width: 16px;
-	border-radius: 4px;
-	margin: 1px;
+	width: 24px;
+	border-top-right-radius: 5px;
+	border-bottom-right-radius: 5px;
+	margin: 0px;
 }
 
 QSpinBox::down-button,
 QDoubleSpinBox::down-button {
-	subcontrol-origin: border;
+	subcontrol-origin: padding;
 	subcontrol-position: left;
 	border: none;
 	background: #2c3240;
-	width: 16px;
-	border-radius: 4px;
-	margin: 1px;
+	width: 24px;
+	border-top-left-radius: 5px;
+	border-bottom-left-radius: 5px;
+	margin: 0px;
 }
 
 QSpinBox::up-button:hover,
@@ -91,29 +98,30 @@ QDoubleSpinBox::down-button:hover {
 QSpinBox::up-arrow,
 QDoubleSpinBox::up-arrow {
 	image: url(assets/icons/chevron-up-light.svg);
-	width: 8px;
-	height: 8px;
+	width: 14px;
+	height: 14px;
 }
 
 QSpinBox::down-arrow,
 QDoubleSpinBox::down-arrow {
 	image: url(assets/icons/chevron-down-light.svg);
-	width: 8px;
-	height: 8px;
+	width: 14px;
+	height: 14px;
 }
 
 QComboBox::drop-down {
 	border: none;
-	width: 22px;
+	width: 28px;
 }
 
 QComboBox::down-arrow {
 	image: url(assets/icons/chevron-down-light.svg);
-	width: 10px;
-	height: 10px;
+	width: 14px;
+	height: 14px;
 }
 
-QComboBox QAbstractItemView {
+QComboBox QAbstractItemView,
+QListView#completerPopup {
 	background-color: #20242d;
 	color: #e4e8f2;
 	border: 1px solid #313745;
@@ -122,13 +130,15 @@ QComboBox QAbstractItemView {
 	outline: none;
 }
 
-QComboBox QAbstractItemView::item {
+QComboBox QAbstractItemView::item,
+QListView#completerPopup::item {
 	min-height: 24px;
 	padding: 4px 8px;
 	border-radius: 4px;
 }
 
-QComboBox QAbstractItemView::item:selected {
+QComboBox QAbstractItemView::item:selected,
+QListView#completerPopup::item:selected {
 	background-color: #2e6cff;
 	color: #ffffff;
 }
@@ -327,6 +337,7 @@ QTextEdit#logConsoleTextEdit {
 	background-color: #14171d;
 	color: #d3d8e5;
 	border: 1px solid #2c3342;
+	border-radius: 6px;
 	font-family: "Cascadia Mono", "Consolas", monospace;
 	font-size: 9pt;
 }
