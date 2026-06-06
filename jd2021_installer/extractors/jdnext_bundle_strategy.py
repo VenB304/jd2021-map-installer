@@ -7,9 +7,8 @@ we learn real-world mapPackage behaviors.
 from __future__ import annotations
 
 import json
-import logging
-import os
 import platform
+import logging
 import shutil
 import subprocess
 from dataclasses import asdict, dataclass
@@ -117,12 +116,8 @@ def _run_assetstudio_export(
     ]
 
     timeout_s = int(getattr(config, "download_timeout_s", 300) or 300) if config else 300
-    
-    env = os.environ.copy()
-    env["DOTNET_SYSTEM_GLOBALIZATION_INVARIANT"] = "1"
-    
     try:
-        completed = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout_s, env=env)
+        completed = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout_s)
     except subprocess.TimeoutExpired:
         raise ExtractionError(
             f"AssetStudioModCLI timed out after {timeout_s}s for bundle {bundle_path.name}"
