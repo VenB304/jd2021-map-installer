@@ -60,10 +60,30 @@ fi
 ok "Playwright Chromium installed."
 
 # ---------------------------------------------------------------------------
-# 4) AssetStudioModCLI (Linux)
+# 4) AssetStudioModCLI (Linux) & .NET 9
 # ---------------------------------------------------------------------------
 echo
-info "[3/5] Staging AssetStudioModCLI runtime..."
+info "[3/5] Installing .NET 9 & Staging AssetStudioModCLI..."
+
+if command -v dotnet &>/dev/null && dotnet --list-runtimes | grep -q "Microsoft.NETCore.App 9"; then
+    ok ".NET 9 Runtime is already installed."
+else
+    info "Downloading Microsoft dotnet-install.sh..."
+    curl -fsSL https://dot.net/v1/dotnet-install.sh -o dotnet-install.sh
+    chmod +x dotnet-install.sh
+    
+    info "Installing .NET 9 Runtime..."
+    if command -v sudo &>/dev/null; then
+        sudo ./dotnet-install.sh --channel 9.0 --runtime dotnet --install-dir /usr/share/dotnet
+        sudo ln -sf /usr/share/dotnet/dotnet /usr/bin/dotnet
+    else
+        ./dotnet-install.sh --channel 9.0 --runtime dotnet
+        warn "Installed .NET without sudo. You may need to add ~/.dotnet to your PATH."
+    fi
+    rm -f dotnet-install.sh
+    ok ".NET 9 Runtime installed."
+fi
+
 mkdir -p tools/AssetStudioModCLI
 
 CLI_BIN="tools/AssetStudioModCLI/AssetStudioModCLI"
