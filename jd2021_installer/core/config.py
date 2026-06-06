@@ -127,6 +127,11 @@ class AppConfig(BaseModel):
         super().model_post_init(__context)
 
         if platform.system() != "Windows":
+            # Auto-fix Windows backslashes if config is shared between Windows and WSL
+            if "\\" in str(self.app_icon_path):
+                self.app_icon_path = Path(str(self.app_icon_path).replace("\\", "/"))
+            if "\\" in str(self.gesture_template_path):
+                self.gesture_template_path = Path(str(self.gesture_template_path).replace("\\", "/"))
             return
 
         tools_root = self.third_party_tools_root
