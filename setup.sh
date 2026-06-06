@@ -18,7 +18,7 @@ die()     { err "$@"; exit 1; }
 # 1) System dependencies
 # ---------------------------------------------------------------------------
 info "Installing system dependencies..."
-PACKAGES=(git python3 python3-venv python3-pip ffmpeg curl jq unzip tar)
+PACKAGES=(git python3 python3-venv python3-pip ffmpeg curl jq unzip tar libicu-dev)
 
 if command -v sudo &>/dev/null; then
     sudo apt-get update -y
