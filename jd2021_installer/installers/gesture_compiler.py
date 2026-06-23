@@ -890,16 +890,21 @@ def compile_hybrid_gesture(
         # Constraints with high variance across frames are structural (define the pose).
         # These should become gating edges (|threshold_a| > 10) to reject bad input.
         import statistics
+        import numpy as np
         
         joint_variances = {}
-        for jid, vals in per_joint.items():
-            if len(vals) > 1:
-                joint_variances[jid] = statistics.stdev(vals)
+        for jid in joint_xy.keys():
+            if num_frames > 1:
+                var_x = np.var(X_phys[:num_frames, jid])
+                var_y = np.var(Y_phys[:num_frames, jid])
+                var_z = np.var(Z_phys[:num_frames, jid])
+                joint_variances[jid] = float(np.sqrt(var_x + var_y + var_z))
             else:
                 joint_variances[jid] = 0.0
         
         mean_variance = statistics.mean(joint_variances.values()) if joint_variances else 0.0
         std_variance = statistics.stdev(joint_variances.values()) if len(joint_variances) > 1 else 0.1
+        
         
         # ADAPTIVE VARIANCE THRESHOLD (Issue #2 Fix):
         # Compute global choreography activity level to scale the structural joint threshold.

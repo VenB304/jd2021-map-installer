@@ -99,7 +99,113 @@ class TestV1PortedLogic(unittest.TestCase):
         # Wait, _discover_media returns the result of extract_ckd_audio_v1
         # which will be None if it fails.
         # I'll mock extract_ckd_audio_v1 in tests if needed.
-        pass
+    def test_tape_converter_mirroring(self):
+        from jd2021_installer.installers.tape_converter import convert_tape_file
+        
+        # Create a mock tape file
+        mock_tape_data = {
+            "__class": "DanceTape",
+            "Clips": [
+                {
+                    "__class": "MotionClip",
+                    "Id": 1,
+                    "TrackId": 10,
+                    "IsActive": 1,
+                    "StartTime": 100,
+                    "Duration": 24,
+                    "ClassifierPath": "world/maps/test/timeline/moves/test_move.msm",
+                    "GoldMove": 1,
+                    "MoveType": 0,
+                },
+                {
+                    "__class": "MotionClip",
+                    "Id": 2,
+                    "TrackId": 20,
+                    "IsActive": 1,
+                    "StartTime": 112,
+                    "Duration": 24,
+                    "ClassifierPath": "world/maps/test/timeline/moves/test_gesture.gesture",
+                    "GoldMove": 0,
+                    "MoveType": 1,
+                }
+            ]
+        }
+        
+        input_ckd = self.source_dir / "test_TML_Dance.dtape.ckd"
+        import json
+        input_ckd.write_text(json.dumps(mock_tape_data), encoding="utf-8")
+        
+        # Test Case 1: mirror_gestures = True
+        output_path = self.temp_dir / "test_TML_Dance.dtape"
+        success = convert_tape_file(input_ckd, output_path, codename="test", mirror_gestures=True)
+        self.assertTrue(success)
+        
+        # Read converted output (UbiArt Lua format)
+        output_content = output_path.read_text(encoding="utf-8")
+        # Check that we have exactly two MotionClip blocks and both are test_move.msm / test_move.gesture
+        import re
+        blocks = re.findall(r'MotionClip\s*=\s*\{(.*?)\}', output_content, re.DOTALL)
+        self.assertEqual(len(blocks), 2)
+        
+        # Verify that the gesture clip (MoveType = 1) is a mirrored copy of the msm clip
+        types = {}
+        for b in blocks:
+            path_m = re.search(r'ClassifierPath\s*=\s*"([^"]+)"', b)
+            type_m = re.search(r'MoveType\s*=\s*(\d+)', b)
+            gold_m = re.search(r'GoldMove\s*=\s*(\d+)', b)
+            start_m = re.search(r'StartTime\s*=\s*(\d+)', b)
+            dur_m = re.search(r'Duration\s*=\s*(\d+)', b)
+            
+            p = path_m.group(1) if path_m else ""
+            t = int(type_m.group(1)) if type_m else -1
+            g = int(gold_m.group(1)) if gold_m else 0
+            s = int(start_m.group(1)) if start_m else 0
+            d = int(dur_m.group(1)) if dur_m else 0
+            
+            types[t] = {"path": p, "gold": g, "start": s, "dur": d}
+            
+        # Check MSM
+        self.assertIn(0, types)
+        self.assertEqual(types[0]["path"], "world/maps/test/timeline/moves/test_move.msm")
+        self.assertEqual(types[0]["gold"], 1)
+        self.assertEqual(types[0]["start"], 100)
+        self.assertEqual(types[0]["dur"], 24)
+        
+        # Check Gesture (mirrored)
+        self.assertIn(1, types)
+        self.assertEqual(types[1]["path"], "world/maps/test/timeline/moves/test_move.gesture")
+        self.assertEqual(types[1]["gold"], 1) # GoldMove is mirrored
+        self.assertEqual(types[1]["start"], 100) # StartTime is mirrored
+        self.assertEqual(types[1]["dur"], 24)
+        
+        # Test Case 2: mirror_gestures = False
+        output_path_no_mirror = self.temp_dir / "test_no_mirror.dtape"
+        success = convert_tape_file(input_ckd, output_path_no_mirror, codename="test", mirror_gestures=False)
+        self.assertTrue(success)
+        
+        output_content_no_mirror = output_path_no_mirror.read_text(encoding="utf-8")
+        blocks_no_mirror = re.findall(r'MotionClip\s*=\s*\{(.*?)\}', output_content_no_mirror, re.DOTALL)
+        self.assertEqual(len(blocks_no_mirror), 2)
+        
+        types_no_mirror = {}
+        for b in blocks_no_mirror:
+            path_m = re.search(r'ClassifierPath\s*=\s*"([^"]+)"', b)
+            type_m = re.search(r'MoveType\s*=\s*(\d+)', b)
+            gold_m = re.search(r'GoldMove\s*=\s*(\d+)', b)
+            start_m = re.search(r'StartTime\s*=\s*(\d+)', b)
+            
+            p = path_m.group(1) if path_m else ""
+            t = int(type_m.group(1)) if type_m else -1
+            g = int(gold_m.group(1)) if gold_m else 0
+            s = int(start_m.group(1)) if start_m else 0
+            
+            types_no_mirror[t] = {"path": p, "gold": g, "start": s}
+            
+        # Check that original (unmirrored) gesture is preserved
+        self.assertIn(1, types_no_mirror)
+        self.assertEqual(types_no_mirror[1]["path"], "world/maps/test/timeline/moves/test_gesture.gesture")
+        self.assertEqual(types_no_mirror[1]["gold"], 0)
+        self.assertEqual(types_no_mirror[1]["start"], 112)
 
 if __name__ == "__main__":
     unittest.main()

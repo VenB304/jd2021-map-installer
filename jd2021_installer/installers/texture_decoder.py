@@ -239,19 +239,23 @@ def dds_to_image(
     temp_dds = output_path.with_suffix('.tmp.dds')
     try:
         temp_dds.write_bytes(dds_data)
-        img = Image.open(str(temp_dds))
-        _save_picto_on_canvas(img, output_path, canvas_size)
-        logger.debug("Saved texture: %s (%dx%d)", output_path.name, img.size[0], img.size[1])
+        with Image.open(str(temp_dds)) as img:
+            _save_picto_on_canvas(img, output_path, canvas_size)
+            logger.debug("Saved texture: %s (%dx%d)", output_path.name, img.size[0], img.size[1])
         return True
     except Exception as e:
         # Fallback: save as DDS
         dds_fallback = output_path.with_suffix('.dds')
-        shutil.copy2(str(temp_dds), str(dds_fallback))
+        if temp_dds.exists():
+            shutil.copy2(str(temp_dds), str(dds_fallback))
         logger.debug("Pillow can't decode this DDS format (%s); saved raw DDS", e)
         return True
     finally:
         if temp_dds.exists():
-            temp_dds.unlink()
+            try:
+                temp_dds.unlink()
+            except Exception as e:
+                logger.warning("Failed to clean up temporary DDS file %s: %s", temp_dds, e)
 
 
 def decode_ckd_texture(

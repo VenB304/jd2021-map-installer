@@ -176,15 +176,107 @@ def _rewrite_tape_codename_refs(lua_str: str, codename: str) -> str:
 from jd2021_installer.parsers.binary_ckd import parse_binary_ckd
 
 
-def convert_tape_file(ckd_path: Path, output_path: Path, codename: Optional[str] = None) -> bool:
+def _mirror_msm_to_gesture_clips(data: Dict[str, Any]) -> None:
+    """If a dance tape contains both MSM and Gesture tracks but we want to mirror,
+    wipes the Gesture (MoveType=1) track and replaces it with a 1:1 duplicate 
+    of the MSM (MoveType=0) track, converting extensions to .gesture and setting MoveType=1.
+    """
+    if not isinstance(data, dict):
+        return
+    clips = data.get("Clips")
+    if not isinstance(clips, list):
+        tape = data.get("Tape")
+        if isinstance(tape, dict):
+            clips = tape.get("Clips")
+    if not isinstance(clips, list):
+        return
+
+    # Extract all existing MotionClip items and non-motion clips
+    motion_clips = []
+    other_clips = []
+    max_id = 0
+    max_track_id = 0
+    for clip in clips:
+        if not isinstance(clip, dict):
+            other_clips.append(clip)
+            continue
+            
+        clip_id = clip.get("Id", 0)
+        track_id = clip.get("TrackId", 0)
+        if isinstance(clip_id, int) and clip_id > max_id:
+            max_id = clip_id
+        if isinstance(track_id, int) and track_id > max_track_id:
+            max_track_id = track_id
+
+        if clip.get("__class") == "MotionClip":
+            motion_clips.append(clip)
+        else:
+            other_clips.append(clip)
+
+    msm_clips = []
+    for mc in motion_clips:
+        path = mc.get("ClassifierPath", "")
+        if not isinstance(path, str):
+            continue
+        # Extract MoveType = 0 (MSM) clips
+        if mc.get("MoveType") == 0 or path.lower().endswith(".msm"):
+            msm_clips.append(mc)
+
+    if not msm_clips:
+        # No MSM clips found to mirror
+        return
+
+    import copy
+    mirrored_clips = []
+    for msm in msm_clips:
+        new_mc = copy.deepcopy(msm)
+        msm_path = msm.get("ClassifierPath", "")
+        new_path = msm_path.replace(".msm", ".gesture").replace(".MSM", ".gesture")
+        new_mc["ClassifierPath"] = new_path
+        new_mc["MoveType"] = 1
+        
+        # Generate unique IDs
+        max_id += 1
+        max_track_id += 1
+        new_mc["Id"] = max_id
+        new_mc["TrackId"] = max_track_id
+        
+        mirrored_clips.append(new_mc)
+
+    # Reconstruct the clips list: keep all other clips (like PictogramClip, GoldEffectClip)
+    # and all original MSM clips, plus the new mirrored gesture clips.
+    # Wipes any original gesture clips (MoveType=1) to prevent overlaps.
+    new_clips_list = other_clips + msm_clips + mirrored_clips
+    
+    # Sort them by StartTime to keep the dtape clean and readable
+    new_clips_list.sort(key=lambda c: c.get("StartTime", 0) if isinstance(c, dict) else 0)
+
+    # Put it back in the correct container
+    if "Clips" in data:
+        data["Clips"] = new_clips_list
+    elif isinstance(data.get("Tape"), dict) and "Clips" in data["Tape"]:
+        data["Tape"]["Clips"] = new_clips_list
+        
+    logger.info("Mirrored %d MSM clips to Gesture track (wiped original gestures)", len(mirrored_clips))
+
+
+
+def convert_tape_file(
+    ckd_path: Path,
+    output_path: Path,
+    codename: Optional[str] = None,
+    mirror_gestures: bool = False,
+) -> bool:
     """Convert a CKD (JSON or Binary) tape file to UbiArt Lua format.
 
     Works for dance tapes (.dtape.ckd), karaoke tapes (.ktape.ckd),
     and mainsequence tapes (_mainsequence.tape.ckd).
 
     Args:
-        ckd_path:    Path to the source CKD file.
-        output_path: Path to write the Lua output.
+        ckd_path:        Path to the source CKD file.
+        output_path:     Path to write the Lua output.
+        codename:        The target map's codename.
+        mirror_gestures: If True, mirrors MSM to Gesture track.
 
     Returns:
         True if conversion succeeded, False otherwise.
@@ -208,6 +300,9 @@ def convert_tape_file(ckd_path: Path, output_path: Path, codename: Optional[str]
             else:
                 logger.error("Binary parse of %s returned non-convertible result", ckd_path.name)
                 return False
+
+        if ("dance" in ckd_path.name.lower() or "dtape" in ckd_path.name.lower()) and mirror_gestures:
+            _mirror_msm_to_gesture_clips(data)
 
         lua_str = json_to_lua(data)
 
@@ -235,14 +330,19 @@ def convert_tape_file(ckd_path: Path, output_path: Path, codename: Optional[str]
         return False
 
 
-def convert_dance_tape(ckd_path: Path, target_dir: Path, codename: str) -> bool:
+def convert_dance_tape(
+    ckd_path: Path,
+    target_dir: Path,
+    codename: str,
+    mirror_gestures: bool = False,
+) -> bool:
     """Convert a dance tape CKD to the game's timeline directory.
 
     Input:  ``*_TML_Dance.dtape.ckd``
     Output: ``Timeline/{codename}_TML_Dance.dtape``
     """
     output = target_dir / "timeline" / f"{codename}_TML_Dance.dtape"
-    return convert_tape_file(ckd_path, output, codename=codename)
+    return convert_tape_file(ckd_path, output, codename=codename, mirror_gestures=mirror_gestures)
 
 
 def convert_karaoke_tape(ckd_path: Path, target_dir: Path, codename: str) -> bool:
@@ -301,6 +401,12 @@ def auto_convert_tapes(source_dir: Path, target_dir: Path, codename: str) -> int
     all_files = [p for p in source_dir.rglob("*") if p.is_file()]
     ckd_files = [p for p in all_files if p.name.lower().endswith(".ckd")]
 
+    # Compute if the source has any native gesture files
+    has_source_gestures = any(p.name.lower().endswith(".gesture") for p in all_files)
+    mirror_gestures = not has_source_gestures
+    if mirror_gestures:
+        logger.info("No native gesture files found in source moves; mirroring MSM track to Gesture track.")
+
     dance_candidates = [
         p for p in ckd_files
         if "dtape" in p.name.lower() and "adtape" not in p.name.lower()
@@ -320,7 +426,7 @@ def auto_convert_tapes(source_dir: Path, target_dir: Path, codename: str) -> int
 
     dance_src = _pick_best_tape(dance_candidates, codename, ["tml_dance", "dance"])
     if dance_src:
-        if convert_dance_tape(dance_src, target_dir, codename):
+        if convert_dance_tape(dance_src, target_dir, codename, mirror_gestures=mirror_gestures):
             converted += 1
     else:
         # Manual/IPK maps can already ship plain .dtape (non-CKD).
