@@ -39,7 +39,7 @@ import requests
 GITHUB_OWNER = "VenB304"
 GITHUB_REPO = "jd2021-map-installer"
 GITHUB_API_BASE = f"https://api.github.com/repos/{GITHUB_OWNER}/{GITHUB_REPO}"
-DEFAULT_BRANCH = "v2"
+DEFAULT_BRANCH = "master"
 STATE_FILENAME = "updater_state.json"
 
 # Paths that must NEVER be deleted during a zip-mode update.
