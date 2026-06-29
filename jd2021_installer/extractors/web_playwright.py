@@ -1984,7 +1984,10 @@ class WebPlaywrightExtractor(BaseExtractor):
                     scraped = asyncio.run(self._scrape_codename(codename))
                     all_urls.extend(scraped)
                 except Exception as e:
-                    logger.error("Failed to scrape codename '%s': %s", codename, e)
+                    if _is_browser_closed_error(e):
+                        logger.warning("Scraping codename '%s' cancelled: browser was closed by user.", codename)
+                    else:
+                        logger.error("Failed to scrape codename '%s': %s", codename, e)
                     raise
 
         if not all_urls:
@@ -2277,12 +2280,35 @@ class WebPlaywrightExtractor(BaseExtractor):
             _log("Background mode: browser will run off-screen.")
 
         async with async_playwright() as p:
-            context = await p.chromium.launch_persistent_context(
-                profile_dir,
-                headless=False,
-                viewport={"width": 1280, "height": 800},
-                args=launch_args,
-            )
+            try:
+                context = await p.chromium.launch_persistent_context(
+                    profile_dir,
+                    headless=False,
+                    viewport={"width": 1280, "height": 800},
+                    args=launch_args,
+                )
+            except Exception as e:
+                logger.warning(
+                    "Failed to launch browser with persistent context (%s). "
+                    "Resetting browser profile and retrying...",
+                    e,
+                )
+                import shutil
+                from pathlib import Path
+                pdir = Path(profile_dir)
+                if pdir.exists():
+                    try:
+                        shutil.rmtree(pdir, ignore_errors=True)
+                    except Exception as clean_exc:
+                        logger.warning("Failed to clear browser profile directory: %s", clean_exc)
+                pdir.mkdir(parents=True, exist_ok=True)
+
+                context = await p.chromium.launch_persistent_context(
+                    profile_dir,
+                    headless=False,
+                    viewport={"width": 1280, "height": 800},
+                    args=launch_args,
+                )
 
             page = context.pages[0] if context.pages else await context.new_page()
 

@@ -949,7 +949,9 @@ class ExtractAndNormalizeWorker(QObject):
                 user_msg = str(e)
                 if _is_user_cancelled_browser_close(e):
                     user_msg = "Browser was closed by user. Fetch cancelled."
-                logger.exception("ExtractAndNormalize failed: %s", user_msg)
+                    logger.warning("ExtractAndNormalize cancelled: %s", user_msg)
+                else:
+                    logger.exception("ExtractAndNormalize failed: %s", user_msg)
                 self.error.emit(failed_stage, user_msg)
                 self.finished.emit(None)
                 return
