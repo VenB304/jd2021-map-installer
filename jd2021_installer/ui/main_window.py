@@ -1257,12 +1257,26 @@ class MainWindow(QMainWindow):
             html_fields = fields.get(html_key, {}) if isinstance(fields, dict) else {}
             asset_html = str(html_fields.get("asset", "")).strip()
             nohud_html = str(html_fields.get("nohud", "")).strip()
-            if not asset_html or not nohud_html:
-                issues.append("Both Asset HTML and NOHUD HTML files are required.")
+            if not asset_html:
+                issues.append("Asset HTML file is required.")
                 return issues
             if not Path(asset_html).is_file():
                 issues.append(f"Asset HTML file was not found: {asset_html}")
-            if not Path(nohud_html).is_file():
+                return issues
+            # Allow nohud_html to be omitted if the asset file contains video links
+            # (Sev4nty's unified exports include both assets and nohud in one file)
+            if not nohud_html:
+                try:
+                    content = Path(asset_html).read_text(encoding="utf-8", errors="ignore")
+                    has_video = ".webm" in content.lower() or ".mp4" in content.lower()
+                except Exception:
+                    has_video = False
+                if not has_video:
+                    issues.append(
+                        "A NOHUD HTML file is required since the Asset HTML file "
+                        "does not contain the gameplay video link."
+                    )
+            elif not Path(nohud_html).is_file():
                 issues.append(f"NOHUD HTML file was not found: {nohud_html}")
             if not issues:
                 self._current_target = asset_html

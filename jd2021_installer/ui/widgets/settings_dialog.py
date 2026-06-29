@@ -807,6 +807,23 @@ class SettingsDialog(QDialog):
         )
         connections_form.addRow("Discord channel URL:", self.txt_discord_url)
 
+        # Bot Selector for JDU
+        self.combo_discord_bot = QComboBox()
+        self.combo_discord_bot.addItem("Sev4nty's Bot (Default / Multi-step)", "sev4nty")
+        self.combo_discord_bot.addItem("Rama's Bot (Legacy)", "rama")
+        current_bot = getattr(self._config, "discord_bot_provider", "sev4nty")
+        idx = self.combo_discord_bot.findData(current_bot)
+        if idx >= 0:
+            self.combo_discord_bot.setCurrentIndex(idx)
+        else:
+            self.combo_discord_bot.setCurrentIndex(0)
+        self.combo_discord_bot.setToolTip(
+            "Select which Discord bot to automate for fetching JDU maps.\n"
+            "Sev4nty's bot uses /songsearch (unified assets + nohud).\n"
+            "Rama's bot uses /assets + /nohud (legacy two-step)."
+        )
+        connections_form.addRow("Discord JDU bot provider:", self.combo_discord_bot)
+
         self.txt_jdlo_auth = QLineEdit()
         jdlo_auth_val = str(getattr(self._config, "jdlo_auth_path", "")) if getattr(self._config, "jdlo_auth_path", None) else ""
         self.txt_jdlo_auth.setText(jdlo_auth_val)
@@ -1239,6 +1256,7 @@ class SettingsDialog(QDialog):
         self._config.vp9_handling_mode = str(self.combo_vp9_mode.currentData())
         self._config.preview_video_mode = self._combo_value(self.combo_preview_mode)
         self._config.discord_channel_url = self.txt_discord_url.text().strip()
+        self._config.discord_bot_provider = self.combo_discord_bot.currentData()
         
         jdlo_path = self.txt_jdlo_auth.text().strip()
         self._config.jdlo_auth_path = Path(jdlo_path) if jdlo_path else None

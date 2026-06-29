@@ -96,7 +96,46 @@ def extract_urls_from_html(html_content: str) -> List[str]:
         url = url.rstrip(").,!;?")
         url = url.replace("&amp;", "&")
         clean.add(url)
-    return list(clean)
+        
+    healed = list(clean)
+    
+    # Reconstruct/heal truncated CDN URLs if possible
+    # 1. Find a valid complete auth token from any private URL
+    valid_auth = None
+    auth_pattern = re.compile(r"(auth=exp=\d+~acl=[^~]+~hmac=[a-fA-F0-9]{64})", re.IGNORECASE)
+    for u in healed:
+        match = auth_pattern.search(u)
+        if match:
+            valid_auth = match.group(1)
+            break
+            
+    if valid_auth:
+        # 2. Repair any URLs that have a truncated auth query parameter
+        for i, u in enumerate(healed):
+            if "auth=" in u:
+                parts = u.split("auth=")
+                last_part = parts[-1]
+                hmac_parts = last_part.split("hmac=")
+                is_truncated = False
+                if len(hmac_parts) > 1:
+                    hmac_val = hmac_parts[1].rstrip(").,!;?")
+                    if len(hmac_val) < 64 or "…" in hmac_val or "\u2026" in hmac_val or "..." in hmac_val:
+                        is_truncated = True
+                else:
+                    is_truncated = True
+                
+                if is_truncated:
+                    base_part = parts[0]
+                    if base_part.endswith("?"):
+                        healed[i] = base_part + valid_auth
+                    elif base_part.endswith("&"):
+                        healed[i] = base_part + valid_auth
+                    else:
+                        sep = "?" if "?" not in base_part else "&"
+                        healed[i] = base_part.rstrip("?&") + sep + valid_auth
+                    logger.info("Healed truncated URL: %s -> %s", u, healed[i])
+                    
+    return healed
 
 
 def extract_urls_from_file(html_file: str | Path) -> List[str]:
@@ -1133,6 +1172,135 @@ async def _extract_message_payload(page, message_id: str) -> Dict[str, str]:
     if not payload:
         raise WebExtractionError(f"Could not extract payload for message id: {message_id}")
     return cast(Dict[str, str], payload)
+
+
+# ---------------------------------------------------------------------------
+# Sev4nty bot helpers
+# ---------------------------------------------------------------------------
+
+_SONGDB_JDU_CACHE: Optional[Dict[str, dict]] = None
+_songdb_jdu_lock = threading.Lock()
+
+
+def _lookup_song_title(codename: str) -> Optional[str]:
+    """Look up the human-readable title for a JDU codename from songdb_JDU.json.
+
+    Used as a fallback when Sev4nty's bot cannot match a concatenated codename
+    (e.g. ``BumBumTamTam`` → ``Bum Bum Tam Tam``).
+    """
+    global _SONGDB_JDU_CACHE
+    with _songdb_jdu_lock:
+        if _SONGDB_JDU_CACHE is None:
+            songdb_path = Path(__file__).resolve().parents[2] / "assets" / "songdb" / "jdu" / "songdb_JDU.json"
+            if songdb_path.is_file():
+                try:
+                    _SONGDB_JDU_CACHE = json.loads(songdb_path.read_text(encoding="utf-8"))
+                except Exception:
+                    _SONGDB_JDU_CACHE = {}
+            else:
+                _SONGDB_JDU_CACHE = {}
+    entry = _SONGDB_JDU_CACHE.get(codename)
+    if entry and isinstance(entry, dict):
+        return entry.get("title")
+    return None
+
+
+async def _send_songsearch_command(page, codename: str) -> None:
+    """Send ``/songsearch <codename>`` via Sev4nty's bot slash-command UI."""
+    textbox = page.locator(_SEL_TEXTBOX)
+    await textbox.click()
+    await page.wait_for_timeout(200)
+
+    # Clear any existing draft text
+    await page.keyboard.press("Control+A")
+    await page.wait_for_timeout(100)
+    await page.keyboard.press("Backspace")
+    await page.wait_for_timeout(300)
+
+    # Type prefix to trigger autocomplete
+    await page.keyboard.type("/song", delay=40)
+
+    options = page.locator(_SEL_AUTOCOMPLETE_OPTION)
+    try:
+        await options.first.wait_for(timeout=5000)
+    except Exception:
+        raise WebExtractionError("Autocomplete menu failed to load for /songsearch.")
+
+    # Click first option (/songsearch)
+    await options.first.click()
+    await page.wait_for_timeout(300)
+
+    # Fill query parameter and send
+    await page.keyboard.type(codename, delay=20)
+    await page.wait_for_timeout(200)
+    await page.keyboard.press("Enter")
+    logger.debug("Sent /songsearch %s", codename)
+
+
+async def _click_accessory_button(
+    page,
+    message_id: str,
+    label_pattern: str,
+    expect_pattern: str,
+    timeout_s: int = 25,
+) -> tuple:
+    """Click a button in a message-accessories card by label regex, then wait
+    for the message text to match *expect_pattern*.
+
+    Returns ``(new_message_id, updated_text)``.
+    """
+    acc = page.locator(f"#{message_id}")
+    buttons = acc.locator("button")
+
+    try:
+        await buttons.first.wait_for(timeout=5000)
+    except Exception:
+        pass
+
+    count = await buttons.count()
+    target_btn = None
+    for i in range(count):
+        btn = buttons.nth(i)
+        lbl = await btn.text_content()
+        if re.search(label_pattern, lbl or "", re.IGNORECASE):
+            target_btn = btn
+            break
+
+    if not target_btn:
+        available = [await buttons.nth(i).text_content() for i in range(count)]
+        raise WebExtractionError(
+            f"Button matching '{label_pattern}' not found. Available: {available}"
+        )
+
+    pre_click_text = await acc.text_content()
+    pre_click_msg_count = await page.locator(_SEL_MESSAGE_ACCESSORIES).count()
+
+    await target_btn.click()
+
+    # Poll for response update or new message
+    for _ in range(timeout_s):
+        await page.wait_for_timeout(1000)
+        current_msg_count = await page.locator(_SEL_MESSAGE_ACCESSORIES).count()
+
+        # Scenario 1: Bot posted a new message
+        if current_msg_count > pre_click_msg_count:
+            new_acc = page.locator(_SEL_MESSAGE_ACCESSORIES).last
+            new_id = await new_acc.get_attribute("id")
+            new_text = await new_acc.text_content()
+            if re.search(expect_pattern, new_text or "", re.IGNORECASE):
+                return new_id, new_text
+
+        # Scenario 2: Bot updated the existing message
+        else:
+            current_text = await acc.text_content()
+            if current_text != pre_click_text:
+                if re.search(expect_pattern, current_text or "", re.IGNORECASE):
+                    return message_id, current_text
+
+    raise WebExtractionError(
+        f"Timed out waiting for bot response matching '{expect_pattern}' "
+        f"after clicking '{label_pattern}'."
+    )
 
 
 async def _send_slash_command(
@@ -2400,32 +2568,126 @@ class WebPlaywrightExtractor(BaseExtractor):
                         except Exception as meta_exc:
                             _log("JDNext metadata button capture failed: %s", meta_exc)
                 else:
-                    # Step 1: /assets jdu <codename>
-                    _log("[1/2] Sending /assets jdu %s", codename)
-                    assets_html = await _fetch_command_with_retry(
-                        page,
-                        command="assets",
-                        choices=["jdu"],
-                        codename=codename,
-                        label="assets",
-                        bot_timeout_s=bot_timeout,
-                        requester_handles=requester_handles,
-                    )
-                    _log("Received /assets response for %s.", codename)
-                    await page.wait_for_timeout(500)
+                    bot_provider = getattr(self._config, "discord_bot_provider", "sev4nty")
 
-                    # Step 2: /nohud <codename>
-                    _log("[2/2] Sending /nohud %s", codename)
-                    nohud_html = await _fetch_command_with_retry(
-                        page,
-                        command="nohud",
-                        choices=[],
-                        codename=codename,
-                        label="nohud",
-                        bot_timeout_s=bot_timeout,
-                        requester_handles=requester_handles,
-                    )
-                    _log("Received /nohud response for %s.", codename)
+                    # --- Subcase 2a: Sev4nty's Bot (Default) ---
+                    if bot_provider == "sev4nty":
+                        _log("Using Sev4nty's Bot to fetch JDU map: %s", codename)
+
+                        # 1. Send the /songsearch command
+                        pre_id = await _get_last_accessory_id(page)
+                        await _send_songsearch_command(page, codename)
+
+                        # 2. Wait for initial response
+                        embed_id = await _wait_for_new_embed(page, pre_id, timeout_s=bot_timeout)
+                        initial_acc = page.locator(f"#{embed_id}")
+                        initial_text = await initial_acc.text_content()
+
+                        # 2a. "No songs found" → retry with space-separated title from songdb
+                        if initial_text and "no songs found" in initial_text.lower():
+                            fallback_title = _lookup_song_title(codename)
+                            if fallback_title and fallback_title.lower() != codename.lower():
+                                _log(
+                                    "Sev4nty bot found no results for '%s'. "
+                                    "Retrying with song title: '%s'",
+                                    codename, fallback_title,
+                                )
+                                pre_id2 = await _get_last_accessory_id(page)
+                                await _send_songsearch_command(page, fallback_title)
+                                embed_id = await _wait_for_new_embed(page, pre_id2, timeout_s=bot_timeout)
+                                initial_acc = page.locator(f"#{embed_id}")
+                                initial_text = await initial_acc.text_content()
+
+                            if initial_text and "no songs found" in initial_text.lower():
+                                raise WebExtractionError(
+                                    f"Sev4nty bot: No songs found for '{codename}'. "
+                                    "Check spelling/spaces."
+                                )
+
+                        buttons = initial_acc.locator("button")
+                        btn_count = await buttons.count()
+
+                        # Determine interaction path
+                        # Path A: Dual-game map (JDU + JDNext buttons)
+                        if btn_count > 0 and await buttons.filter(
+                            has_text=re.compile(r"JDU", re.IGNORECASE)
+                        ).count() > 0:
+                            _log("Song exists in both databases. Navigating JDU path...")
+
+                            # Click JDU button → may get song list OR direct links
+                            jdu_resp_id, jdu_resp_text = await _click_accessory_button(
+                                page,
+                                embed_id,
+                                label_pattern=r"JDU",
+                                expect_pattern=r"(?:Pick\s+a\s+song|Link|coachesSmall|coachesLarge)",
+                            )
+
+                            # If response already contains final links, we're done
+                            if re.search(r"(?:Link|coachesSmall|coachesLarge)", jdu_resp_text or "", re.IGNORECASE):
+                                _log("JDU clicked → single version, got direct links.")
+                                final_links_id = jdu_resp_id
+                            else:
+                                # Song version list — click the matching one
+                                _log("JDU clicked → song picker displayed.")
+                                song_button_pattern = rf"{re.escape(codename)}\b"
+                                final_links_id, _ = await _click_accessory_button(
+                                    page,
+                                    jdu_resp_id,
+                                    label_pattern=song_button_pattern,
+                                    expect_pattern=r"(?:Link|coachesSmall|coachesLarge)",
+                                )
+
+                        # Path B: Multi-version JDU (e.g. Alts)
+                        elif btn_count > 0 and await buttons.filter(
+                            has_text=re.compile(r"All\s*\(Send", re.IGNORECASE)
+                        ).count() > 0:
+                            _log("Multi-version selection prompt displayed.")
+                            song_button_pattern = rf"{re.escape(codename)}\b"
+                            final_links_id, _ = await _click_accessory_button(
+                                page,
+                                embed_id,
+                                label_pattern=song_button_pattern,
+                                expect_pattern=r"(?:Link|coachesSmall|coachesLarge)",
+                            )
+
+                        # Path C: Direct links (unique single-version)
+                        else:
+                            _log("Direct link JDU payload received.")
+                            final_links_id = embed_id
+
+                        # 3. Read final JDU links HTML
+                        assets_html = await page.locator(f"#{final_links_id}").inner_html()
+                        nohud_html = None  # Sev4nty's bot includes nohud in the same payload
+
+                    # --- Subcase 2b: Rama's Bot (Legacy JDU) ---
+                    else:
+                        _log("Using Rama's Bot to fetch JDU map: %s", codename)
+                        # Step 1: /assets jdu <codename>
+                        _log("[1/2] Sending /assets jdu %s", codename)
+                        assets_html = await _fetch_command_with_retry(
+                            page,
+                            command="assets",
+                            choices=["jdu"],
+                            codename=codename,
+                            label="assets",
+                            bot_timeout_s=bot_timeout,
+                            requester_handles=requester_handles,
+                        )
+                        _log("Received /assets response for %s.", codename)
+                        await page.wait_for_timeout(500)
+
+                        # Step 2: /nohud <codename>
+                        _log("[2/2] Sending /nohud %s", codename)
+                        nohud_html = await _fetch_command_with_retry(
+                            page,
+                            command="nohud",
+                            choices=[],
+                            codename=codename,
+                            label="nohud",
+                            bot_timeout_s=bot_timeout,
+                            requester_handles=requester_handles,
+                        )
+                        _log("Received /nohud response for %s.", codename)
 
                 # Save HTML to download dir for caching / debugging / portability
                 # We use download_root which is 'mapDownloads', grouped by source game.
@@ -2465,6 +2727,29 @@ class WebPlaywrightExtractor(BaseExtractor):
         if nohud_html is not None:
             all_urls += extract_urls_from_html(nohud_html)
         self._codename = extract_codename_from_urls(all_urls) or codename
+
+        # Sev4nty's bot omits album art URLs (expandBkg/expandCoach).
+        # Supplement from songdb_JDU.json if missing.
+        if (
+            self._source_game != "jdnext"
+            and getattr(self._config, "discord_bot_provider", "sev4nty") == "sev4nty"
+        ):
+            album_keys = ("expandBkgImageUrl", "expandCoachImageUrl")
+            needs_supplement = not any("albumBkg" in u or "AlbumBkg" in u for u in all_urls) or \
+                               not any("albumCoach" in u or "AlbumCoach" in u for u in all_urls)
+            if needs_supplement:
+                songdb_entry = (_SONGDB_JDU_CACHE or {}).get(self._codename) or {}
+                if not songdb_entry:
+                    # Try loading if not yet cached
+                    _lookup_song_title(self._codename)
+                    songdb_entry = (_SONGDB_JDU_CACHE or {}).get(self._codename) or {}
+                assets_data = songdb_entry.get("assets", {})
+                for key in album_keys:
+                    url = assets_data.get(key, "")
+                    if url and url not in all_urls:
+                        logger.debug("Supplementing missing %s from songdb: %s", key, url)
+                        all_urls.append(url)
+
         return all_urls
 
     async def scrape_live(self, page_url: str) -> List[str]:
