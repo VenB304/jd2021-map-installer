@@ -624,6 +624,14 @@ class Updater:
                 else:
                     shutil.copy2(child, dest)
 
+            # Restore custom local song databases (JDU, JDNext) from backup if they were moved
+            backup_songdb = backup_dir / "assets" / "songdb"
+            if backup_songdb.exists():
+                dest_songdb = self.project_root / "assets" / "songdb"
+                dest_songdb.mkdir(parents=True, exist_ok=True)
+                for item in backup_songdb.iterdir():
+                    shutil.copy2(item, dest_songdb / item.name)
+
         except Exception:
             # Rollback: restore every item that was successfully moved out.
             logger.warning(

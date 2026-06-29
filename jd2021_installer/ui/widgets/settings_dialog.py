@@ -1003,7 +1003,7 @@ class SettingsDialog(QDialog):
         l_layout1.addStretch()
         import_form.addRow("Update Localization from JSON:", l_layout1)
 
-        self.btn_update_songdb = QPushButton("Select JDNext songdb")
+        self.btn_update_songdb = QPushButton("Select JDNext songdb JSON")
         self.btn_update_songdb.clicked.connect(self._on_update_songdb)
         self.btn_update_songdb.setToolTip(
             "Loads JDNext song database entries from a JSON file."
@@ -1036,7 +1036,7 @@ class SettingsDialog(QDialog):
         l_layout4.addStretch()
         import_form.addRow("Attempt Install all JDNext maps:", l_layout4)
 
-        self.btn_bulk_install_jdlo_songdb = QPushButton("Select JDLO songs.json")
+        self.btn_bulk_install_jdlo_songdb = QPushButton("Select JDLO songdb JSON")
         self.btn_bulk_install_jdlo_songdb.clicked.connect(self._on_bulk_install_jdlo_songdb)
         self.btn_bulk_install_jdlo_songdb.setToolTip(
             "Pick a JDLO songs.json and queue every map through Fetch JDLO mode."

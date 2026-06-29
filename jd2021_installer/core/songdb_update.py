@@ -10,7 +10,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Optional
 
-SONGDB_SYNTH_FILENAME = "jdnext_songdb_synth.json"
+SONGDB_SYNTH_FILENAME = "songdb-JDNext.json"
 TICKS_PER_SECOND = 48000.0
 
 
@@ -231,7 +231,7 @@ def resolve_project_data_directory(start: Optional[Path] = None) -> Path:
 
 def resolve_songdb_synth_path(project_dir: Optional[Path] = None) -> Path:
     base = project_dir if project_dir is not None else resolve_project_data_directory()
-    return Path(base) / SONGDB_SYNTH_FILENAME
+    return Path(base) / "assets" / "songdb" / "jdnext" / SONGDB_SYNTH_FILENAME
 
 
 def synthesize_jdnext_songdb(
