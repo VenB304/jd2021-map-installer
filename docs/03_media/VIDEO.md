@@ -1,6 +1,6 @@
-# Video Reference
+﻿# Video Reference
 
-> **Last Updated:** April 2026 | **Applies to:** JD2021 Map Installer v2
+> **Last Updated:** June 2026 | **Applies to:** JD2021 Map Installer v2
 
 This document covers the NOHUD video quality system in JD2021 Map Installer v2: available tiers for both **JDU** and **JDNext** sources, selection/fallback behavior, VP9 compatibility handling, and how `media_processor.py` processes video files using FFmpeg. Empirical data for JDNext is drawn from a 46-file sample across 30+ maps.
 

@@ -1,5 +1,5 @@
-# Architecture
-**Last Updated:** April 2026 | **Applies to:** JD2021 Map Installer v2
+﻿# Architecture
+**Last Updated:** June 2026 | **Applies to:** JD2021 Map Installer v2
 
 This document describes the internal architecture of the JD2021 Map Installer v2: how components relate to each other, how data flows through the pipeline, and the key design patterns used throughout.
 
@@ -7,8 +7,8 @@ This document describes the internal architecture of the JD2021 Map Installer v2
 
 ## Current Limitations and Behavioral Notes (Read First)
 
-1. Intro AMB generation is enabled but reliability is source-dependent.
-   The pipeline attempts intro AMB processing for all supported modes. Results depend on source data quality and timing metadata availability.
+1. Intro AMB generation is active and enabled by default.
+   The pipeline generates intro AMB audio for all maps with `videoStartTime < 0`. See [AUDIO_TIMING.md](../03_media/AUDIO_TIMING.md) for details.
 2. IPK video start timing remains approximate by design.
    Many IPK sources do not carry reliable lead-in metadata, so manual video offset tuning is expected after install.
 3. Dependency health directly affects behavior.
@@ -69,7 +69,7 @@ This document describes the internal architecture of the JD2021 Map Installer v2
 | Package | Module | Role |
 |---------|--------|------|
 | `core/` | `models.py` | Data models including `NormalizedMapData` and typed structures for song description, music track, tapes (dance, karaoke, cinematic, **beats**), clips (motion, pictogram, gold effect, karaoke, **sound set, tape reference, beat**), sections, signatures, colors, media, and **sync offsets**. |
-| `core/` | `config.py` | `AppConfig` (Pydantic v2 BaseModel): paths, quality tiers, download behavior, engine constants, FFmpeg paths, runtime options, **Discord Fetch mode settings (channel URL, browser profile, login/bot timeouts)**, **update checker settings**, **VP9 handling mode**, **preview video mode**. Supports `JD2021_` environment overrides. |
+| `core/` | `config.py` | `AppConfig` (Pydantic v2 BaseModel): paths, quality tiers, download behavior, engine constants, FFmpeg paths, runtime options, **Discord Fetch mode settings (channel URL, bot provider `sev4nty`/`rama`, browser profile, login/bot timeouts, background mode)**, **update checker settings**, **VP9 handling mode**, **preview video mode**, **video fallback behavior**, **gesture compilation flag**, **albumcoach/JDNext cover behavior**, **JDLO auth path**. Supports `JD2021_` environment overrides. |
 | `core/` | `exceptions.py` | Typed exception hierarchy rooted at `JDInstallerError` for extraction, parsing, normalization, and installation failures. |
 | `core/` | `logging_config.py` | **Four-tier logging detail system** (`quiet`, `user`, `detailed`, `developer`) with per-sink formatting (console, UI QtLogHandler, file). |
 | `core/` | `theme.py` | **Theme stylesheet loading** with light/dark support, fallback resolution, and optional style debug overlay. |
@@ -89,16 +89,19 @@ This document describes the internal architecture of the JD2021 Map Installer v2
 | `parsers/` | `normalizer.py` | Canonical normalize entrypoint. Loads CKD data (JSON-first, binary fallback), discovers media, validates, and emits `NormalizedMapData`. |
 | `parsers/` | `binary_ckd.py` | Binary CKD parser for cooked structures (musictrack, songdesc, dance/karaoke/cinematic tapes, related payloads). |
 | `installers/` | `game_writer.py` | Writes core UbiArt map outputs such as `.trk`, `.tpl`, `.act`, `.isc`, `.stape`, `.sfi` and related map assets. |
-| `installers/` | `media_processor.py` | Media operations and wrappers around FFmpeg/FFprobe/Pillow for audio/video/image conversion, preview generation, and cover outputs. |
+| `installers/` | `media_processor.py` | Media operations and wrappers around FFmpeg/FFprobe/Pillow for audio/video/image conversion, preview generation, cover outputs, and **intro AMB generation** (`generate_intro_amb()`). |
 | `installers/` | `tape_converter.py` | **CKD JSON → UbiArt Lua tape converter.** Converts dance tapes (`.dtape.ckd`), karaoke tapes (`.ktape.ckd`), cinematic/mainsequence tapes (`.tape.ckd`), **beats tapes (`.btape.ckd`)**, and stape files. Supports JSON-first with binary CKD fallback parsing. Includes codename reference rewriting and path normalization. `auto_convert_tapes()` provides batch detection and conversion with loose tape fallback. |
 | `installers/` | `texture_decoder.py` | **CKD texture decoder** supporting three platforms: PC (strip 44-byte header → DDS → Pillow), NX/Switch (XTX deswizzle → DDS), and **Xbox 360 (byte-swap + untile → DDS)**. Batch decoders for pictograms (with canvas sizing) and MenuArt textures. Handles loose PNG/TGA/JPG passthrough for already-decoded assets. |
 | `installers/` | `ambient_processor.py` | **Ambient sound processor** — processes `amb_*.tpl.ckd` and `set_amb_*.tpl.ckd` into `.ilu` / `.tpl` Lua pairs. Includes intro AMB SoundSetClip injection/normalization in MainSequence tapes with timing derived from HideUserInterfaceClip, startBeat markers, or existing source clips. Supports synthetic AMB generation for orphaned `.wav.ckd` files. |
+| `installers/` | `biomechanics.py` | **3D skeleton reconstruction for JDNext gestures** — reconstructs depth (Z-axis) from 2D camera landmarks via analytical forward kinematics (single-pass tree traversal from HipsCenter root). Computes velocity, acceleration, angular velocity, torque, and muscle force via Savitzky-Golay smoothing + inverse dynamics. Used by `gesture_compiler.py`. |
+| `installers/` | `gesture_compiler.py` | **JDNext→Durango Kinect gesture compiler** — converts biomechanical feature vectors into Durango `.gesture` binaries. Implements AdaBoost ensemble re-weighting with gamma redistribution (pruning optical-flow stumps), adaptive per-joint dead-zones, structural gating edge detection, and threshold quantization matching real Kinect files. Opt-in: `convert_jdnext_gestures = True`. |
+| `installers/` | `hmm_generator.py` | **Durango gesture state table generator** — dynamically builds the Zone A (implicit joint records) and Zone B (type-prefixed variable records) state tables written to `.gesture` files, with state counts derived from constraint density. |
 | `installers/` | `autodance_processor.py` | **Autodance processor** — converts autodance CKDs (`.tpl.ckd`, `.adtape.ckd`, `.adrecording.ckd`, `.advideo.ckd`) and optional stape CKDs into game-ready Lua files. Includes loose payload fallback for pre-decoded maps. |
 | `installers/` | `sku_scene.py` | **SkuScene ISC registration** — adds/removes maps from the game's `SkuScene_Maps_PC_All.isc` song list. Inserts both `SubSceneActor` and `CoverflowSkuSongs` XML entries. Idempotent registration with `is_registered()` check. |
 | `ui/` | `main_window.py` | MainWindow (`QMainWindow`): orchestrates mode selection, worker lifecycle, progress/status/error handling, and post-install sync/readjust actions. |
 | `ui/workers/` | `pipeline_workers.py` | Background QObject workers on QThread for extraction, normalization, installation, and readjust/apply operations. |
 | `ui/workers/` | `media_workers.py` | **Media-specific workers** for preview generation and media operations. |
-| `ui/widgets/` | (15 widget modules) | **Mode selector** (`mode_selector.py`), **config panel** (`config_panel.py`), **action panel** (`action_panel.py`), **preview widget** (`preview_widget.py`), **sync refinement** (`sync_refinement.py`), **log console** (`log_console.py`), **settings dialog** (`settings_dialog.py`), **bundle dialog** (`bundle_dialog.py`), **feedback panel** (`feedback_panel.py`), **FFmpeg dialog** (`ffmpeg_dialog.py`), **metadata dialog** (`metadata_dialog.py`), **installation summary dialog** (`installation_summary_dialog.py`), **quickstart dialog** (`quickstart_dialog.py`), **update dialog** (`update_dialog.py`). |
+| `ui/widgets/` | (15 widget modules) | **Mode selector** (`mode_selector.py`), **config panel** (`config_panel.py`), **action panel** (`action_panel.py`), **preview widget** (`preview_widget.py`), **sync refinement** (`sync_refinement.py`), **log console** (`log_console.py`), **settings dialog** (`settings_dialog.py`), **albumcoach dialog** (`albumcoach_dialog.py` — live-preview multi-coach compositor with drag-and-drop ordering, overlap sliders, and PIL-based compositing), **bundle dialog** (`bundle_dialog.py`), **feedback panel** (`feedback_panel.py`), **FFmpeg dialog** (`ffmpeg_dialog.py`), **metadata dialog** (`metadata_dialog.py`), **installation summary dialog** (`installation_summary_dialog.py`), **quickstart dialog** (`quickstart_dialog.py`), **update dialog** (`update_dialog.py`). |
 | `utils/` | `icon_gen.py` | Default icon generation/validation for the application window. |
 | (root) | `updater.py` | **Standalone update checker and auto-updater** — supports git and zip-download update strategies with user data preservation. Branch selection and commit comparison via GitHub API. |
 
@@ -108,11 +111,13 @@ This document describes the internal architecture of the JD2021 Map Installer v2
 
 V2 supports multiple source modes in active UI flows:
 
-1. **Fetch by codename** — Uses Playwright to automate Discord slash commands and download JDU/JDNext assets.
-2. **HTML export mode** — Processes pre-saved HTML files from JDHelper (assets.html + nohud.html).
-3. **IPK archive mode** — Extracts maps from Xbox 360 `.ipk` archives.
-4. **Batch directory mode** — Scans a directory for multiple maps (IPK files and/or compatible folders).
-5. **Manual source-folder mode** — User provides individual file/directory paths for maximum control.
+1. **Fetch by codename (JDU)** — Uses Playwright to automate Discord slash commands and download JDU assets. Supports `sev4nty` and `rama` bot providers (`discord_bot_provider` config).
+2. **Fetch by codename (JDNext)** — Downloads JDNext bundles via Discord bot and runs the JDNext dual-strategy extraction pipeline.
+3. **Fetch JDLO** — Downloads maps from the Just Dance Legacy Online (JDLO) CDN (requires `jdlo_auth_path`).
+4. **HTML export mode** — Processes pre-saved HTML files (assets.html + nohud.html) from Fetch modes.
+5. **IPK archive mode** — Extracts maps from Xbox 360 `.ipk` archives.
+6. **Batch directory mode** — Scans a directory for multiple maps (IPK files and/or compatible folders).
+7. **Manual source-folder mode** — User provides individual file/directory paths for maximum control.
 
 All ingestion paths normalize into the same canonical `NormalizedMapData` model so downstream writing and media processing remain consistent.
 
@@ -262,7 +267,7 @@ Map registration is integrated into install flow and designed to avoid duplicate
 Game-facing status/version fields are mapped for runtime compatibility while preserving meaningful source metadata where possible.
 
 ### Platform Asset Preference Strategy
-Platform variant selection favors compatibility with JD2021 PC integration constraints. **Scene platform preference order is `DURANGO → SCARLETT → NX`, with JDNext `MAP_PACKAGE` bundles also supported.** VP9 handling mode (`reencode_to_vp8` or `fallback_compatible_down`) controls how JDNext VP9 video variants are handled.
+Platform variant selection favors compatibility with JD2021 PC integration constraints. **Scene platform preference order is `DURANGO → NX → PC → ORBIS → SCARLETT → PROSPERO → WIIU → X360`**, with JDNext `MAP_PACKAGE` bundles also supported. VP9 handling mode (`reencode_to_vp8` or `fallback_compatible_down`) controls how JDNext VP9 video variants are handled.
 
 ### **Dual-Strategy JDNext Extraction**
 JDNext extraction supports two strategies (`assetstudio_first` and `unitypy_first`) with automatic fallback. AssetStudio produces structured `TextAsset`/`MonoBehaviour`/`Texture2D` directories that are then mapped into installer-compatible CKD/tape/asset layouts. UnityPy provides a broader but less structured extraction pass as a fallback.

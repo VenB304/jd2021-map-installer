@@ -1,6 +1,6 @@
-# Audio Timing, Pre-Roll Silence, and AMB Status (V2)
+﻿# Audio Timing, Pre-Roll Silence, and AMB Status (V2)
 
-> **Last Updated:** April 2026 | **Applies to:** JD2021 Map Installer v2
+> **Last Updated:** June 2026 | **Applies to:** JD2021 Map Installer v2
 
 This document explains the UbiArt engine's audio/video synchronization model, the pre-roll silence problem that affects most ported maps, the AMB-based strategy, and IPK-specific audio handling.
 
@@ -70,7 +70,7 @@ The intended intro AMB strategy is:
 - Source audio from the same song asset path used by the main track
 - Fade out near the handoff to avoid hard cuts
 
-### Current V2 runtime policy (April 2026)
+### Current V2 runtime behavior
 
 - **Intro AMB generation is enabled by default** (`INTRO_AMB_ATTEMPT_ENABLED = True` in `media_processor.py`).
 - The `generate_intro_amb()` function produces active intro AMB audio using FFmpeg:

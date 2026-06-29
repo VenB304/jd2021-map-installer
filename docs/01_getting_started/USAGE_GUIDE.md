@@ -1,6 +1,6 @@
-# Usage Guide
+﻿# Usage Guide
 
-> **Last Updated:** April 2026 | **Applies to:** JD2021 Map Installer v2
+> **Last Updated:** June 2026 | **Applies to:** JD2021 Map Installer v2
 
 This is the primary reference for new users. It combines setup, GUI orientation, mode selection, settings, and troubleshooting into a single walkthrough.
 
@@ -60,13 +60,12 @@ python -m jd2021_installer.main
 python -m playwright install chromium
 ```
 
-**JDNext modes** require additional Unity tools under `tools/`:
+**JDNext modes** require Unity extraction tools. `setup.bat` provisions these automatically:
 
-| Tool | Path |
-|------|------|
-| AssetStudio | `tools/AssetStudio` |
-| UnityPy | `tools/UnityPy` |
-| AssetStudioModCLI | `tools/Unity2UbiArt/bin/AssetStudioModCLI/AssetStudioModCLI.exe` |
+| Tool | Path | How Provided |
+|------|------|--------------|
+| AssetStudioModCLI | `tools/AssetStudioModCLI/AssetStudioModCLI.exe` | Auto-downloaded by `setup.bat` |
+| UnityPy | Python environment | Installed via `requirements.txt` (fallback extractor) |
 
 ### 1.3 What happens on first launch
 
@@ -321,6 +320,7 @@ Open using the **Settings** button in the Action Panel. The dialog has five tabs
 | Setting | Purpose |
 |---------|---------|
 | Discord Channel URL | Required for Fetch modes (paste from browser) |
+| Discord Bot Provider | Select `sev4nty` (default) or `rama` |
 | Update In-Game Localization | Import a JSON file to update game locale |
 | Update Song Database | Import JDNext songdb JSON |
 | Install All JDU Maps | Bulk-install from JDU songdb JSON |

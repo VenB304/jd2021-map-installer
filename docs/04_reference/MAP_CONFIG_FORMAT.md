@@ -1,6 +1,6 @@
-# Installer Settings Format
+﻿# Installer Settings Format
 
-> **Last Updated:** April 2026 | **Applies to:** JD2021 Map Installer v2
+> **Last Updated:** June 2026 | **Applies to:** JD2021 Map Installer v2
 
 This document describes the persistent user settings stored in `installer_settings.json`.
 
@@ -161,8 +161,8 @@ Readjust generally requires source media to still exist (audio/video and/or reco
 
 ## Critical Runtime Notes (V2)
 
-1. **Intro AMB is temporarily disabled globally**
-  Intro ambient attempt logic is intentionally disabled in current V2 mitigation. Silent intro placeholders are expected behavior for now.
+1. **Intro AMB generation is active and enabled by default**
+  The pipeline generates active intro AMB audio for all maps with `videoStartTime < 0`. Silent intro audio is the exception (unusual source layouts), not the expected behavior. See [AUDIO_TIMING.md](../03_media/AUDIO_TIMING.md).
 
 2. **IPK video timing often needs manual tuning**
   `videoStartTime` from IPK-derived content remains approximate in many maps; manual sync refinement is expected.

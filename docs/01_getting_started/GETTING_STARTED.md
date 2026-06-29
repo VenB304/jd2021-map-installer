@@ -1,6 +1,6 @@
-# Getting Started
+﻿# Getting Started
 
-> **Last Updated:** April 2026 | **Applies to:** JD2021 Map Installer v2
+> **Last Updated:** June 2026 | **Applies to:** JD2021 Map Installer v2
 
 This guide shows the fastest way to run JD2021 Map Installer v2 on Windows, plus a full manual setup path.
 
@@ -8,8 +8,8 @@ This guide shows the fastest way to run JD2021 Map Installer v2 on Windows, plus
 
 ## Current Limitations (Read First)
 
-1. **Intro AMB generation is enabled but reliability varies.**
-   The pipeline now attempts intro AMB generation for all supported source modes. Results depend on source data quality; some maps may still produce effectively silent intro ambient playback.
+1. **Intro AMB generation is active and enabled by default.**
+   The pipeline generates intro AMB audio for all maps with a negative `videoStartTime` (pre-roll window). Results are reliable for most maps; edge cases with unusual source layouts may still require manual offset verification.
 
 2. **IPK-derived `videoStartTime` is approximate by design.**
    For many IPK maps, binary metadata does not reliably encode lead-in timing. Manual video offset tuning is expected.
@@ -41,19 +41,18 @@ RUN.bat
 
 What `setup.bat` handles:
 
-1. Python virtual environment creation (`.venv`) and package install from `requirements.txt`
-2. Playwright Chromium install (Fetch mode runtime)
-3. Clone/update of JDNext third-party source trees under `tools/`:
-   - `tools/AssetStudio`
-   - `tools/UnityPy`
-   - `tools/Unity2UbiArt`
-4. Runtime tooling bootstrap used by this project (including vgmstream pathing)
+1. **Python check and provisioning** — if Python 3.12+ is not found on `PATH`, downloads and extracts a portable Python 3.14.0 runtime from NuGet into `tools/python/`.
+2. **Git check and provisioning** — if Git is not found on `PATH`, downloads the latest MinGit (Portable Git for Windows) into `tools/git/`.
+3. **Python dependencies** — installs `requirements.txt` (includes `scipy` and `pytest-qt`) via `pip`.
+4. **Playwright Chromium** — runs `python -m playwright install chromium` (required for Fetch modes).
+5. **AssetStudioModCLI** — downloads the latest release from [aelurum/AssetStudio](https://github.com/aelurum/AssetStudio) directly into `tools/AssetStudioModCLI/`. No git clone is performed.
+6. **vgmstream** — downloads the latest nightly release from [vgmstream/vgmstream-releases](https://github.com/vgmstream/vgmstream-releases) into `tools/vgmstream/`.
 
-Important JDNext note:
+> [!NOTE]
+> **UnityPy** (pinned in `requirements.txt`) serves as a Python fallback extractor for JDNext bundles when AssetStudioModCLI is unavailable. The installer supports a dual-strategy approach (`assetstudio_first` or `unitypy_first` with automatic fallback).
 
-- `AssetStudioModCLI` runtime binaries are not distributed in this repository.
-- For JDNext mapPackage workflows, stage the extracted CLI bundle under `tools/Unity2UbiArt/bin/AssetStudioModCLI/`.
-- **UnityPy is also listed in `requirements.txt` and can be used as a fallback extractor** when AssetStudioModCLI is unavailable. The installer supports a dual-strategy approach (`assetstudio_first` or `unitypy_first`).
+> [!WARNING]
+> **FFmpeg and FFprobe are not auto-installed by `setup.bat`**. They must be available on the system `PATH` before running the installer. Without FFmpeg, audio conversion, AMB generation, and VP9→VP8 re-encoding will fail.
 
 If `setup.bat` fails or you want full control, follow **Manual Setup**.
 
@@ -90,7 +89,9 @@ Core packages include:
 - **Pillow** (12.1.1) — Image processing (cover art, pictograms, textures)
 - **requests** (2.33.0) — HTTP downloads
 - **UnityPy** (1.25.0) — JDNext bundle extraction fallback
+- **scipy** (1.17.1) — Scientific computing (gesture biomechanics)
 - **fsspec** (2026.3.0) — Filesystem abstraction
+- **pytest / pytest-qt** (dev) — Test framework (development only)
 
 ---
 
@@ -170,8 +171,8 @@ In the app:
 
 Timing notes:
 
-1. **IPK maps:** manual video offset tuning is commonly required.
-2. **AMB intro:** the pipeline attempts intro AMB generation but results depend on source data quality.
+1. **IPK maps:** manual video offset tuning is commonly required because binary CKD metadata does not encode per-map video lead-in.
+2. **AMB intro:** generated automatically for maps with a pre-roll window (`videoStartTime < 0`). No action needed for standard installs.
 
 ---
 
@@ -199,10 +200,10 @@ Branch selection and manual update checking are available in the **Settings** di
    Re-run `python -m playwright install chromium`.
 4. Media output is missing or degraded:
    Confirm all three tools resolve: ffmpeg, ffprobe, vgmstream-cli.
-5. JDNext extract fails with `AssetStudioModCLI.exe not found under tools`:
-   Ensure the CLI bundle is present at `tools/Unity2UbiArt/bin/AssetStudioModCLI/`.
-6. JDNext extract fails with `UnityPy is not available`:
-   Install UnityPy via `pip install UnityPy>=1.23` or clone it to `tools/UnityPy`.
+5. JDNext extract fails with `AssetStudioModCLI.exe not found`:
+   Re-run `setup.bat` to auto-download the CLI binary into `tools/AssetStudioModCLI/`, or point `assetstudio_cli_path` in Settings → Advanced to the executable directly.
+6. JDNext extract falls back to UnityPy unexpectedly:
+   Check that `tools/AssetStudioModCLI/AssetStudioModCLI.exe` exists. UnityPy (already installed via `requirements.txt`) is the automatic fallback — this is expected behavior if the CLI binary is missing.
 7. Game directory not found:
    The installer performs heuristic discovery (looks for `jd21/` relative to project root, the `data/World/SkuScenes/SkuScene_Maps_PC_All.isc` file). Set the correct path in Settings if auto-detection fails.
 

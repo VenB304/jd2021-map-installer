@@ -1,6 +1,6 @@
-# Manual IPK Porting Guide (Just Dance 2021 PC)
+﻿# Manual IPK Porting Guide (Just Dance 2021 PC)
 
-> **Last Updated:** April 2026 | **Applies to:** JD2021 Map Installer v2
+> **Last Updated:** June 2026 | **Applies to:** JD2021 Map Installer v2
 
 This guide is a practical, IPK-specific manual workflow for porting maps into JD2021 PC (UbiArt). It covers both the **IPK Archive mode** (automated extraction from `.ipk` files) and the **Manual mode with IPK source type** (pointing at an already-unpacked IPK tree). Use it for debugging, recovery, parity checks, and advanced manual installs when automation is not enough.
 

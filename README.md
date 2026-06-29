@@ -38,11 +38,11 @@ No manual file wrangling required.
 ## 📋 Prerequisites
 
 - **Windows 10/11** (64-bit)
-- **Python 3.12+** with `pip` and a current tested stack on Python 3.14.0
-- **Git** (for first-time setup dependency cloning)
+- **Python 3.12+** with `pip` (current tested stack: Python 3.14.0)
 - **Internet connection** (for Fetch modes and first-time tool downloads)
+- **FFmpeg / FFprobe** on system `PATH` (required for all media processing)
 
-> `setup.bat` will provision a portable Python 3.14.0 runtime if no supported interpreter is found. FFmpeg, vgmstream, Playwright Chromium, and AssetStudioModCLI are all installed automatically by `setup.bat`. You can also install them manually — see [Third-Party Tools](docs/04_reference/THIRD_PARTY_TOOLS.md).
+> `setup.bat` handles all other dependencies automatically: it provisions a portable **Python 3.14.0** runtime from NuGet if no supported interpreter is found, portable **MinGit** if no Git is found, and downloads prebuilt **vgmstream** and **AssetStudioModCLI** binaries directly into `tools/`. Playwright Chromium is also installed automatically. See [Third-Party Tools](docs/04_reference/THIRD_PARTY_TOOLS.md) for details.
 
 ---
 
@@ -87,10 +87,10 @@ That's it. The GUI opens, pick a mode, and start installing maps.
 | Package | Role |
 |---------|------|
 | `core/` | Data models (`NormalizedMapData`, tapes, clips), Pydantic `AppConfig`, theming, and typed exceptions |
-| `extractors/` | `BaseExtractor` ABC → `WebPlaywrightExtractor`, `ArchiveIPKExtractor`, `JDNextBundleStrategy`, `ManualExtractor` |
+| `extractors/` | `BaseExtractor` ABC → `WebPlaywrightExtractor` (JDU/JDNext/JDLO, dual-provider Discord bot), `ArchiveIPKExtractor`, `JDNextBundleStrategy`, `ManualExtractor` |
 | `parsers/` | `normalizer` (raw → `NormalizedMapData`), `binary_ckd` (stateless binary CKD parser) |
-| `installers/` | `game_writer` (UbiArt `.trk/.tpl/.act/.isc` generation), `media_processor` (FFmpeg/Pillow/vgmstream) |
-| `ui/` | `MainWindow`, modular widgets, `QThread`-based pipeline workers |
+| `installers/` | `game_writer` (UbiArt `.trk/.tpl/.act/.isc` generation), `media_processor` (FFmpeg/Pillow/vgmstream), `gesture_compiler` + `biomechanics` + `hmm_generator` (JDNext→Durango Kinect gesture pipeline) |
+| `ui/` | `MainWindow`, modular widgets (including `albumcoach_dialog` for multi-coach compositing), `QThread`-based pipeline workers |
 
 > For the full architectural deep-dive, see **[Architecture](docs/02_core/ARCHITECTURE.md)** and **[Pipeline Reference](docs/02_core/PIPELINE_REFERENCE.md)**.
 
@@ -136,12 +136,13 @@ This project builds on the work of the Just Dance modding community:
 - **[ferris_dancing](https://github.com/Kriskras99/ferris_dancing)** — Rust CKD parser used as field-order validation reference
 - **[UBIART-AMB-CUTTER](https://github.com/RN-JK/UBIART-AMB-CUTTER)** — AMB extraction algorithm reference
 - **Just Dance Helper** — JDU asset and NOHUD video provider via Discord, built by [rama0dev](https://github.com/rama0dev)
-- **[AssetStudioMod](https://github.com/aelurum/AssetStudio)** / **AssetStudioModCLI** — Unity bundle extraction for JDNext maps
-- **[Unity2UbiArt](https://github.com/Itaybl14/Unity2UbiArt)** — Unity-to-UbiArt conversion workflow
-- **[UnityPy](https://github.com/K0lb3/UnityPy)** — Python Unity asset parsing for JDNext bundle inspection
+- **Sev4nty** — Primary JDU/JDNext Discord bot provider for asset extraction
+- **[AssetStudioMod](https://github.com/aelurum/AssetStudio)** / **AssetStudioModCLI** — Unity bundle extraction for JDNext maps (auto-downloaded by `setup.bat`)
+- **[Unity2UbiArt](https://github.com/Itaybl14/Unity2UbiArt)** — Unity-to-UbiArt conversion workflow (reference source)
+- **[UnityPy](https://github.com/K0lb3/UnityPy)** — Python Unity asset parsing for JDNext bundle inspection (fallback extractor, pinned in `requirements.txt`)
 - **[JDLO](https://jdlo.ovosimpatico.com/)** — This installer pulls maps from the Just Dance Legacy Online (JDLO) CDN. Special Thanks to Ovo and the JDLO Team for making this integration possible.
 - **[OpenParty](https://github.com/ibratabian17/openparty)** — Community-driven independent Just Dance Unlimited server alternative.
-- **ubiart-loc8-converter** — UbiArt localization file converter used for decompressing and patching `.loc8` files.
+- **[ubiart-loc8-converter](https://github.com/wukko/ubiart-loc8-converter)** — UbiArt localization file converter used for decompressing and patching `.loc8` files.
 
 Special thanks to the authors and contributors of these tools for making Just Dance modding possible.
 

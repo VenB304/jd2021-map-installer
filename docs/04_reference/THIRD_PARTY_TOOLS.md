@@ -1,14 +1,15 @@
-# Third-Party Tools
+﻿# Third-Party Tools
 
-> **Last Updated:** April 2026 | **Applies to:** JD2021 Map Installer v2
+> **Last Updated:** June 2026 | **Applies to:** JD2021 Map Installer v2
 
 This document lists all external tools and libraries used by the JD2021 Map Installer v2, where they are used, and what they do.
 
-## Current V2 Limitations (Important)
+## Current V2 Notes (Important)
 
-- **Intro AMB behavior is currently under temporary mitigation.** Intro AMB attempts are intentionally disabled in current V2 builds, and silent intro placeholders are expected until the AMB redesign/parity work is completed.
+- **Intro AMB generation is active and enabled by default.** The pipeline generates intro AMB audio for all maps with a negative `videoStartTime`. Edge cases with unusual source layouts may produce silent placeholders, but this is the exception, not the rule. See [AUDIO_TIMING.md](../03_media/AUDIO_TIMING.md) for full details.
 - **IPK video start timing is approximate by design.** Many IPK maps still require manual in-app video offset tuning after installation because binary metadata does not reliably preserve lead-in timing.
 - **Runtime tools are mandatory for media-heavy workflows.** Missing FFmpeg/FFprobe or vgmstream can degrade conversion/preview behavior.
+- **FFmpeg is NOT auto-installed by `setup.bat`** — it must be available on the system `PATH` separately.
 
 ---
 
@@ -54,6 +55,14 @@ Requires a one-time setup: `playwright install chromium`.
 |------------|---------|
 | `installers/media_processor.py` (`convert_image()`, `generate_cover_tga()`) | Image resizing, format conversion (DDS/TGA/PNG/JPG) |
 
+### SciPy
+
+**Purpose:** Scientific computing for gesture biomechanics.
+
+| Where Used | Purpose |
+|------------|---------|
+| `installers/biomechanics.py` | Savitzky-Golay filtering of skeleton joint trajectories (velocity/acceleration smoothing for gesture compilation) |
+
 ### pytest / pytest-qt
 
 **Purpose:** Testing framework (development only).
@@ -97,31 +106,37 @@ Requires a one-time setup: `playwright install chromium`.
 
 ## Referenced Tools (Not Bundled)
 
-These tools were used as references during development. Their logic has been ported into the pipeline.
+These tools are community references. Their logic has been ported into the pipeline or they are auto-provisioned by `setup.bat`.
 
-Setup bootstrap behavior for JDNext support:
+**`setup.bat` third-party tool provisioning:**
 
-1. `setup.bat` clones/upgrades source trees into `tools/AssetStudio`, `tools/UnityPy`, and `tools/Unity2UbiArt`.
-2. `setup.bat` does not download the `AssetStudioModCLI` runtime bundle.
-3. JDNext extraction resolves `AssetStudioModCLI.exe` from local `tools` paths only.
+1. Downloads the latest `AssetStudioModCLI` release binary directly from [aelurum/AssetStudio](https://github.com/aelurum/AssetStudio) GitHub releases into **`tools/AssetStudioModCLI/`**. No git clone is performed.
+2. Downloads the latest nightly `vgmstream` release from [vgmstream/vgmstream-releases](https://github.com/vgmstream/vgmstream-releases) into **`tools/vgmstream/`**.
+3. Provisions portable **MinGit** (Portable Git for Windows) into `tools/git/` if no system Git is found.
+4. Provisions portable **Python 3.14.0** from NuGet into `tools/python/` if no Python 3.12+ is found.
 
 ### AssetStudioMod / AssetStudioModCLI
 
 **Source:** [github.com/aelurum/AssetStudio](https://github.com/aelurum/AssetStudio)
 
-Used for JDNext `mapPackage` bundle extraction and asset export. The CLI binary is staged locally under `tools/Unity2UbiArt/bin/AssetStudioModCLI/` on machines that have the extracted toolchain.
+Used for JDNext `mapPackage` bundle extraction and asset export. `setup.bat` downloads the CLI binary automatically into **`tools/AssetStudioModCLI/`**. The path can be overridden via `assetstudio_cli_path` in Settings → Advanced.
+
+The installer resolves `AssetStudioModCLI.exe` in this order:
+1. `assetstudio_cli_path` config field
+2. `tools/AssetStudioModCLI/...`
+3. `tools/AssetStudio/...` (legacy fallback)
 
 ### Unity2UbiArt
 
 **Source:** [github.com/Itaybl14/Unity2UbiArt](https://github.com/Itaybl14/Unity2UbiArt)
 
-Used as the local conversion toolchain that hosts the AssetStudioModCLI runtime bundle.
+Used as a reference for the Unity-to-UbiArt conversion workflow and asset mapping conventions. Not cloned or used as a local toolchain host.
 
 ### UnityPy
 
 **Source:** [github.com/K0lb3/UnityPy](https://github.com/K0lb3/UnityPy)
 
-Used as the Python fallback / inspection path for JDNext bundle parsing and extraction.
+Pinned in `requirements.txt` (v1.25.0). Used as the Python fallback / inspection path for JDNext bundle parsing and extraction when AssetStudioModCLI is unavailable.
 
 ### JDTools by BLDS
 
@@ -138,7 +153,7 @@ AMB extraction algorithm used as a reference:
 - Marker tick-to-millisecond formula (`markers[idx] / 48.0`)
 - SoundSetClip splitting logic
 
-Note for current V2 behavior: while this reference informs the AMB pipeline implementation, intro AMB playback remains temporarily disabled in active builds (see limitations section above).
+This reference informs the AMB pipeline implementation in `installers/ambient_processor.py` and `installers/media_processor.py`. Intro AMB generation is now active by default.
 
 ### JustDanceTools
 
@@ -162,15 +177,20 @@ IPK archive format reference. The extraction logic is integrated directly into `
 
 ## External Services
 
-### JDHelper Discord Bot
+### Discord Bot Providers
 
-**Author:** [rama0dev](https://github.com/rama0dev)
+The installer supports two configurable Discord bot providers for JDU and JDNext asset fetching. The active provider is selected via `discord_bot_provider` in `AppConfig` (`"sev4nty"` or `"rama"`; default: `"sev4nty"`).
 
-Not a code dependency, but the primary source of JDU asset data. The bot provides two HTML exports per map:
+| Provider | Setting Value | Bot |
+|----------|---------------|-----|
+| **Sev4nty** | `"sev4nty"` (default) | Primary provider |
+| **JDHelper** | `"rama"` | [rama0dev](https://github.com/rama0dev) |
+
+Both bots respond to Discord slash commands and return HTML exports or embedded CDN asset URLs per map:
 - **Asset HTML:** URLs for CKD textures, IPK archives, OGG audio, and scene ZIPs
-- **NOHUD HTML:** URL for the gameplay WebM video
+- **NOHUD HTML / embed:** URL for the gameplay WebM video
 
-Links expire approximately 30 minutes after the bot responds.
+Links expire approximately 30 minutes after the bot responds. The active provider is configured in Settings → Integrations → Discord channel URL and bot provider selector.
 
 ### Ubisoft CDN
 

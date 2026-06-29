@@ -1,6 +1,6 @@
-# Manual JDNext Porting Guide (Just Dance 2021 PC)
+﻿# Manual JDNext Porting Guide (Just Dance 2021 PC)
 
-> **Last Updated:** April 2026 | **Applies to:** JD2021 Map Installer v2
+> **Last Updated:** June 2026 | **Applies to:** JD2021 Map Installer v2
 
 This guide provides an end-to-end walkthrough for porting **Just Dance Next (JDNext)** maps into the JD2021 PC engine (UbiArt). JDNext maps use **Unity asset bundles** instead of UbiArt IPK archives, requiring a fundamentally different extraction and synthesis workflow compared to JDU or IPK porting.
 
@@ -54,8 +54,8 @@ The automated V2 installer handles JDNext maps through **Fetch JDNext** and **HT
 
 | Tool | Purpose | Install |
 |------|---------|---------|
-| **AssetStudioModCLI** | Primary Unity bundle extraction | Place under `tools/Unity2UbiArt/bin/AssetStudioModCLI/` or `tools/AssetStudioModCLI/` |
-| **UnityPy** (Python) | Fallback Unity bundle extraction | `pip install UnityPy` or clone to `tools/UnityPy/` |
+| **AssetStudioModCLI** | Primary Unity bundle extraction | Auto-downloaded by `setup.bat` to `tools/AssetStudioModCLI/`; or set `assetstudio_cli_path` in config |
+| **UnityPy** (Python) | Fallback Unity bundle extraction | Installed via `requirements.txt` (pinned v1.25.0); automatic fallback when CLI is absent |
 | **FFmpeg / FFprobe** | Audio conversion, probing | Configured via `setup.bat` |
 | **vgmstream** | Console audio decode (optional) | Configured via `setup.bat` |
 
@@ -66,15 +66,12 @@ The automated V2 installer handles JDNext maps through **Fetch JDNext** and **HT
 The installer resolves AssetStudioModCLI from these locations, in order:
 
 1. `assetstudio_cli_path` in `AppConfig` (explicit override)
-2. `<third_party_tools_root>/Unity2UbiArt/bin/AssetStudioModCLI/AssetStudioModCLI.exe`
-3. `<third_party_tools_root>/AssetStudioModCLI/AssetStudioModCLI.exe`
-4. `<third_party_tools_root>/AssetStudio/AssetStudioModCLI.exe`
-5. Same paths under `tools/` relative to the repository root
+2. `<third_party_tools_root>/AssetStudioModCLI/AssetStudioModCLI.exe` (default after `setup.bat`)
+3. `<third_party_tools_root>/AssetStudio/AssetStudioModCLI.exe` (legacy fallback)
 
 UnityPy resolution:
-1. `import UnityPy` from Python environment
-2. `<third_party_tools_root>/UnityPy/` (added to `sys.path`)
-3. `tools/UnityPy/` relative to repository root
+1. `import UnityPy` from Python environment (primary — pinned in `requirements.txt`)
+2. `<third_party_tools_root>/UnityPy/` (added to `sys.path` as fallback)
 
 ### Required Files
 
@@ -536,8 +533,8 @@ After first launch:
 
 | Issue | Likely Cause | Fix |
 |-------|-------------|-----|
-| **AssetStudioModCLI not found** | Tool not installed or path misconfigured | Place in `tools/Unity2UbiArt/bin/AssetStudioModCLI/` or set `assetstudio_cli_path` in config |
-| **UnityPy import error** | Missing dependency | `pip install UnityPy` or clone to `tools/UnityPy/` |
+| **AssetStudioModCLI not found** | Tool not installed or path misconfigured | Re-run `setup.bat` (downloads to `tools/AssetStudioModCLI/`) or set `assetstudio_cli_path` in config |
+| **UnityPy import error** | Missing Python package | Run `pip install -r requirements.txt` to install UnityPy v1.25.0 |
 | **Both extraction tools fail** | Corrupted or encrypted bundle | Check for encryption errors; decrypt externally first |
 | **Encrypted bundle detected** | JDNext DRM on bundle | Currently no automated decrypt; `key_sig` and `data_sig` are reported for manual triage |
 | **`map.json` not found after extraction** | AssetStudio exported with unexpected codename | Check `MonoBehaviour/` for any `.json` files; the first non-musictrack JSON is used as fallback |

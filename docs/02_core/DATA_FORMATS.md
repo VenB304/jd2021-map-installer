@@ -1,6 +1,6 @@
-# Data Formats Reference
+﻿# Data Formats Reference
 
-> **Last Updated:** April 2026 | **Applies to:** JD2021 Map Installer v2
+> **Last Updated:** June 2026 | **Applies to:** JD2021 Map Installer v2
 
 Binary, text, and Unity data formats consumed or produced by the JD2021 Map Installer pipeline.
 

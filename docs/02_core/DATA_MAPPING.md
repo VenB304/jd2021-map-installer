@@ -1,6 +1,6 @@
-# Data Mapping Specification
+﻿# Data Mapping Specification
 
-> **Last Updated:** April 2026 | **Applies to:** JD2021 Map Installer v2
+> **Last Updated:** June 2026 | **Applies to:** JD2021 Map Installer v2
 
 This document details how raw data from multiple source formats (JDU JSON
 payloads, binary CKD files, IPK archives, and JDNext Unity bundles) is

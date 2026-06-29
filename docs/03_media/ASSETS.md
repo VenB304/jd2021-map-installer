@@ -1,6 +1,6 @@
-# Asset HTML Files & Media Pipeline
+﻿# Asset HTML Files & Media Pipeline
 
-> **Last Updated:** April 2026 | **Applies to:** JD2021 Map Installer v2
+> **Last Updated:** June 2026 | **Applies to:** JD2021 Map Installer v2
 
 This page documents the **HTML input workflow** used by JD2021 Map Installer v2 and explains how discovered assets flow through the **media processing pipeline** (`media_processor.py`). V2 also supports Fetch by codename, IPK archive mode, batch directory mode, and manual source folder installs; those modes are documented separately.
 

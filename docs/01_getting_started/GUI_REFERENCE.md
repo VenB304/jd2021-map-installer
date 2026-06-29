@@ -1,6 +1,6 @@
-# GUI Reference
+﻿# GUI Reference
 
-> **Last Updated:** April 2026 | **Applies to:** JD2021 Map Installer v2
+> **Last Updated:** June 2026 | **Applies to:** JD2021 Map Installer v2
 
 This document describes every element of the graphical user interface, as implemented in the PyQt6 codebase under `jd2021_installer/ui/`.
 
@@ -285,11 +285,17 @@ The dialog is organized into **tabbed sections**:
 | Setting | What It Controls |
 |---------|-----------------|
 | FFmpeg / FFprobe / vgmstream paths | Override auto-detected tool locations |
-| 3rd-party tools root | Root directory for JDNext tools |
-| AssetStudio CLI path | Override for Unity asset extraction |
+| 3rd-party tools root | Root directory for third-party tools (`tools/`) |
+| AssetStudio CLI path | Override `tools/AssetStudioModCLI/` path for JDNext extraction |
 | Download timeout / retries / delays | Network behavior tuning |
-| Fetch login & bot timeouts | How long to wait for Discord bot interactions |
-| Preview FPS / startup compensation | Fine-tune preview playback behavior |
+| Fetch login & bot timeouts | How long to wait for Discord login and bot response |
+| Fetch background mode | Run Playwright browser headless (no visible browser window) |
+| Preview video mode | `proxy_low` (fast low-res proxy) or `original` |
+| VP9 handling mode | `reencode_to_vp8` or `fallback_compatible_down` |
+| Video fallback behavior | `fallback_down` or `fallback_up` when quality tier unavailable |
+| AlbumCoach behavior | Multi-coach compositing: `ask`, `always_customize`, `always_default` |
+| JDNext cover behavior | Cover art synthesis: `ask`, `synthesized`, `original` |
+| Convert JDNext gestures | Enable JDNext→Durango gesture compilation (experimental; output quality is inconsistent; disabled by default) |
 | Audio preview fade | Fade duration for preview audio |
 
 ### Integrations Tab
@@ -297,6 +303,7 @@ The dialog is organized into **tabbed sections**:
 | Setting | What It Controls |
 |---------|-----------------|
 | Discord channel URL | Required for Fetch modes — paste the Discord channel URL |
+| Discord bot provider | Select `sev4nty` (default) or `rama` as the bot source |
 | Update In-Game Localization | Import localization JSON into game data |
 | Update Song Database | Import JDNext songdb JSON |
 | Install All JDU Maps | Bulk-install every map from a JDU songdb |

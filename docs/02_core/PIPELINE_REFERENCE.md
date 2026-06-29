@@ -1,10 +1,10 @@
-# Pipeline Reference
+﻿# Pipeline Reference
 
-**Last Updated:** April 2026 | **Applies to:** JD2021 Map Installer v2
+**Last Updated:** June 2026 | **Applies to:** JD2021 Map Installer v2
 
 This document describes the JD2021 Map Installer v2 data pipeline: how map data flows from source ingestion (Fetch JDU, HTML JDU, Fetch JDNext, HTML JDNext, IPK, Batch, Manual) through extraction, normalization, and installation into playable UbiArt engine files.
 
-## Current Behavior Notes (April 2026)
+## Current Behavior Notes (June 2026)
 
 > [NOTE]
 > **IPK-derived video timing may require manual tuning.**
