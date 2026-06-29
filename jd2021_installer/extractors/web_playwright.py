@@ -838,6 +838,8 @@ def _download_url_worker(
                     return fname, str(target)
                 break
 
+    logger.info("Downloading %s...", fname)
+
     # --- Primary: curl --resolve for known CDN mirror ---
     prefer_curl_resolve = "cdn-jdhelper.ramaprojects.ru" in url.lower()
     if prefer_curl_resolve:
