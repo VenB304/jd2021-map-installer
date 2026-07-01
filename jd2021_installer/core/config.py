@@ -85,7 +85,7 @@ class AppConfig(BaseModel):
 
     # Discord Fetch Mode (replaces Node.js JDH_Downloader)
     discord_channel_url: str = ""
-    discord_bot_provider: str = Field(default="sev4nty", pattern=r"^(rama|sev4nty)$")
+    discord_bot_provider: str = Field(default="rama", pattern=r"^(rama|sev4nty)$")
     browser_profile_dir: Path = Path("./.browser-profile")
     fetch_login_timeout_s: int = 300
     fetch_bot_response_timeout_s: int = 60
