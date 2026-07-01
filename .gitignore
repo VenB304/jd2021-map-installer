@@ -35,3 +35,4 @@ build.bat
 # Testing & Coverage
 .coverage
 htmlcov/
+assets/songdb/jdnext/

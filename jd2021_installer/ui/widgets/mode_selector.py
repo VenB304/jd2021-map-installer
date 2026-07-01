@@ -310,6 +310,47 @@ class ModeSelectorWidget(QWidget):
                     inp.setCompleter(completer)
                 except Exception as e:
                     logger.warning(f"Failed to load JDLO codenames for completer: {e}")
+        elif input_key == "fetch":
+            import json
+            root_dir = Path(__file__).resolve().parents[3]
+            jdu_db_path = root_dir / "assets" / "songdb" / "jdu" / "songdb_JDU.json"
+            
+            if jdu_db_path.exists():
+                try:
+                    with open(jdu_db_path, "r", encoding="utf-8") as f:
+                        jdu_data = json.load(f)
+                    
+                    # Provide suggestions for Fetch JDU
+                    suggestions = list(jdu_data.keys())
+                            
+                    completer = MultiCompleter(list(set(suggestions)), inp)
+                    completer.setCaseSensitivity(Qt.CaseSensitivity.CaseInsensitive)
+                    completer.setFilterMode(Qt.MatchFlag.MatchContains)
+                    completer.popup().setObjectName("completerPopup")
+                    inp.setCompleter(completer)
+                except Exception as e:
+                    logger.warning(f"Failed to load JDU codenames for completer: {e}")
+        elif input_key == "jdnext":
+            import json
+            root_dir = Path(__file__).resolve().parents[3]
+            jdnext_db_path = root_dir / "assets" / "songdb" / "jdnext" / "songdb-JDNext.json"
+            
+            if jdnext_db_path.exists():
+                try:
+                    with open(jdnext_db_path, "r", encoding="utf-8") as f:
+                        jdnext_data = json.load(f)
+                    
+                    # Extract original CamelCase map_names from the synthesized index
+                    index_data = jdnext_data.get("index", {})
+                    suggestions = list({entry["map_name"] for entry in index_data.values() if isinstance(entry, dict) and "map_name" in entry})
+                            
+                    completer = MultiCompleter(list(set(suggestions)), inp)
+                    completer.setCaseSensitivity(Qt.CaseSensitivity.CaseInsensitive)
+                    completer.setFilterMode(Qt.MatchFlag.MatchContains)
+                    completer.popup().setObjectName("completerPopup")
+                    inp.setCompleter(completer)
+                except Exception as e:
+                    logger.warning(f"Failed to load JDNext codenames for completer: {e}")
 
         inp.textChanged.connect(lambda t: self.target_selected.emit(t))
         row.addWidget(inp)

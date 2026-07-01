@@ -1,214 +1,161 @@
-# Camera Gesture Remediation Plan
+# Camera Gesture Remediation: Research Log
 
-Last updated: 2026-05-05
+Last updated: 2026-06-29
 
-This document turns the console-side camera gesture research into an implementation plan for the JD2021 Map Installer. The goal is not just to understand the mismatch, but to describe how the installer pipeline should be corrected so JDNext camera gestures convert into Kinect gestures with stable scoring behavior.
+> [!WARNING]
+> **Branch abandoned — experimental status.** The dedicated `feat/jdnext-gesture` branch where this work was primarily developed was abandoned without being merged to master. The gesture compiler modules (`gesture_compiler.py`, `biomechanics.py`, `hmm_generator.py`) are present in master as an **opt-in experimental feature** (`convert_jdnext_gestures = False` by default). Output quality is known to be imperfect — compiled `.gesture` binaries are structurally valid but scoring consistency varies significantly by map.
+>
+> The production-ready workaround for JDNext maps without native gestures is **MSM mirroring**: the pipeline automatically copies the right-hand controller (`.msm`) track to the gesture track (`.gesture`) 1:1 when native Kinect gesture data is absent. This preserves original controller choreography and resolves the `0/0` gold moves grading issue on PC/Switch.
 
-## Problem Statement
+---
 
-The current JDNext conversion pipeline produces two visible failure modes:
+## Problem Statement (Original)
 
-1. Some converted maps behave like generic-perfect maps, where the scoring engine mostly returns Perfect results and the gesture is too forgiving.
-2. Other converted maps behave like miss/ok-heavy maps, where the same style of choreography produces weak or inconsistent recognition.
+The JDNext camera/phone gesture conversion pipeline produced two visible failure modes:
 
-The likely issue is not a single broken file. It is more likely a mismatch between:
+1. **Over-forgiving:** Some converted maps behaved like generic-perfect maps — the scoring engine mostly returned Perfect results regardless of choreography execution.
+2. **Under-forgiving:** Other maps produced miss/ok-heavy results, where the same style of choreography yielded weak or inconsistent recognition.
 
-- the console-side camera gesture model,
-- the JDNext joint data that we extract,
-- and the installer-side assumptions used when building Durango/Kinect gesture binaries.
+The root cause was not a single broken file but a systematic mismatch between:
+- the Durango (Xbox One) Kinect gesture model,
+- the 2D joint data extracted from JDNext camera bundles,
+- and the installer-side assumptions used when building Durango `.gesture` binaries.
 
-## Evidence To Anchor The Fix
+---
 
-The console-side dump suggests the relevant camera scoring stack is centered around:
+## Console-Side Gesture Engine (Research Summary)
 
+The Durango `.gesture` file is an **AdaBoost ensemble classifier** — not a Hidden Markov Model or a plain joint coordinate timeline. It contains:
+
+- A set of **decision stumps**, each testing a single feature (joint velocity, acceleration, bone angle, joint torque, muscle force, or optical flow magnitude) against a threshold pair (`ta`, `tb`).
+- Each stump carries a **weight** (`ta` sign encodes pass/fail direction; `tb` = secondary threshold).
+- The ensemble vote determines the scoring output (Perfect / OK / Miss).
+
+**36 feature types** are addressed by stumps. Types 18-23 (infrared optical flow, `TimeSpaceAngles`) depend on hardware not available in the PC/camera scoring path and must be pruned.
+
+**Phone/camera scoring bypass:** When phone or camera scoring is active (`JD_PhoneScoringData`), the engine **completely bypasses the `.gesture` file** and reads directly from 3D skeletal coordinates serialized in `.msm` files. This means:
+- Modifying gesture thresholds has **zero effect** on camera scoring behavior.
+- The `.gesture` file is only consumed by the Kinect/controller scoring path.
+- JDNext gesture conversion targets the **Kinect adapter path**, not camera/phone scoring.
+
+The console-side scoring stack for camera/phone:
 - `PlayerModel`
-- `PlayerScoringData`
-- `PlayerScoringDebugConfig`
+- `PlayerScoringData` / `PlayerScoringDebugConfig`
 - `PhoneCameraScoringSkeletonExtractModel`
-- `BlazePoseModelRsc`
-- `PoseNetModelRsc`
-- `ImageGestureRecognizer`
-- `GestureRecognizer`
+- `BlazePoseModelRsc` / `PoseNetModelRsc`
+- `ImageGestureRecognizer` → `GestureRecognizer`
 
-The installer-side pipeline currently makes several strong assumptions in `gesture_compiler.py`:
+---
 
-- JDNext camera constraints are converted into Kinect-style edge thresholds.
-- Near-zero constraints are filtered through a dead-zone.
-- A template donor is used for the structural gesture shell.
-- Scoring edges, gating edges, and parameter blocks are handled separately.
+## Implemented Fixes
 
-The remediation plan should treat these as the main surfaces to validate and, if needed, revise.
+### Phase 1: Canonical Model Documentation
 
-## Likely Mismatch Categories
+The joint model, scale factors, and edge classification rules are now documented in `gesture_compiler.py` module-level constants:
 
-### 1. Joint Mapping Mismatch
+```python
+_JDNEXT_TO_DURANGO_JOINT_MAP = {
+    1: 20,   # ShouldersCenter → SpineShoulder
+    2: 4,    # ShoulderLeft
+    3: 8,    # ShoulderRight
+    4: 5, 5: 9,      # Elbows
+    6: 6, 7: 10,     # Wrists
+    8: 0,    # HipsCenter → SpineBase
+    9: 12, 10: 16,   # Hips
+    11: 13, 12: 17,  # Knees
+    13: 14, 14: 18,  # Ankles
+}
 
-The first thing to verify is whether the installer maps JDNext joints to Kinect joints the same way the console does.
+# JDNext [-1, +1] → Durango [-3, +3]; scale derived from MakeItJingle Rosetta Stone
+_JDNEXT_SCALE_FACTOR = 2.28
+```
 
-What to check:
+The 13-float Kinect parameter block is calibrated from real Kinect gesture files:
+```python
+_KINECT_MEAN_PARAMS = (
+    739.969, 0.049, 0.000,
+    0.332, 0.459, 0.360, 0.030,
+    -0.653, -0.333, -0.475, 0.060,
+    144.714, 58.004,
+)
+```
 
-- whether the console uses the same 14 practical joints the installer assumes,
-- whether center joints are interpolated the same way,
-- whether any joints are excluded or remapped during skeleton extraction,
-- whether the installer is placing constraints on the same Kinect joint IDs that the scoring engine expects.
+### Phase 2: Z-Axis Recovery (biomechanics.py)
 
-Implementation impact if confirmed:
+JDNext camera data is 2D. Full 3D reconstruction is performed in `installers/biomechanics.py` using analytical forward kinematics:
 
-- update the joint map used by gesture compilation,
-- keep the mapping explicit and data-driven,
-- and add a report that shows how many constraints land on each joint.
+- **Root placement:** Joint 8 (HipsCenter) depth estimated from torso-to-viewport ratio and Kinect view range (1.0–4.0 m).
+- **Single-pass tree traversal:** Each child joint's Z coordinate is recovered from the known parent Z + anthropometric bone length (`STANDARD_BONES` table, referenced to H_REF = 1.70 m) using foreshortening: `missing_sq = target_len² − (Δx² + Δy²)`.
+- **Symmetry handling:** Forward/backward-facing direction is detected from shoulder-to-hip vector sign.
+- **Smoothing:** Savitzky-Golay filter (window=7, polyorder=2) applied to all joint trajectories before derivative computation.
 
-### 2. Scaling Mismatch
+This replaces the originally planned L-BFGS-B global optimization approach, achieving equivalent Z recovery approximately 2000× faster.
 
-The installer currently relies on a fixed camera-to-Kinect scaling assumption. If that scale is wrong, the converted thresholds will drift toward either overly permissive or overly strict matching.
+### Phase 3: Simulated Kinetics (biomechanics.py)
 
-What to check:
+`installers/biomechanics.py` computes the full kinematic feature set required by Durango stumps:
 
-- whether the console-side conversion from camera landmarks to scoring space uses a consistent scale,
-- whether that scale differs for X and Y coordinates,
-- whether the installer should use one global scale, separate axis scales, or no scale at all for specific edge classes.
+- **Velocity / Acceleration:** First and second derivatives of Savitzky-Golay-smoothed coordinates.
+- **Angular velocity:** Cross product of sequential limb direction vectors.
+- **Angular acceleration:** Temporal gradient of angular velocity.
+- **Torque:** `I * α` where `I = m * r²` (moment of inertia for each limb segment).
+- **Muscle force:** `Torque / moment_arm` (moment arm = 0.05 m).
+- **DiffMuscleForce:** Temporal difference of MuscleForce.
 
-Implementation impact if confirmed:
+### Phase 4: Ensemble Re-weighting and Edge Classification (gesture_compiler.py)
 
-- centralize the scale factor in one place,
-- remove competing scale constants,
-- and validate the resulting threshold distribution against known-good gesture files.
+**Pruned stumps (Pass 1 — weight redistribution):**
+- Types 18-23 (optical flow, TimeSpaceAngles) depend on unavailable Kinect IR hardware.
+- Pruned stumps receive `ta = 0.0`, removing their vote.
+- A gamma multiplier `γ = total_original_weight / total_surviving_weight` is applied to surviving kinematic/torque stumps to preserve ensemble calibration.
 
-### 3. Dead-Zone Mismatch
+**Edge classification:**
+- **Scoring edges:** `|ta| ≤ 1.0` — quantized to 0.1 steps using `_QUANT_WEIGHTS` distribution (bell-curve matching real Kinect files).
+- **Gating edges:** `|ta| > 10.0` — structural veto gates; kept immutable from donor template.
+- **Boundary edges:** `ta ∈ [1, 10]` — treated as scoring edges with moderate weight.
 
-The current pipeline filters near-zero camera constraints. That can be correct if those values are padding or neutral noise, but it is risky if the console scoring model still depends on low-amplitude movement for intermediate judgments.
+**Adaptive dead-zone per joint:**
+- Zone = `min(10% of joint range, 0.14)`, floor = 0.03.
+- Filters micro-jitter and padding/null constraints.
+- Configurable by gesture type; constraint counts are logged for diagnostics.
 
-What to check:
+**Structural gating detection:**
+- Activity coefficient `k` scales from 0.3 (slow tempo) to 0.7 (fast tempo) based on median velocity.
+- Variance threshold = `mean_variance + k * std_variance`.
+- High-variance joints (structurally significant motion) → synthetic gating edges (`|ta| = ±15.0`).
+- Low-variance joints → scored edges with gamma-scaled thresholds.
 
-- whether the console-side stack discards or retains low-value movement cues,
-- whether some JDNext gestures carry meaningful low-amplitude pose data,
-- whether the dead-zone is too aggressive for sparse gestures.
+**Double padding on gating edges:**
+- Native gating edges from the donor template receive `2×` padding on both edge ends.
+- Synthetic gating edges (promoted from active scoring joints) also receive `2×` padding.
+- Prevents random miss penalties at gate boundaries while maintaining structural tolerance.
 
-Implementation impact if confirmed:
+### Phase 5: Validation (Inconclusive)
 
-- make dead-zone behavior configurable by gesture type or strictness,
-- preserve a diagnostic count of filtered constraints,
-- and avoid using a single hard cutoff without visibility.
+Validation against reference maps showed partial improvement over the original failure modes, but results remained inconsistent across songs. Some maps produced more appropriate scoring variation; others still showed generic-perfect or miss-heavy behavior. The branch was abandoned at this point — the compiled `.gesture` files are structurally valid but the scoring model does not generalize reliably across the variety of JDNext choreographies.
 
-### 4. Structural Gate Mismatch
+The diagnostic output (joint counts before/after filtering, per-joint constraint distribution, scoring vs. gating edge counts, parameter block values) is logged at `detailed` level during compilation and can be used as a starting point if the effort is resumed.
 
-The installer preserves gating edges in the donor template, which is likely correct in principle. The remaining question is whether the selected donor structure is close enough to the source map, and whether the state-to-joint relationships are being preserved consistently.
+---
 
-What to check:
+## Configuration
 
-- whether the donor template structure matches the target map’s gesture shape,
-- whether state IDs and edge groups are preserved correctly,
-- whether gating edges are ever being altered by side effects in later steps.
+Gesture compilation is **opt-in** (`convert_jdnext_gestures = False` by default in `AppConfig`). To enable:
 
-Implementation impact if confirmed:
-
-- keep gating edges immutable,
-- document which edge classes are donor-derived versus JDNext-derived,
-- and add a structural integrity check after compilation.
-
-### 5. Parameter Block Mismatch
-
-The 13-float gesture parameter block should reflect the source gesture’s timing and complexity, not just a copied donor baseline.
-
-What to check:
-
-- whether the console-side model suggests a stable parameter range,
-- whether the installer’s synthesized parameters fall outside that range,
-- whether timing-derived values correlate with scoring quality.
-
-Implementation impact if confirmed:
-
-- normalize parameter synthesis around a single source model,
-- keep timing-derived fields separate from spatial-threshold fields,
-- and test the parameter block independently from the edge table.
-
-## Implementation Plan
-
-### Phase 1: Document the Canonical Model
-
-Produce a short internal reference that states:
-
-- which console-side symbols are treated as authoritative,
-- which installer assumptions are currently inferred,
-- and which values need direct validation before code changes.
-
-Deliverable:
-
-- a compact gesture model reference that the installer code can be checked against.
-
-### Phase 2: Add Conversion Diagnostics
-
-Before changing behavior, add diagnostics to the compiler path so each conversion can report:
-
-- joint counts before and after filtering,
-- per-joint distribution of constraints,
-- threshold value ranges after scaling,
-- number of scoring edges versus gating edges,
-- parameter block values written to the donor/template.
-
-Deliverable:
-
-- a debug summary that can be compared across good and bad maps.
-
-### Phase 3: Consolidate Conversion Rules
-
-Reduce the chance of mixed behavior by ensuring the pipeline uses one documented conversion rule set for:
-
-- joint mapping,
-- threshold scaling,
-- dead-zone filtering,
-- donor selection,
-- and parameter synthesis.
-
-Deliverable:
-
-- one clearly defined gesture compilation path, with fallback logic documented separately.
-
-### Phase 4: Validate Against Representative Maps
-
-Test the revised pipeline against at least two reference cases:
-
-- one map that currently scores mostly Perfect,
-- one map that currently trends toward Miss/OK results.
-
-Compare:
-
-- threshold distributions,
-- filtered joint counts,
-- edge class balance,
-- and post-install scoring behavior.
-
-Deliverable:
-
-- a comparison table that shows which change affected the scoring outcome.
-
-### Phase 5: Lock the Behavior Into Tests And Docs
-
-Once the mismatch is resolved, add regression coverage and document the final rule set.
-
-Deliverable:
-
-- tests for the conversion path,
-- a short operator note describing the expected scoring profile,
-- and a follow-up note for any map classes that still need special handling.
-
-## Acceptance Criteria
-
-The remediation is complete when:
-
-- JDNext camera gestures compile through one documented conversion path.
-- The console-side joint/scoring assumptions and the installer-side mapping rules agree on the same joint model.
-- The resulting converted maps no longer split into generic-perfect-only versus miss/ok-heavy behavior without an explicit map-specific reason.
-- The installer can report why a gesture was filtered, scaled, or classified in a way that is traceable for debugging.
-
-## Recommended Output For The Final Implementation Document
-
-When this work is finished, the final documentation should include:
-
-- the console-side gesture model summary,
-- the exact installer-side mismatch that was corrected,
-- the code paths that were changed,
-- the validation maps that were used,
-- and the residual limitations, if any.
-
-That final document should read as an implementation plan and remediation record, not as a general research note.
+1. Set `convert_jdnext_gestures = true` in Settings → Advanced.
+2. Ensure `gesture_template_path` points to a valid Durango donor template (default: `./assets/gesture_templates/durango_template.gesture`).
+
+> [!IMPORTANT]
+> JDNext camera/phone scoring uses `.msm` files via `JD_PhoneScoringData` and **bypasses the `.gesture` file entirely**. Gesture compilation only affects the Kinect adapter scoring path. For maps played with phone or camera input, `.gesture` quality has no bearing on scoring behavior.
+
+---
+
+## Residual Limitations
+
+| Limitation | Status |
+|------------|--------|
+| Scoring consistency varies significantly by map; output quality is imperfect | Branch abandoned — known issue |
+| Camera/phone scoring path is not affected by `.gesture` quality | By design — console-side bypass via `.msm` / `JD_PhoneScoringData` |
+| ORBIS `.gesture` files remain substituted (digit-stripping workaround) | Active gap — see [KNOWN_GAPS.md](KNOWN_GAPS.md) |
+| Optical flow features (types 18-23) cannot be recovered without IR hardware | By design — pruned and weight-redistributed |
+| JDNext maps without skeleton data fall back to donor template only | Expected — sparse gesture data handled by structural gating |

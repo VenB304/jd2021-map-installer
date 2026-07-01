@@ -1,6 +1,6 @@
-# JDU Unused Data: Improvement Opportunities
+﻿# JDU Unused Data: Improvement Opportunities
 
-> **Last Updated:** April 2026 | **Applies to:** JD2021 Map Installer v2
+> **Last Updated:** June 2026 | **Applies to:** JD2021 Map Installer v2
 
 This document catalogs data available in JDU (Just Dance Unlimited) server payloads that the
 V2 installer pipeline either already consumes, intentionally ignores, or only partially uses.
@@ -223,4 +223,4 @@ limitations/operations documentation and troubleshooting runbooks.
 ---
 
 *Baseline analysis sources: GetGetDown reference map and sampled JDU payload sets. This page is
-status-normalized for V2 as of April 2026.*
+status-normalized for V2 as of June 2026.*

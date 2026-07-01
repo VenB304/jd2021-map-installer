@@ -1,6 +1,6 @@
-# Known Gaps and Remaining Work
+﻿# Known Gaps and Remaining Work
 
-**Last Updated:** April 2026 | **Applies to:** JD2021 Map Installer v2
+**Last Updated:** June 2026 | **Applies to:** JD2021 Map Installer v2
 
 This document describes known limitations, unresolved issues, and potential improvements identified through code analysis.
 
@@ -8,18 +8,14 @@ This document describes known limitations, unresolved issues, and potential impr
 
 ## Active Gaps
 
-### 1. Intro AMB Is Temporarily Disabled/Constrained
+### 1. Mid-Song AMB Sounds Remain Silent (Moved from Active Gap #4)
 
-**Status:** Temporary mitigation in active use; behavior is intentionally limited.
+**Status:** By design; source data unavailable.
 
-V2 currently applies an emergency AMB policy to avoid unstable intro behavior. In practical terms, intro AMB attempts are not currently reliable and users should expect silent intro placeholders in many cases.
+AMB sounds with `SoundSetClip StartTime > 0` are kept as silent WAV placeholders because mid-song AMB audio is hosted remotely by Ubisoft CDN and cannot be fetched by the installer.
 
-**Impact:**
-- AMB intro output does not currently represent a fully restored parity path.
-- Mid-song AMB assets remain unavailable from JDU-hosted sources.
-- Existing AMB extraction/wrapper infrastructure still matters, but final audible intro behavior is currently constrained by policy.
-
-**Operator guidance:** Document and communicate this as expected behavior, not a per-map install failure.
+> [!NOTE]
+> **Intro AMB is now resolved.** The `INTRO_AMB_ATTEMPT_ENABLED` flag is `True` by default and the pipeline generates active intro AMB audio for all maps with `videoStartTime < 0`. See [AUDIO_TIMING.md](../03_media/AUDIO_TIMING.md) for full details. This was previously documented as a temporary mitigation but has since been fully implemented.
 
 ### 2. IPK Video Offset Is Approximate
 
@@ -45,33 +41,25 @@ Video lead-in varies per map (0s for TGIF, about 1.7s for Koi, about 1.2s for Mr
 - Maps are registered in `SkuScene_Maps_PC_All.isc`, not in `SkuScene_Maps_NX_All.isc`.
 - No user-facing preference/flag to explicitly opt into NX mode.
 
-### 4. Mid-Song AMB Sounds Remain Silent
-
-**Status:** By design.
-
-AMB sounds with `SoundSetClip StartTime > 0` are kept as silent WAV placeholders when real audio is hosted remotely and cannot be fetched.
-
-For IPK maps, embedded AMB WAV CKDs are still extracted when present. Orphan WAV CKDs receive synthetic wrappers. This improves structural completeness but does not remove the source-audio availability constraint.
-
-### 5. No Multi-Audio-Track Support
+### 4. No Multi-Audio-Track Support
 
 **Status:** Known limitation.
 
 Maps with more than one audio stream (for example alternate language tracks) are not supported. The pipeline assumes one primary OGG/WAV stream per map.
 
-### 6. ORBIS Gesture Format Incompatibility
+### 5. ORBIS Gesture Format Incompatibility
 
 **Status:** Mitigated by substitution, not fully resolved.
 
 PlayStation (ORBIS) `.gesture` files use a binary format incompatible with the PC Kinect adapter. The pipeline substitutes ORBIS-exclusive gesture variants by stripping trailing digits and copying the base Kinect gesture. This works in many cases but may be inaccurate for ORBIS-exclusive choreography variants.
 
-### 7. mapsObjectives.ilu Is Not Patched
+### 6. mapsObjectives.ilu Is Not Patched
 
 **Status:** Not required for core playability, but may affect UI.
 
 `mapsObjectives.ilu` ties maps to unlock conditions. The `Status = 3` override is sufficient to make maps playable, but objective-related UI behaviors may still appear for maps referenced there.
 
-### 8. Runtime Dependency Fragility
+### 7. Runtime Dependency Fragility
 
 **Status:** Operational risk.
 
@@ -81,6 +69,16 @@ The V2 pipeline depends on local external tooling and runtime bundles, especiall
 - Playwright Chromium runtime for Fetch workflows.
 
 Missing or partially installed dependencies cause degraded paths, fallback behavior, or outright feature failure (especially Fetch, preview/decode, and some conversion steps).
+
+### 8. JDNext Gesture Compilation Quality
+
+**Status:** Experimental; branch abandoned.
+
+A JDNext→Durango Kinect gesture compilation pipeline exists across `gesture_compiler.py`, `biomechanics.py`, and `hmm_generator.py`, but the dedicated `feat/jdnext-gesture` branch was abandoned without being merged. Output quality is known to be inconsistent across maps, so the feature is disabled by default (`convert_jdnext_gestures = False`).
+
+**Workaround (shipped):** `tape_converter.py` automatically mirrors the `.msm` controller track to the `.gesture` track 1:1 when native Kinect gesture data is absent, resolving the `0/0` gold moves grading issue on PC/Switch.
+
+See [CAMERA_GESTURE_REMEDIATION_PLAN.md](CAMERA_GESTURE_REMEDIATION_PLAN.md) for the full research log.
 
 ---
 
@@ -99,9 +97,6 @@ The GUI offers cleanup prompts after "Apply & Finish". Equivalent cleanup option
 
 ### Video Lead-In Estimation for IPK Maps
 Investigate ffprobe/keyframe or scene-analysis heuristics to estimate video lead-in automatically and reduce manual VIDEO_OFFSET tuning.
-
-### AMB Policy Recovery Plan
-Define and validate a staged re-enable strategy for intro AMB behavior (parity checks, regression maps, and fallback rules) before removing the temporary mitigation policy.
 
 ---
 
@@ -133,13 +128,17 @@ The following items from the original findings have been implemented in the code
 
 **Resolution:** The CKD texture decoder now detects X360 texture payloads (52-byte GPU descriptor), performs 16-bit word byte-swap, and applies Xenia-derived tiled-to-linear conversion (Tiled2D algorithm) for DXT1/DXT3/DXT5 block-compressed formats.
 
-### Orphan AMB WAV CKD Handling (Resolved, but currently masked)
+### Intro AMB Generation (Resolved)
+
+**Original issue:** Maps with a pre-roll silence window (`videoStartTime < 0`) played silent audio from `t=0` until the WAV started. No mechanism existed to fill the gap.
+
+**Resolution:** `installers/ambient_processor.py` and `installers/media_processor.py` now generate active intro AMB audio using FFmpeg. The `INTRO_AMB_ATTEMPT_ENABLED` flag is `True` by default. Audio content is extracted from the map's OGG source, trimmed and delayed to align with the video pre-roll window, and written to `Audio/AMB/amb_{mapname}_intro.wav` with matching `.ilu` / `.tpl` wrappers. See [AUDIO_TIMING.md](../03_media/AUDIO_TIMING.md) for the full timing model.
+
+### Orphan AMB WAV CKD Handling (Resolved)
 
 **Original issue:** Some IPK maps (e.g., Koi) contained `amb_*_intro.wav.ckd` files without matching `amb_*_intro.tpl.ckd` templates, causing AMB audio to be silently skipped.
 
 **Resolution:** Step 09 (`step_09_process_amb`) detects orphan WAV CKDs and generates synthetic TPL and ILU wrappers.
-
-**Current V2 note:** Intro AMB playback is currently under temporary mitigation policy (see Active Gap #1). The orphan wrapper fix remains correct infrastructure, but expected audible intro behavior is currently constrained by that policy.
 
 ### Karaoke Binary Field Order (Resolved)
 
@@ -152,3 +151,11 @@ The following items from the original findings have been implemented in the code
 **Original issue:** Autodance stub wrote empty `video_structure = {}`, causing game assertion: "no valid video structure for song".
 
 **Resolution:** `installers/game_writer.py` now generates a minimal valid `JD_AutodanceVideoStructure` with all required fields.
+
+### MSM-to-Gesture Mirroring (Resolved)
+
+**Original issue:** JDNext maps ported without native Kinect `.gesture` files scored `0/0` gold moves on PC/Switch because the gesture track was empty.
+
+**Resolution:** `installers/tape_converter.py` (`_mirror_msm_to_gesture_clips`) automatically mirrors the right-hand `.msm` controller track to the `.gesture` track 1:1 when native Kinect gesture data is absent. This preserves original controller choreography, aligns scorable zones with scrolling pictograms, and resolves the `0/0` grading issue.
+
+See gap #8 for the remaining gesture *compilation quality* issue (experimental JDNext→Kinect conversion).

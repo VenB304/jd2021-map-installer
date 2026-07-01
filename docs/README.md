@@ -1,6 +1,6 @@
-# Documentation Index
+﻿# Documentation Index
 
-> Last Updated: April 2026
+> Last Updated: June 2026
 
 This is the central navigation page for JD2021 Map Installer documentation.
 
@@ -39,9 +39,10 @@ This is the central navigation page for JD2021 Map Installer documentation.
 ## Manual Porting and Gap Tracking
 
 - [Manual JDU Porting Guide](05_guides/MANUAL_JDU_PORTING_GUIDE.md)
+- [Manual JDNext Porting Guide](05_guides/MANUAL_JDNEXT_PORTING_GUIDE.md)
 - [Manual IPK Porting Guide](05_guides/MANUAL_IPK_PORTING_GUIDE.md)
 - [Known Gaps](06_research/KNOWN_GAPS.md)
-- [Camera Gesture Remediation Plan](06_research/CAMERA_GESTURE_REMEDIATION_PLAN.md)
+- [Camera Gesture Remediation Log](06_research/CAMERA_GESTURE_REMEDIATION_PLAN.md) — JDNext→Durango gesture compilation (experimental; branch abandoned)
 - [JDU Unused Data Opportunities](06_research/JDU_UNUSED_DATA_OPPORTUNITIES.md)
 - [Third-Party Tools](04_reference/THIRD_PARTY_TOOLS.md)
 

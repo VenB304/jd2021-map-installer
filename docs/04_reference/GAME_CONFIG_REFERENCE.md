@@ -1,6 +1,6 @@
-# Game Configuration Reference
+﻿# Game Configuration Reference
 
-> **Last Updated:** April 2026 | **Applies to:** JD2021 Map Installer v2
+> **Last Updated:** June 2026 | **Applies to:** JD2021 Map Installer v2
 
 This document maps the configuration files inside the JD2021 PC game data directory and the V2 installer's own configuration surfaces. It is a reference for understanding what each file controls and which files are relevant to modding.
 
@@ -46,6 +46,7 @@ The `AppConfig` class (Pydantic `BaseModel`) defines all runtime parameters for 
 | `cache_directory` | `Path` | `./cache` | General cache directory |
 | `temp_directory` | `Path` | `./temp` | Temporary working directory for extraction |
 | `app_icon_path` | `Path` | `./assets/app_icon.jpg` | Application icon for UI window |
+| `gesture_template_path` | `Path` | `./assets/gesture_templates/durango_template.gesture` | Durango Kinect gesture template used as structural donor for JDNext gesture compilation |
 
 ### Video Quality
 
@@ -72,7 +73,7 @@ Quality is resolved by descending fallback — if `ULTRA_HD` is unavailable, the
 |-----------|------|---------|---------|
 | `skip_preflight` | `bool` | `false` | Skip pre-install validation checks |
 | `suppress_offset_notification` | `bool` | `false` | Suppress audio/video offset notifications |
-| `cleanup_behavior` | `str` | `ask` | Post-install cleanup: `ask`, `delete`, or `keep` |
+| `cleanup_behavior` | `str` | `ask` | Post-install cleanup: `ask`, `delete`, `keep`, or `aggressive` |
 | `locked_status_behavior` | `str` | `ask` | Locked map status handling: `ask`, `force3`, or `keep` |
 | `show_preflight_success_popup` | `bool` | `true` | Show popup on successful preflight |
 | `show_install_summary_popup` | `bool` | `true` | Show summary dialog after install |
@@ -86,6 +87,10 @@ Quality is resolved by descending fallback — if `ULTRA_HD` is unavailable, the
 | `show_window_size_overlay` | `bool` | `false` | Show debug overlay with window dimensions |
 | `style_debug_mode` | `bool` | `false` | Enable CSS debug borders in UI |
 | `window_size_overlay_timeout_ms` | `int` | `1100` | Overlay auto-hide timeout |
+| `enable_legacy_sync_refinement` | `bool` | `false` | Enable legacy sync refinement UI mode |
+| `convert_jdnext_gestures` | `bool` | `false` | Enable JDNext→Durango gesture compilation (experimental; output quality is inconsistent; requires `gesture_template_path`) |
+| `albumcoach_behavior` | `str` | `ask` | Multi-coach compositing behavior: `ask`, `always_customize`, or `always_default` |
+| `jdnext_cover_behavior` | `str` | `ask` | JDNext cover art synthesis behavior: `ask`, `synthesized`, or `original` |
 
 ### Download Settings
 
@@ -105,8 +110,7 @@ Quality is resolved by descending fallback — if `ULTRA_HD` is unavailable, the
 | `max_jd_version` | `int` | `2021` | Maximum supported Just Dance version |
 | `min_jd_version` | `int` | `2014` | Minimum supported Just Dance version |
 | `preview_fps` | `int` | `25` | Frame rate for preview rendering |
-| `preview_startup_compensation_ms` | `float` | `100.0` | Startup delay compensation for preview playback |
-| `preview_only_audio_offset_ms` | `float` | `-125.0` | Audio offset for preview-only mode |
+| `preview_only_audio_offset_ms` | `float` | `0.0` | Audio offset applied in preview-only mode (ms) |
 | `audio_preview_fade_s` | `float` | `2.0` | Fade duration for audio preview transitions |
 
 ### Discord Fetch Mode
@@ -114,9 +118,11 @@ Quality is resolved by descending fallback — if `ULTRA_HD` is unavailable, the
 | Parameter | Type | Default | Purpose |
 |-----------|------|---------|---------|
 | `discord_channel_url` | `str` | `""` | Discord channel URL for Fetch mode bot interaction |
+| `discord_bot_provider` | `str` | `"sev4nty"` | Bot provider for Fetch mode: `"sev4nty"` or `"rama"` |
 | `browser_profile_dir` | `Path` | `./.browser-profile` | Persistent browser profile for Playwright sessions |
 | `fetch_login_timeout_s` | `int` | `300` | Maximum time to wait for Discord login (seconds) |
 | `fetch_bot_response_timeout_s` | `int` | `60` | Maximum time to wait for bot response (seconds) |
+| `fetch_background_mode` | `bool` | `false` | Run Playwright browser headless (no visible browser window) |
 
 ### Update Checker
 
@@ -137,13 +143,15 @@ Quality is resolved by descending fallback — if `ULTRA_HD` is unavailable, the
 | `ffmpeg_hwaccel` | `str` | `auto` | Hardware acceleration mode: `auto` or `none` |
 | `vp9_handling_mode` | `str` | `fallback_compatible_down` | VP9 video handling: `reencode_to_vp8` or `fallback_compatible_down` |
 | `preview_video_mode` | `str` | `original` | Preview video source: `proxy_low` or `original` |
+| `video_fallback_behavior` | `str` | `fallback_down` | How missing/incompatible quality tiers fall back: `fallback_down` or `fallback_up` |
+| `jdlo_auth_path` | `Path?` | `None` | Path to JDLO authentication token file (required for Fetch JDLO mode) |
 
 ### Scene Platform Preference
 
 The `SCENE_PLATFORM_PREFERENCE` constant defines the priority order for resolving platform-specific scene files:
 
 ```python
-SCENE_PLATFORM_PREFERENCE = ["DURANGO", "SCARLETT", "NX"]
+SCENE_PLATFORM_PREFERENCE = ["DURANGO", "NX", "PC", "ORBIS", "SCARLETT", "PROSPERO", "WIIU", "X360"]
 ```
 
 ---
@@ -304,9 +312,9 @@ All `.isg` and `.ilu` files are plain-text Lua table syntax, directly editable w
 These points are current V2 behavior and should be treated as operational constraints when using this reference with mod installs.
 
 ### Ambient (AMB)
-- Intro AMB handling is currently in a temporary mitigation state in V2.
-- Intro AMB attempt logic is intentionally disabled globally; silent intro placeholder behavior is expected until redesign/parity validation is completed.
-- AMB path resolution remains sensitive to source folder shape and casing conventions.
+- Intro AMB generation is active and enabled by default (`INTRO_AMB_ATTEMPT_ENABLED = True`).
+- The pipeline generates intro AMB audio for all maps with `videoStartTime < 0`. See [AUDIO_TIMING.md](../03_media/AUDIO_TIMING.md).
+- AMB path resolution remains sensitive to source folder shape and casing conventions; mixed-case layouts use case-insensitive fallback resolution.
 
 ### Audio/Video Timing
 - IPK-derived `videoStartTime` remains approximate by design because source metadata often does not reliably encode lead-in.
@@ -324,7 +332,7 @@ These points are current V2 behavior and should be treated as operational constr
 - JDNext bundle extraction uses a dual-strategy approach (AssetStudio → UnityPy or vice versa).
 - Encrypted bundles are detected but not automatically decrypted.
 - Musictrack and tape data are synthesized from Unity MonoBehaviour JSON, not read from pre-existing CKD files.
-- AssetStudioModCLI resolution checks: `assetstudio_cli_path` config → `tools/Unity2UbiArt/...` → `tools/AssetStudioModCLI/...` → `tools/AssetStudio/...`.
+- AssetStudioModCLI resolution order: `assetstudio_cli_path` config → `tools/AssetStudioModCLI/...` → `tools/AssetStudio/...` (legacy fallback).
 - Default Unity version assumption for AssetStudio: `2021.3.9f1`; UnityPy fallback version: `2021.3.0f1`.
 
 ### Pipeline Context

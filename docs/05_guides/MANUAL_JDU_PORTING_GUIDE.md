@@ -1,6 +1,6 @@
-# Manual Map Porting Guide — JDU (Just Dance 2021 PC)
+﻿# Manual Map Porting Guide — JDU (Just Dance 2021 PC)
 
-> **Last Updated:** April 2026 | **Applies to:** JD2021 Map Installer v2
+> **Last Updated:** June 2026 | **Applies to:** JD2021 Map Installer v2
 
 This guide provides a technical breakdown of manually porting a Just Dance Unlimited (JDU) map into the Just Dance 2021 PC engine (UbiArt). The automated V2 installer pipeline handles this end-to-end in GUI workflows (Fetch JDU, HTML JDU, Batch, Manual source), but this guide remains useful when you need to inspect generated output, reproduce one step manually, or debug parity-sensitive edge cases.
 
@@ -154,7 +154,7 @@ ffmpeg -i input.ogg -ss 2.060 -ar 48000 output.wav
 If the sample rate isn't exactly 48,000Hz, the `.trk` markers will drift, causing massive desync.
 
 ### 4.3 Generate Intro AMB
-> **V2 Status (April 2026):** Automated intro AMB attempts are temporarily disabled in the current installer mitigation policy. In standard V2 installs, silent intro placeholders are expected.
+> **V2 Status:** Automated intro AMB generation is **active and enabled by default** in the pipeline. The installer automatically generates intro AMB audio for all maps with `videoStartTime < 0`. Manual steps below are only needed if building a map install entirely by hand outside the pipeline.
 
 For manual porting only: because `videoStartTime < 0` causes the WAV to be delayed, the gap can be covered by an AMB sound actor. The AMB sources audio from the same OGG (making any overlap inaudible) and fades out before or at the handoff point.
 
@@ -246,7 +246,7 @@ The first sample of the WAV corresponds to marker 0 = beat `startBeat`. If `star
 
 | Issue | Root Cause | Fix |
 |-------|------------|-----|
-| **Silence at map start (automated V2 install)** | Current mitigation disables intro AMB attempt logic | Expected behavior in April 2026 builds; use sync/readjust flow for timing work and monitor release notes for AMB redesign status |
+| **Silence at map start (automated V2 install)** | Current mitigation disables intro AMB attempt logic | Expected behavior in June 2026 builds; use sync/readjust flow for timing work and monitor release notes for AMB redesign status |
 | **Silence at map start (manual porting)** | No intro AMB for pre-roll period on `videoStartTime < 0` map | Generate `amb_{mapname}_intro.wav` from OGG and add AMB actor to audio ISC |
 | **Crash at Coach Select** | Missing Cinematics chain | Create `_cine.isc` → `_MainSequence.tpl` structure |
 | **Progressive Desync** | Wrong audio sample rate | Re-convert audio with `-ar 48000` |

@@ -1,6 +1,6 @@
-# Modes Guide
+﻿# Modes Guide
 
-> **Last Updated:** April 2026 | **Applies to:** JD2021 Map Installer v2
+> **Last Updated:** June 2026 | **Applies to:** JD2021 Map Installer v2
 
 This guide explains every installer mode in detail — when to use each one, what inputs are required, step-by-step instructions, and mode-specific troubleshooting.
 
@@ -76,10 +76,9 @@ Complete these steps once before your first install:
 
 ### For JDNext modes only
 
-7. Confirm the following exist under `tools/`:
-   - `tools/AssetStudio` (source clone)
-   - `tools/UnityPy` (source clone)
-   - `tools/Unity2UbiArt/bin/AssetStudioModCLI/AssetStudioModCLI.exe` (runtime CLI)
+7. Confirm the following exist (run `setup.bat` if not yet done):
+   - `tools/AssetStudioModCLI/AssetStudioModCLI.exe` (auto-downloaded by `setup.bat`)
+   - **UnityPy** installed in the Python environment (pinned in `requirements.txt`; serves as automatic fallback)
 
 ### Before Every Install
 
@@ -100,7 +99,7 @@ Use Fetch mode when you know the JDU song codename(s) and want the installer to 
 1. One or more codenames (comma-separated).
 2. An active internet connection.
 3. Playwright Chromium installed (`python -m playwright install chromium`).
-4. A valid **Discord Channel URL** configured in **Settings → Integrations**.
+4. A valid **Discord Channel URL** and **Bot Provider** (`sev4nty` or `rama`) configured in **Settings → Integrations**.
 
 ### Where to look in the UI
 
@@ -194,11 +193,10 @@ Use Fetch JDNext when you know the JDNext song codename and want the installer t
 1. One or more JDNext codenames.
 2. An active internet connection.
 3. Playwright Chromium installed.
-4. A valid **Discord Channel URL** configured in **Settings → Integrations**.
-5. JDNext third-party tools installed:
-   - `tools/AssetStudio`
-   - `tools/UnityPy`
-   - `tools/Unity2UbiArt/bin/AssetStudioModCLI/AssetStudioModCLI.exe`
+4. A valid **Discord Channel URL** and **Bot Provider** (`sev4nty` or `rama`) configured in **Settings → Integrations**.
+5. JDNext third-party tools installed (auto-provisioned by `setup.bat`):
+   - `tools/AssetStudioModCLI/AssetStudioModCLI.exe`
+   - **UnityPy** Python package (fallback; installed via `requirements.txt`)
 
 ### Where to look in the UI
 
@@ -223,8 +221,8 @@ Use Fetch JDNext when you know the JDNext song codename and want the installer t
 | Problem | Solution |
 |---------|----------|
 | "Chromium not installed" error | Run `python -m playwright install chromium` |
-| AssetStudio CLI not found | Verify `tools/Unity2UbiArt/bin/AssetStudioModCLI/AssetStudioModCLI.exe` exists |
-| Unity extraction fails | Ensure `tools/AssetStudio` and `tools/UnityPy` are present |
+| AssetStudio CLI not found | Re-run `setup.bat`, or set `assetstudio_cli_path` in Settings → Advanced to the `.exe` location |
+| Unity extraction falls back to UnityPy | Expected behavior when CLI binary is missing; UnityPy (from `requirements.txt`) handles extraction automatically |
 | Codename not recognized | Verify the JDNext codename — JDNext codenames may differ from JDU |
 
 ---
@@ -263,7 +261,7 @@ Use HTML JDNext mode when you already have a saved JDNext bot HTML export and wa
 | Problem | Solution |
 |---------|----------|
 | Expired HTML links | Re-export from the bot or switch to Fetch JDNext mode |
-| Missing Unity tools | Ensure AssetStudio CLI and dependencies are in `tools/` |
+| AssetStudio CLI not found | Re-run `setup.bat` or set `assetstudio_cli_path` in Settings → Advanced |
 | Install succeeds but assets look wrong | Check that the HTML file is from JDNext (not JDU) |
 
 ---
@@ -477,7 +475,7 @@ If an install fails, check in this order:
    - All modes: `ffmpeg`, `ffprobe`
    - IPK/XMA2: `vgmstream-cli`
    - Fetch modes: Playwright Chromium + Discord URL
-   - JDNext modes: AssetStudio CLI + Unity tools
+   - JDNext modes: `tools/AssetStudioModCLI/AssetStudioModCLI.exe` (or UnityPy fallback)
 6. ✅ Source files are complete and from the same map/version.
 7. ✅ Retry one map at a time to isolate the root cause.
 
