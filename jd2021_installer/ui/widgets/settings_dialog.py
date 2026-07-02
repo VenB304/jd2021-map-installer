@@ -855,6 +855,17 @@ class SettingsDialog(QDialog):
         )
         advanced_layout.addWidget(self.cb_fetch_background)
 
+        self.cb_jdu_restrict = QCheckBox("Only fetch known JDU codenames (songdb_JDU.json)")
+        self.cb_jdu_restrict.setChecked(
+            getattr(self._config, "restrict_jdu_fetch_to_known_codenames", True)
+        )
+        self.cb_jdu_restrict.setToolTip(
+            "When enabled, Fetch JDU warns before fetching a codename that isn't\n"
+            "in the local JDU song database. Turn off to always allow fetching\n"
+            "codenames outside the known JDU list without confirmation."
+        )
+        advanced_layout.addWidget(self.cb_jdu_restrict)
+
         # ----- Network Timing section -----
         network_section_label = QLabel("Network Timing")
         network_section_label.setStyleSheet("font-weight: bold; margin-top: 8px;")
@@ -1240,6 +1251,7 @@ class SettingsDialog(QDialog):
         self._config.show_quickstart_on_launch = self.cb_quickstart.isChecked()
         self._config.convert_jdnext_gestures = self.cb_convert_jdnext_gestures.isChecked()
         self._config.fetch_background_mode = self.cb_fetch_background.isChecked()
+        self._config.restrict_jdu_fetch_to_known_codenames = self.cb_jdu_restrict.isChecked()
         self._config.albumcoach_behavior = self._combo_value(self.combo_albumcoach)
         self._config.jdnext_cover_behavior = self._combo_value(self.combo_jdnext_cover)
         self._config.log_detail_level = self._combo_value(self.combo_log_detail)

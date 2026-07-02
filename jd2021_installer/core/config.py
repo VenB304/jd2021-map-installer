@@ -90,6 +90,7 @@ class AppConfig(BaseModel):
     fetch_login_timeout_s: int = 300
     fetch_bot_response_timeout_s: int = 60
     fetch_background_mode: bool = False
+    restrict_jdu_fetch_to_known_codenames: bool = True
 
     # Update checker settings
     check_updates_on_launch: bool = True

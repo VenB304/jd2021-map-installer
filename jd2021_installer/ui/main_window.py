@@ -140,6 +140,7 @@ _SETTINGS_CHANGE_LABELS: dict[str, str] = {
     "check_updates_on_launch": "Check updates on launch",
     "update_branch": "Update branch",
     "fetch_background_mode": "Fetch background browser",
+    "restrict_jdu_fetch_to_known_codenames": "Restrict Fetch JDU to known codenames",
 }
 
 _SETTINGS_CHANGE_ORDER: tuple[str, ...] = (
@@ -181,6 +182,7 @@ _SETTINGS_CHANGE_ORDER: tuple[str, ...] = (
     "check_updates_on_launch",
     "update_branch",
     "fetch_background_mode",
+    "restrict_jdu_fetch_to_known_codenames",
 )
 
 _READY_STATUS_VALUE = 3
@@ -270,6 +272,7 @@ class MainWindow(QMainWindow):
         self._install_started_at: Optional[float] = None
         self._completed_install_maps: list[NormalizedMapData] = []
         self._quickstart_shown_this_session = False
+        self._jdu_known_codenames: Optional[set[str]] = None
 
         # -- Window setup -----------------------------------------------------
         self.setWindowTitle("JD2021PC Map Installer")
@@ -341,6 +344,50 @@ class MainWindow(QMainWindow):
                 json.dump(data, f, indent=4)
         except Exception as e:
             logger.error("Failed to save settings to %s: %s", settings_file, e)
+
+    def _get_jdu_known_codenames(self) -> set[str]:
+        """Lazily load the set of known JDU codenames from songdb_JDU.json (lowercased)."""
+        if self._jdu_known_codenames is None:
+            known: set[str] = set()
+            try:
+                jdu_db_path = (
+                    Path(__file__).resolve().parents[2]
+                    / "assets" / "songdb" / "jdu" / "songdb_JDU.json"
+                )
+                if jdu_db_path.exists():
+                    with jdu_db_path.open("r", encoding="utf-8") as f:
+                        data = json.load(f)
+                    known = {str(k).lower() for k in data.keys()}
+            except Exception as e:
+                logger.warning(f"Failed to load JDU codenames for validation: {e}")
+            self._jdu_known_codenames = known
+        return self._jdu_known_codenames
+
+    def _confirm_non_jdu_codenames(self, unknown: list[str]) -> bool:
+        """Prompt the user before fetching codename(s) absent from songdb_JDU.json."""
+        box = QMessageBox(self)
+        box.setWindowTitle("Non-JDU Codename")
+        box.setIcon(QMessageBox.Icon.Warning)
+        plural = "s are" if len(unknown) != 1 else " is"
+        box.setText(
+            f"The following codename{plural} not in the local JDU song database:\n\n"
+            f"{', '.join(unknown)}\n\n"
+            "Fetch it anyway?"
+        )
+        yes_btn = box.addButton("Yes", QMessageBox.ButtonRole.YesRole)
+        always_btn = box.addButton("Always Allow (Yes)", QMessageBox.ButtonRole.AcceptRole)
+        no_btn = box.addButton("No", QMessageBox.ButtonRole.NoRole)
+        box.setDefaultButton(no_btn)
+        box.exec()
+        clicked = box.clickedButton()
+        if clicked is always_btn:
+            self._config.restrict_jdu_fetch_to_known_codenames = False
+            self._save_settings()
+            self.append_log(
+                "Setting updated: 'Restrict Fetch JDU to known codenames' turned off (Always Allow)."
+            )
+            return True
+        return clicked is yes_btn
 
     @staticmethod
     def _settings_file_path() -> Path:
@@ -2240,6 +2287,20 @@ class MainWindow(QMainWindow):
                     self.append_log("Install aborted: codename sanitization declined.")
                     self._set_status("Install aborted")
                     return
+
+        # Fetch JDU: warn before fetching codename(s) absent from songdb_JDU.json.
+        if mode_index == MODE_FETCH and getattr(
+            self._config, "restrict_jdu_fetch_to_known_codenames", True
+        ):
+            fetch_fields = source_fields.get("fetch", {}) if isinstance(source_fields, dict) else {}
+            raw_value = str(fetch_fields.get("codenames", "")).strip()
+            candidates = [c.strip() for c in raw_value.split(",") if c.strip()]
+            known = self._get_jdu_known_codenames()
+            unknown = [c for c in candidates if known and c.lower() not in known]
+            if unknown and not self._confirm_non_jdu_codenames(unknown):
+                self.append_log("Install aborted: non-JDU codename(s) not confirmed.")
+                self._set_status("Install aborted")
+                return
 
         source_issues = self._collect_source_target_issues()
         if source_issues:
