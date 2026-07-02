@@ -1461,13 +1461,33 @@ class SettingsDialog(QDialog):
             return u.switch_branch(branch)
 
         def _on_success(check_result: object) -> None:
+            resolved_branch = check_result.branch
+
             # Update version labels
-            self._lbl_update_branch.setText(f"Branch: {branch}")
+            self._lbl_update_branch.setText(f"Branch: {resolved_branch}")
             try:
                 u = self._get_updater()
                 self._lbl_update_commit.setText(f"Commit: {u.get_current_commit()}")
             except Exception:
                 pass
+
+            if check_result.fallback_from and resolved_branch != branch:
+                # The requested branch no longer exists — reflect the recovered
+                # branch in the combo so a subsequent Save persists it correctly.
+                self.combo_update_branch.blockSignals(True)
+                idx = self.combo_update_branch.findText(resolved_branch)
+                if idx < 0:
+                    self.combo_update_branch.addItem(resolved_branch)
+                    idx = self.combo_update_branch.findText(resolved_branch)
+                if idx >= 0:
+                    self.combo_update_branch.setCurrentIndex(idx)
+                self.combo_update_branch.blockSignals(False)
+                QMessageBox.information(
+                    self,
+                    "Branch No Longer Exists",
+                    f"Branch '{check_result.fallback_from}' no longer exists on GitHub.\n\n"
+                    f"Automatically switched to '{resolved_branch}' instead.",
+                )
 
             # Show update result
             from jd2021_installer.ui.widgets.update_dialog import UpdateResultDialog

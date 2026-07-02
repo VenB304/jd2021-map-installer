@@ -93,6 +93,8 @@ class UpdateResultDialog(QDialog):
         icon_label.setStyleSheet("font-size: 15px; font-weight: bold;")
         layout.addWidget(icon_label)
 
+        self._add_fallback_note(layout, r)
+
         error_label = QLabel(str(r.error))
         error_label.setWordWrap(True)
         error_label.setStyleSheet("color: #b55;")
@@ -115,6 +117,8 @@ class UpdateResultDialog(QDialog):
         icon_label.setStyleSheet("font-size: 15px; font-weight: bold;")
         layout.addWidget(icon_label)
 
+        self._add_fallback_note(layout, r)
+
         info = QLabel(
             f"Branch: {r.branch}\n"
             f"Current commit: {r.local_commit}\n"
@@ -131,6 +135,8 @@ class UpdateResultDialog(QDialog):
         icon_label.setObjectName("updateDialogTitle")
         icon_label.setStyleSheet("font-size: 15px; font-weight: bold;")
         layout.addWidget(icon_label)
+
+        self._add_fallback_note(layout, r)
 
         # Describe how far behind we are, or clearly explain why we can't tell.
         local_is_unknown = r.local_commit in ("", "unknown")
@@ -219,6 +225,22 @@ class UpdateResultDialog(QDialog):
         btn_layout.addWidget(btn_later)
 
         layout.addLayout(btn_layout)
+
+    def _add_fallback_note(self, layout: QVBoxLayout, r) -> None:
+        """Show a note when the tracked branch was deleted and we recovered to master."""
+        fallback_from = getattr(r, "fallback_from", None)
+        if not fallback_from:
+            return
+        note = QLabel(
+            f"ℹ️  Your branch '{fallback_from}' no longer exists on GitHub — "
+            f"automatically switched to '{r.branch}'."
+        )
+        note.setWordWrap(True)
+        note.setStyleSheet(
+            "color: #2a6dc8; font-size: 11px; border: 1px solid #2a6dc8; "
+            "padding: 6px; border-radius: 4px;"
+        )
+        layout.addWidget(note)
 
     def _add_close_button(self, layout: QVBoxLayout) -> None:
         btn_layout = QHBoxLayout()

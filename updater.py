@@ -86,6 +86,7 @@ class UpdateCheckResult:
     is_git_repo: bool
     commits_behind: int = 0
     error: Optional[str] = None
+    fallback_from: Optional[str] = None
 
 
 @dataclass
@@ -97,6 +98,7 @@ class UpdateResult:
     old_commit: str
     new_commit: str
     error: Optional[str] = None
+    fallback_from: Optional[str] = None
 
 
 # ---------------------------------------------------------------------------
@@ -134,6 +136,11 @@ class Updater:
             )
         except Exception as exc:
             logger.warning("Could not write updater state: %s", exc)
+
+    def _persist_tracked_branch(self, branch: str) -> None:
+        state = self._load_state()
+        state["tracked_branch"] = branch
+        self._save_state(state)
 
     def initialize_state(self) -> None:
         """Create or refresh the state file from the current environment."""
@@ -224,6 +231,33 @@ class Updater:
             logger.debug("git %s failed: %s", " ".join(args), exc)
         return None
 
+    def _checkout_branch_with_fallback(self, branch: str) -> tuple[Optional[str], bool]:
+        """Check out ``branch``; if it's unavailable, fall back to ``DEFAULT_BRANCH``.
+
+        Returns ``(branch_actually_checked_out, fell_back)``. If neither the
+        requested branch nor the fallback can be checked out, returns
+        ``(None, False)``.
+        """
+        co = self._run_git("checkout", branch)
+        if co is None:
+            co = self._run_git("checkout", "-b", branch, f"origin/{branch}")
+        if co is not None:
+            return branch, False
+
+        if branch == DEFAULT_BRANCH:
+            return None, False
+
+        logger.warning(
+            "Branch '%s' unavailable for checkout; falling back to '%s'.",
+            branch, DEFAULT_BRANCH,
+        )
+        fb = self._run_git("checkout", DEFAULT_BRANCH)
+        if fb is None:
+            fb = self._run_git("checkout", "-b", DEFAULT_BRANCH, f"origin/{DEFAULT_BRANCH}")
+        if fb is not None:
+            return DEFAULT_BRANCH, True
+        return None, False
+
     def get_current_branch(self) -> str:
         """Return the currently tracked branch name."""
         if self.is_git_repo():
@@ -291,29 +325,45 @@ class Updater:
         local_commit = self.get_current_commit()
         local_commit_full = self.get_current_commit_full()
         is_git = self.is_git_repo()
+        fallback_from: Optional[str] = None
 
         try:
             branch_data = self._api_get(f"branches/{quote(branch, safe='')}")
-            tip = branch_data.get("commit", {})
-            remote_sha = tip.get("sha", "")[:7]
-            remote_sha_full = tip.get("sha", "")
-            commit_info = tip.get("commit", {})
-            remote_msg = commit_info.get("message", "").split("\n")[0]
-            raw_date = (
-                commit_info.get("committer", {}).get("date", "")
-                or commit_info.get("author", {}).get("date", "")
-            )
         except requests.HTTPError as exc:
-            return UpdateCheckResult(
-                is_up_to_date=True,
-                local_commit=local_commit,
-                remote_commit="",
-                remote_commit_message="",
-                remote_commit_date="",
-                branch=branch,
-                is_git_repo=is_git,
-                error=f"GitHub API error: {exc}",
-            )
+            status = exc.response.status_code if exc.response is not None else None
+            if status == 404 and branch != DEFAULT_BRANCH:
+                logger.warning(
+                    "Tracked branch '%s' no longer exists on remote; falling back to '%s'.",
+                    branch, DEFAULT_BRANCH,
+                )
+                fallback_from = branch
+                branch = DEFAULT_BRANCH
+                self._persist_tracked_branch(branch)
+                try:
+                    branch_data = self._api_get(f"branches/{quote(branch, safe='')}")
+                except Exception as exc2:
+                    return UpdateCheckResult(
+                        is_up_to_date=True,
+                        local_commit=local_commit,
+                        remote_commit="",
+                        remote_commit_message="",
+                        remote_commit_date="",
+                        branch=branch,
+                        is_git_repo=is_git,
+                        error=f"GitHub API error after fallback: {exc2}",
+                        fallback_from=fallback_from,
+                    )
+            else:
+                return UpdateCheckResult(
+                    is_up_to_date=True,
+                    local_commit=local_commit,
+                    remote_commit="",
+                    remote_commit_message="",
+                    remote_commit_date="",
+                    branch=branch,
+                    is_git_repo=is_git,
+                    error=f"GitHub API error: {exc}",
+                )
         except Exception as exc:
             return UpdateCheckResult(
                 is_up_to_date=True,
@@ -325,6 +375,16 @@ class Updater:
                 is_git_repo=is_git,
                 error=f"Network error: {exc}",
             )
+
+        tip = branch_data.get("commit", {})
+        remote_sha = tip.get("sha", "")[:7]
+        remote_sha_full = tip.get("sha", "")
+        commit_info = tip.get("commit", {})
+        remote_msg = commit_info.get("message", "").split("\n")[0]
+        raw_date = (
+            commit_info.get("committer", {}).get("date", "")
+            or commit_info.get("author", {}).get("date", "")
+        )
 
         # Compare
         if local_commit_full == "unknown" or not remote_sha_full:
@@ -346,6 +406,7 @@ class Updater:
             branch=branch,
             is_git_repo=is_git,
             commits_behind=behind,
+            fallback_from=fallback_from,
         )
 
     def _count_commits_behind(self, local_sha: str, remote_sha: str) -> int:
@@ -383,17 +444,12 @@ class Updater:
         """
         if self.is_git_repo():
             self._run_git("fetch", "origin")
-            checkout = self._run_git("checkout", branch)
-            if checkout is None:
-                # Try creating a local tracking branch
-                self._run_git(
-                    "checkout", "-b", branch, f"origin/{branch}"
-                )
+            checked_out, _fell_back = self._checkout_branch_with_fallback(branch)
+            if checked_out is not None:
+                branch = checked_out
 
         # Persist new branch in state regardless of mode
-        state = self._load_state()
-        state["tracked_branch"] = branch
-        self._save_state(state)
+        self._persist_tracked_branch(branch)
 
         return self.check_for_updates(branch)
 
@@ -421,12 +477,11 @@ class Updater:
                 error="git fetch failed",
             )
 
+        fallback_from: Optional[str] = None
         current_branch = self._run_git("branch", "--show-current") or ""
         if current_branch != branch:
-            co = self._run_git("checkout", branch)
-            if co is None:
-                co = self._run_git("checkout", "-b", branch, f"origin/{branch}")
-            if co is None:
+            checked_out, fell_back = self._checkout_branch_with_fallback(branch)
+            if checked_out is None:
                 return UpdateResult(
                     success=False,
                     method="git",
@@ -434,6 +489,10 @@ class Updater:
                     new_commit=old_commit,
                     error=f"git checkout {branch} failed",
                 )
+            if fell_back:
+                fallback_from = branch
+                self._persist_tracked_branch(checked_out)
+            branch = checked_out
 
         reset_out = self._run_git("reset", "--hard", f"origin/{branch}")
         if reset_out is None:
@@ -443,6 +502,7 @@ class Updater:
                 old_commit=old_commit,
                 new_commit=old_commit,
                 error=f"git reset --hard origin/{branch} failed",
+                fallback_from=fallback_from,
             )
 
         new_commit = self.get_current_commit()
@@ -459,18 +519,54 @@ class Updater:
             method="git",
             old_commit=old_commit,
             new_commit=new_commit,
+            fallback_from=fallback_from,
         )
 
-    def _update_via_zip(self, branch: str, old_commit: str) -> UpdateResult:
-        """Update by downloading and extracting the branch zip archive."""
-        zip_url = (
+    @staticmethod
+    def _zip_url(branch: str) -> str:
+        return (
             f"https://github.com/{GITHUB_OWNER}/{GITHUB_REPO}"
             f"/archive/refs/heads/{quote(branch, safe='')}.zip"
         )
 
+    def _update_via_zip(self, branch: str, old_commit: str) -> UpdateResult:
+        """Update by downloading and extracting the branch zip archive."""
+        fallback_from: Optional[str] = None
+        zip_url = self._zip_url(branch)
+
         try:
             resp = requests.get(zip_url, timeout=60, stream=True)
             resp.raise_for_status()
+        except requests.HTTPError as exc:
+            status = exc.response.status_code if exc.response is not None else None
+            if status == 404 and branch != DEFAULT_BRANCH:
+                logger.warning(
+                    "Branch '%s' zip unavailable (404); falling back to '%s'.",
+                    branch, DEFAULT_BRANCH,
+                )
+                fallback_from = branch
+                branch = DEFAULT_BRANCH
+                zip_url = self._zip_url(branch)
+                try:
+                    resp = requests.get(zip_url, timeout=60, stream=True)
+                    resp.raise_for_status()
+                except Exception as exc2:
+                    return UpdateResult(
+                        success=False,
+                        method="zip",
+                        old_commit=old_commit,
+                        new_commit=old_commit,
+                        error=f"Download failed after fallback: {exc2}",
+                        fallback_from=fallback_from,
+                    )
+            else:
+                return UpdateResult(
+                    success=False,
+                    method="zip",
+                    old_commit=old_commit,
+                    new_commit=old_commit,
+                    error=f"Download failed: {exc}",
+                )
         except Exception as exc:
             return UpdateResult(
                 success=False,
@@ -563,6 +659,7 @@ class Updater:
             method="zip",
             old_commit=old_commit,
             new_commit=new_commit,
+            fallback_from=fallback_from,
         )
 
     def _merge_zip_contents(

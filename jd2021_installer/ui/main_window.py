@@ -928,6 +928,18 @@ class MainWindow(QMainWindow):
         def _on_finished(result):
             self._startup_update_completed = True
             timeout_timer.stop()
+            if result.fallback_from:
+                logger.warning(
+                    "Tracked branch '%s' no longer exists remotely; recovered to '%s'.",
+                    result.fallback_from, result.branch,
+                )
+                self.append_log(
+                    f"Your tracked branch '{result.fallback_from}' was removed upstream "
+                    f"— switched to '{result.branch}'."
+                )
+                if getattr(self._config, "update_branch", ""):
+                    self._config.update_branch = result.branch
+                    self._save_settings()
             if result.error:
                 logger.info("Startup update check failed: %s", result.error)
                 self._set_status("Update check failed")
