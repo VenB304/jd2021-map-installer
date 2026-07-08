@@ -1186,6 +1186,8 @@ class ModeSelectorWidget(QWidget):
                 "*_tml_dance.dtape.ckd",
                 "*dance*.dtape",
                 "*dance*.dtape.ckd",
+                "*timeline.tpl.ckd",
+                "*timeline*.ckd",
             )
         else:
             patterns = (
@@ -1198,7 +1200,7 @@ class ModeSelectorWidget(QWidget):
         for pattern in patterns:
             hits = [p for p in searcher(pattern) if p.is_file()]
             if tape_kind == "dance":
-                hits = [p for p in hits if "adtape" not in p.name.lower()]
+                hits = [p for p in hits if "adtape" not in p.name.lower() and not p.name.lower().endswith(".isc.ckd") and not p.name.lower().endswith(".act.ckd")]
             if not hits:
                 continue
             if codename:

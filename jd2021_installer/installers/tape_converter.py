@@ -266,6 +266,7 @@ def convert_tape_file(
     output_path: Path,
     codename: Optional[str] = None,
     mirror_gestures: bool = False,
+    force_karaoke: bool = False,
 ) -> bool:
     """Convert a CKD (JSON or Binary) tape file to UbiArt Lua format.
 
@@ -292,7 +293,7 @@ def convert_tape_file(
         # 2. If JSON is empty/invalid, try Binary parsing
         if not data:
             logger.debug("Tape %s is not JSON, attempting binary parse", ckd_path.name)
-            parsed = parse_binary_ckd(ckd_path.read_bytes(), ckd_path.name)
+            parsed = parse_binary_ckd(ckd_path.read_bytes(), ckd_path.name, force_karaoke=force_karaoke)
             if hasattr(parsed, "as_ubiart_dict"):
                 data = parsed.as_ubiart_dict()
             elif isinstance(parsed, dict) and "clips" in parsed: # For legacy dicts if any
@@ -352,7 +353,8 @@ def convert_karaoke_tape(ckd_path: Path, target_dir: Path, codename: str) -> boo
     Output: ``Timeline/{codename}_TML_Karaoke.ktape``
     """
     output = target_dir / "timeline" / f"{codename}_TML_Karaoke.ktape"
-    return convert_tape_file(ckd_path, output, codename=codename)
+    force_karaoke = "timeline" in ckd_path.name.lower()
+    return convert_tape_file(ckd_path, output, codename=codename, force_karaoke=force_karaoke)
 
 
 def convert_cinematic_tape(ckd_path: Path, target_dir: Path, codename: str) -> bool:
@@ -409,12 +411,18 @@ def auto_convert_tapes(source_dir: Path, target_dir: Path, codename: str) -> int
 
     dance_candidates = [
         p for p in ckd_files
-        if "dtape" in p.name.lower() and "adtape" not in p.name.lower()
+        if ("dtape" in p.name.lower() or "timeline.tpl" in p.name.lower() or ("timeline" in p.name.lower() and not p.name.lower().endswith(".isc.ckd") and not p.name.lower().endswith(".act.ckd")))
+        and "adtape" not in p.name.lower()
     ]
     karaoke_candidates = [
         p for p in ckd_files
         if "ktape" in p.name.lower()
     ]
+    if not karaoke_candidates:
+        karaoke_candidates = [
+            p for p in ckd_files
+            if ("timeline.tpl" in p.name.lower() or ("timeline" in p.name.lower() and not p.name.lower().endswith(".isc.ckd") and not p.name.lower().endswith(".act.ckd")))
+        ]
     cinematic_candidates = [
         p for p in ckd_files
         if "mainsequence" in p.name.lower() and "tape" in p.name.lower()
@@ -424,7 +432,7 @@ def auto_convert_tapes(source_dir: Path, target_dir: Path, codename: str) -> int
         if "btape" in p.name.lower()
     ]
 
-    dance_src = _pick_best_tape(dance_candidates, codename, ["tml_dance", "dance"])
+    dance_src = _pick_best_tape(dance_candidates, codename, ["tml_dance", "dance", "timeline"])
     if dance_src:
         if convert_dance_tape(dance_src, target_dir, codename, mirror_gestures=mirror_gestures):
             converted += 1
@@ -444,7 +452,7 @@ def auto_convert_tapes(source_dir: Path, target_dir: Path, codename: str) -> int
         ):
             converted += 1
 
-    karaoke_src = _pick_best_tape(karaoke_candidates, codename, ["tml_karaoke", "karaoke"])
+    karaoke_src = _pick_best_tape(karaoke_candidates, codename, ["tml_karaoke", "karaoke", "timeline"])
     if karaoke_src:
         if convert_karaoke_tape(karaoke_src, target_dir, codename):
             converted += 1

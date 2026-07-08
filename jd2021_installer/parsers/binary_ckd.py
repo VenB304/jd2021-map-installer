@@ -56,6 +56,8 @@ _AUTODANCE_TEMPLATE_CRC = 0x51EA2CD0
 _SOUND_COMPONENT_TEMPLATE_CRC = 0xD94D6C53
 _TAPE_CRC = 0x2AFED161
 _BEAT_CLIP_CRC = 0x364811D4
+_TIMELINE_TEMPLATE_CRC = 0x109FBC33
+
 
 
 def _string_id(s: str) -> int:
@@ -417,6 +419,206 @@ def parse_dtape(data: bytes, map_name: str) -> DanceTape:
     return DanceTape(clips=clips, map_name=map_name)
 
 
+def parse_jd2014_timeline(data: bytes, map_name: str) -> DanceTape:
+    """Parse a cooked JD2014 timeline.tpl.ckd file."""
+    r = BinaryReader(data)
+    _read_actor_header(r)
+    timeline_ver = r.u32()
+    actual_map_name = r.len_string()
+    
+    # Skip the 9 u32 properties
+    for _ in range(9):
+        r.u32()
+    # Skip the 10 float properties
+    for _ in range(10):
+        r.u32()
+        
+    # List 1: Class ID 44
+    count1 = r.u32()
+    for _ in range(count1):
+        r.u32() # class_id
+        r.skip(40) # 10 floats/ints of 4 bytes each = 40 bytes
+        
+    # List 2: Pictogram Clips (Class ID 160)
+    count2 = r.u32()
+    clips = []
+    
+    clip_id_counter = 1
+    
+    for _ in range(count2):
+        class_id = r.u32()
+        start_time_sec = r.f32()
+        name = r.len_string()
+        coach_count = r.u32()
+        
+        path = r.len_string()
+        filename = r.len_string()
+        r.u32() # path_id
+        r.u32() # padding
+        
+        start_time_ms = int(round(start_time_sec * 1000.0))
+        
+        clips.append(PictogramClip(
+            id=clip_id_counter,
+            track_id=0,
+            is_active=1,
+            start_time=start_time_ms,
+            duration=2000,
+            picto_path=f"world/maps/{actual_map_name.lower()}/timeline/pictos/{name.lower()}.png",
+            coach_count=coach_count
+        ))
+        clip_id_counter += 1
+        
+    # List 3: Motion Clips (Class ID 156)
+    count3 = r.u32()
+    for _ in range(count3):
+        class_id = r.u32()
+        name = r.len_string()
+        coach_id = r.u32()
+        
+        path = r.len_string()
+        filename = r.len_string()
+        r.u32() # path_id
+        r.u32() # padding
+        
+        start_time_sec = r.f32()
+        end_time_sec = r.f32()
+        gold_flag = r.u32()
+        r.skip(12)
+        
+        start_time_ms = int(round(start_time_sec * 1000.0))
+        end_time_ms = int(round(end_time_sec * 1000.0))
+        duration_ms = max(0, end_time_ms - start_time_ms)
+        
+        is_gold = 0
+        name_lower = name.lower()
+        if gold_flag == 1 or "gold" in name_lower or "gold" in filename.lower():
+            is_gold = 1
+            
+        classifier_path = f"world/maps/{actual_map_name.lower()}/timeline/moves/{filename}"
+        
+        clips.append(MotionClip(
+            id=clip_id_counter,
+            track_id=coach_id,
+            is_active=1,
+            start_time=start_time_ms,
+            duration=duration_ms,
+            classifier_path=classifier_path,
+            gold_move=is_gold,
+            coach_id=coach_id,
+            move_type=0
+        ))
+        
+        if is_gold:
+            clips.append(GoldEffectClip(
+                id=clip_id_counter + 10000,
+                track_id=coach_id,
+                is_active=1,
+                start_time=start_time_ms,
+                duration=duration_ms,
+                effect_type=1
+            ))
+            
+        clip_id_counter += 1
+        
+    return DanceTape(clips=clips, map_name=actual_map_name)
+
+
+def parse_jd2014_karaoke(data: bytes, map_name: str) -> KaraokeTape:
+    """Parse a cooked JD2014 timeline.tpl.ckd file for karaoke/lyrics clips."""
+    r = BinaryReader(data)
+    _read_actor_header(r)
+    timeline_ver = r.u32()
+    actual_map_name = r.len_string()
+    
+    # Skip the 9 u32 properties
+    for _ in range(9):
+        r.u32()
+    # Skip the 10 float properties
+    for _ in range(10):
+        r.u32()
+        
+    # List 1: Class ID 44
+    count1 = r.u32()
+    for _ in range(count1):
+        r.u32() # class_id
+        r.skip(40) # 10 floats/ints of 4 bytes each = 40 bytes
+        
+    # List 2: Pictogram Clips (Class ID 160)
+    count2 = r.u32()
+    for _ in range(count2):
+        r.u32() # class_id
+        r.f32() # start_time_sec
+        r.len_string() # name
+        r.u32() # coach_count
+        
+        path = r.len_string()
+        filename = r.len_string()
+        r.u32() # path_id
+        r.u32() # padding
+        
+    # List 3: Motion Clips (Class ID 156)
+    count3 = r.u32()
+    for _ in range(count3):
+        r.u32()
+        r.len_string()
+        r.u32()
+        r.len_string()
+        r.len_string()
+        r.u32()
+        r.u32()
+        r.f32()
+        r.f32()
+        r.skip(16)
+        
+    # List 4: MashUp / Puppet Master Clips (Class ID 156)
+    count4 = r.u32()
+    for _ in range(count4):
+        r.u32()
+        r.len_string()
+        r.u32()
+        r.len_string()
+        r.len_string()
+        r.u32()
+        r.u32()
+        r.f32()
+        r.f32()
+        r.skip(16)
+        
+    # List 5: Karaoke / Lyrics (Class ID 48)
+    count5 = r.u32()
+    clips = []
+    
+    for i in range(count5):
+        class_id = r.u32()
+        lyric = r.len_string()
+        val1 = r.u32() # track_id
+        val2 = r.u32() # is_end_of_line
+        start_time_sec = r.f32()
+        end_time_sec = r.f32()
+        
+        start_time_ms = int(round(start_time_sec * 1000.0))
+        end_time_ms = int(round(end_time_sec * 1000.0))
+        duration_ms = max(0, end_time_ms - start_time_ms)
+        
+        clips.append(KaraokeClip(
+            id=i + 1,
+            track_id=val1,
+            is_active=1,
+            start_time=start_time_ms,
+            duration=duration_ms,
+            pitch=0.0,
+            lyrics=lyric,
+            is_end_of_line=val2,
+            content_type=0,
+            start_time_tolerance=4,
+            end_time_tolerance=4,
+            semitone_tolerance=5.0,
+        ))
+        
+    return KaraokeTape(clips=clips, map_name=actual_map_name)
+
+
 def parse_ktape(data: bytes, map_name: str) -> KaraokeTape:
     """Parse a binary karaoke timeline tape (ktape)."""
     r = BinaryReader(data)
@@ -635,7 +837,7 @@ def _infer_map_name(filename: str) -> str:
     return stem.split("_")[0].split(".")[0]
 
 
-def parse_binary_ckd(data: bytes, filename: str) -> ParseResult:
+def parse_binary_ckd(data: bytes, filename: str, force_karaoke: bool = False) -> ParseResult:
     """Dispatch binary CKD parse based on the Actor header template CRC.
 
     Args:
@@ -709,6 +911,21 @@ def parse_binary_ckd(data: bytes, filename: str) -> ParseResult:
 
         if template_crc == _TAPE_CRC and "btape" in name_lower:
             return parse_btape(data, map_name)
+
+        if template_crc == _TIMELINE_TEMPLATE_CRC:
+            if force_karaoke:
+                result = parse_jd2014_karaoke(data, map_name)
+                logger.debug(
+                    "binary_ckd: parsed JD2014 karaoke '%s' (%d clips)",
+                    filename, len(result.clips),
+                )
+            else:
+                result = parse_jd2014_timeline(data, map_name)
+                logger.debug(
+                    "binary_ckd: parsed JD2014 timeline '%s' (%d clips)",
+                    filename, len(result.clips),
+                )
+            return result
 
     except (struct.error, IndexError, UnicodeDecodeError) as exc:
         raise BinaryCKDParseError(

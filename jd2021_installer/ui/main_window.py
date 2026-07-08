@@ -2870,8 +2870,7 @@ class MainWindow(QMainWindow):
                 self._feedback_panel.update_checklist_step(indexed_map_step, StepStatus.IN_PROGRESS, suffix=clean_msg)
             elif clean_msg in map_step_names:
                 self._feedback_panel.update_checklist_step(clean_msg, StepStatus.IN_PROGRESS, prefix=prefix)
-            else:
-                self._feedback_panel.update_checklist_step(clean_msg, StepStatus.IN_PROGRESS, prefix=prefix)
+            # else: pipeline-style msg arrived while checklist is in map-name mode — nothing to update
 
             # Mark preceding pipeline steps only when checklist is in pipeline mode.
             if pipeline_mode and clean_msg in map_step_names:

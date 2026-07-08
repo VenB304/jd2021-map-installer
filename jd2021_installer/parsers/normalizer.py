@@ -99,7 +99,7 @@ def _is_jdnext_source(source_dir: Path, media: MapMedia) -> bool:
 # CKD file loading (JSON-first, binary fallback)
 # ---------------------------------------------------------------------------
 
-def load_ckd(file_path: str | Path) -> dict | object:
+def load_ckd(file_path: str | Path, force_karaoke: bool = False) -> dict | object:
     """Read a CKD file, trying JSON first and falling back to binary.
 
     Returns either a parsed JSON dict or a typed dataclass from
@@ -121,7 +121,7 @@ def load_ckd(file_path: str | Path) -> dict | object:
         pass
 
     # Fall back to binary parser
-    return parse_binary_ckd(raw, path.name)
+    return parse_binary_ckd(raw, path.name, force_karaoke=force_karaoke)
 
 
 # ---------------------------------------------------------------------------
@@ -1079,6 +1079,11 @@ def _extract_dance_tape(
     """Find and parse a dtape CKD → DanceTape (or None)."""
     ckd_paths = _find_ckd_files(directory, "*dtape*ckd", codename)
     if not ckd_paths:
+        ckd_paths = _find_ckd_files(directory, "*timeline.tpl.ckd", codename)
+    if not ckd_paths:
+        candidates = _find_ckd_files(directory, "*timeline*.ckd", codename)
+        ckd_paths = [p for p in candidates if not p.endswith(".isc.ckd") and not p.endswith(".act.ckd")]
+    if not ckd_paths:
         return None
     data = load_ckd(ckd_paths[0])
     if isinstance(data, DanceTape):
@@ -1132,8 +1137,13 @@ def _extract_karaoke_tape(
     """Find and parse a ktape CKD → KaraokeTape (or None)."""
     ckd_paths = _find_ckd_files(directory, "*ktape*ckd", codename)
     if not ckd_paths:
+        ckd_paths = _find_ckd_files(directory, "*timeline.tpl.ckd", codename)
+    if not ckd_paths:
+        candidates = _find_ckd_files(directory, "*timeline*.ckd", codename)
+        ckd_paths = [p for p in candidates if not p.endswith(".isc.ckd") and not p.endswith(".act.ckd")]
+    if not ckd_paths:
         return None
-    data = load_ckd(ckd_paths[0])
+    data = load_ckd(ckd_paths[0], force_karaoke=True)
     if isinstance(data, KaraokeTape):
         return data
     if isinstance(data, dict):

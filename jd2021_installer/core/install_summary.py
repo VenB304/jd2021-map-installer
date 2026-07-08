@@ -123,7 +123,10 @@ def _has_main_video(base_dir: Path, codename: str) -> bool:
     )
 
 
-def _required_items(base_dir: Path, codename: str) -> list[InstallChecklistItem]:
+def _required_items(base_dir: Path, codename: str, map_data: NormalizedMapData) -> list[InstallChecklistItem]:
+    isc_ok = _exists_any(base_dir, [f"Timeline/{codename}_tml.isc"])
+    dance_ok = map_data.dance_tape is None or _exists_any(base_dir, [f"Timeline/{codename}_TML_Dance.dtape"])
+    karaoke_ok = map_data.karaoke_tape is None or _exists_any(base_dir, [f"Timeline/{codename}_TML_Karaoke.ktape"])
     return [
         InstallChecklistItem(
             label="Main scene",
@@ -159,14 +162,7 @@ def _required_items(base_dir: Path, codename: str) -> list[InstallChecklistItem]
         ),
         InstallChecklistItem(
             label="Core timeline files (dance/karaoke)",
-            present=all(
-                _exists_any(base_dir, [rel])
-                for rel in [
-                    f"Timeline/{codename}_tml.isc",
-                    f"Timeline/{codename}_TML_Dance.dtape",
-                    f"Timeline/{codename}_TML_Karaoke.ktape",
-                ]
-            ),
+            present=isc_ok and dance_ok and karaoke_ok,
             required=True,
         ),
     ]
@@ -257,7 +253,7 @@ def build_install_summary(
 ) -> InstallSummary:
     codename = map_data.codename
     map_name = map_data.song_desc.title or codename
-    required_items = _required_items(target_map_dir, codename)
+    required_items = _required_items(target_map_dir, codename, map_data)
     optional_items = _optional_items(target_map_dir, codename)
     files_written_count, total_size_bytes = _count_files_and_size(target_map_dir)
 
