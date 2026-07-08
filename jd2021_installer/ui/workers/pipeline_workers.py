@@ -838,9 +838,24 @@ class ExtractAndNormalizeWorker(QObject):
         try:
             # Clear output_dir (temp extraction dir) before starting
             import shutil
+            import time
             if self._output_dir.exists():
                 logger.debug("Cleaning temp extraction dir: %s", self._output_dir)
-                shutil.rmtree(self._output_dir)
+                try:
+                    shutil.rmtree(self._output_dir)
+                except Exception as exc:
+                    logger.warning("Initial cleanup of temp extraction dir failed: %s. Retrying...", exc)
+                    # Try a few times with small delay to let OS/antivirus release locks
+                    for i in range(3):
+                        time.sleep(0.5)
+                        try:
+                            shutil.rmtree(self._output_dir)
+                            break
+                        except Exception:
+                            if i == 2:
+                                # Fallback to ignore errors if it still fails
+                                logger.warning("Cleanup retry failed. Falling back to ignore_errors=True")
+                                shutil.rmtree(self._output_dir, ignore_errors=True)
             self._output_dir.mkdir(parents=True, exist_ok=True)
 
             self.status.emit("Extracting map data...")

@@ -2258,6 +2258,7 @@ class MainWindow(QMainWindow):
     def _on_install_requested(self) -> None:
         """Launch the Extract → Normalize → Install pipeline."""
         self.append_log("Installation request received. Starting pre-flight checks...")
+        self._preview_widget.reset()
         if self._active_worker is not None:
             self._set_status("Please wait for the current operation to finish.")
             return

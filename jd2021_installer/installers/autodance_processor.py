@@ -87,7 +87,10 @@ def process_autodance_directory(source_dir: Path, target_dir: Path, codename: st
                 continue
             dst = out_dir / item.name
             if not dst.exists():
-                shutil.copy2(item, dst)
+                if item.is_dir():
+                    shutil.copytree(item, dst, dirs_exist_ok=True)
+                else:
+                    shutil.copy2(item, dst)
                 converted += 1
 
     return converted

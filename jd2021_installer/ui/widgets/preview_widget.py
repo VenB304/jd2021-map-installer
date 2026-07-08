@@ -588,6 +588,7 @@ class PreviewWidget(QWidget):
         self._stop_requested = True
         self._ended_naturally = False
         self._player.stop()
+        self._player.setSource(QUrl())
         
         worker = self._worker
         thread = self._thread
