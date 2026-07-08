@@ -18,6 +18,7 @@ Usage (in controller):
 from __future__ import annotations
 
 from dataclasses import dataclass
+import concurrent.futures
 import logging
 import os
 import re
@@ -896,10 +897,13 @@ class ExtractAndNormalizeWorker(QObject):
                         bundlelogic_ipk = bundlelogic_guess
 
                 supplemental_root = self._output_dir / "_supplemental"
-                bundle_root = _extract_supplemental_ipk(bundle_ipk, supplemental_root, "bundle")
+                with concurrent.futures.ThreadPoolExecutor(max_workers=2) as _pool:
+                    _fut_bundle = _pool.submit(_extract_supplemental_ipk, bundle_ipk, supplemental_root, "bundle")
+                    _fut_bundlelogic = _pool.submit(_extract_supplemental_ipk, bundlelogic_ipk, supplemental_root, "bundlelogic")
+                    bundle_root = _fut_bundle.result()
+                    bundlelogic_root = _fut_bundlelogic.result()
                 if bundle_root:
                     supplemental_roots.append(bundle_root)
-                bundlelogic_root = _extract_supplemental_ipk(bundlelogic_ipk, supplemental_root, "bundlelogic")
                 if bundlelogic_root:
                     supplemental_roots.append(bundlelogic_root)
 

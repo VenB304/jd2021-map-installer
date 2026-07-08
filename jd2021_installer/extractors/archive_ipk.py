@@ -9,6 +9,7 @@ protection and proper error handling.
 
 from __future__ import annotations
 
+import concurrent.futures
 import logging
 import os
 import re
@@ -218,6 +219,28 @@ def _decompress_to_file(f_in, f_out, data_size: int) -> None:
         offset = end
 
 
+_MAX_EXTRACT_WORKERS = min(4, os.cpu_count() or 4)
+
+
+def _extract_entry(
+    target_file: Path,
+    seek_pos: int,
+    disk_size: int,
+    out_dir: Path,
+    out_name: str,
+) -> None:
+    """Decompress and write one IPK file entry using an independent file handle.
+
+    Safe to call from multiple threads simultaneously — each invocation opens
+    its own read handle and writes to a distinct output path.
+    """
+    out_dir.mkdir(parents=True, exist_ok=True)
+    with open(target_file, "rb") as f_in:
+        f_in.seek(seek_pos)
+        with open(out_dir / out_name, "wb") as f_out:
+            _decompress_to_file(f_in, f_out, disk_size)
+
+
 def extract_ipk(
     target_file: str | Path,
     output_dir: str | Path | None = None,
@@ -263,23 +286,20 @@ def extract_ipk(
             file_chunks = list(_iter_file_headers(f, num_files))
 
             base_offset = _unpack(ipk_header["base_offset"]["value"])
-            created_dirs: set[Path] = set()
             codenames_found: set[str] = set()
             extracted_files = 0
 
-            for k, chunk in enumerate(file_chunks):
+            # Pass 1: resolve paths and collect valid entries (no decompression yet).
+            # Codename discovery and traversal checks happen here while we still
+            # hold the file handle; no seeking is needed for this pass.
+            entries: list[tuple[Path, str, int, int]] = []  # (out_dir, name, seek_pos, disk_size)
+            for chunk in file_chunks:
                 path_ori = chunk["path_name"]["value"].decode().lower().replace('\\', '/')
                 if "world/maps/" in path_ori:
                     after_maps = path_ori.split("world/maps/")[1]
                     parts = after_maps.split("/")
                     if parts and parts[0]:
                         codenames_found.add(parts[0])
-
-                if k % 100 == 0:
-                    status = f"file {k + 1}/{num_files}"
-                    if codenames_found:
-                        status += f" (maps: {', '.join(sorted(codenames_found))})"
-                    logger.debug("IPK: Extracting %s...", status)
 
                 offset = _unpack(chunk["offset"]["value"])
                 uncompressed_size = _unpack(chunk["size"]["value"])
@@ -288,7 +308,7 @@ def extract_ipk(
 
                 path_ori_raw = chunk["path_name"]["value"].decode()
                 file_ori_raw = chunk["file_name"]["value"].decode()
-                
+
                 # Check if fields are swapped (if file contains slashes but path doesn't)
                 if ("/" in file_ori_raw or "\\" in file_ori_raw) and not ("/" in path_ori_raw or "\\" in path_ori_raw):
                     file_path = output_path / file_ori_raw
@@ -302,18 +322,27 @@ def extract_ipk(
                 if not resolved.startswith(str(output_path)):
                     logger.debug("Skipping path-traversal entry: %s", resolved)
                     continue
-                    
+
                 if os.path.abspath(resolved) == os.path.abspath(target_file):
                     logger.debug("Skipping self-referential entry that would overwrite the source IPK: %s", resolved)
                     continue
 
-                f.seek(offset + base_offset)
-                if file_path not in created_dirs:
-                    file_path.mkdir(parents=True, exist_ok=True)
-                    created_dirs.add(file_path)
+                entries.append((file_path, file_name, offset + base_offset, disk_size))
 
-                with open(file_path / file_name, "wb") as ff:
-                    _decompress_to_file(f, ff, disk_size)
+        logger.debug(
+            "IPK: Extracting %d/%d valid files (workers=%d)...",
+            len(entries), num_files, _MAX_EXTRACT_WORKERS,
+        )
+
+        # Pass 2: decompress all valid entries in parallel.  Each worker opens
+        # its own read handle so there is no shared file-position state.
+        with concurrent.futures.ThreadPoolExecutor(max_workers=_MAX_EXTRACT_WORKERS) as pool:
+            futs = {
+                pool.submit(_extract_entry, target_file, seek_pos, disk_size, out_dir, out_name): out_name
+                for out_dir, out_name, seek_pos, disk_size in entries
+            }
+            for fut in concurrent.futures.as_completed(futs):
+                fut.result()  # re-raise any per-file exception immediately
                 extracted_files += 1
 
         logger.info(
