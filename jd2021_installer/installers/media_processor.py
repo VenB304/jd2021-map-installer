@@ -471,7 +471,7 @@ def convert_audio(
     finally:
         # Cleanup temp directory
         if temp_dir.exists():
-            shutil.rmtree(temp_dir)
+            shutil.rmtree(temp_dir, ignore_errors=True)
 
 
 def apply_audio_gain(
