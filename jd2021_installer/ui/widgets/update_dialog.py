@@ -7,6 +7,8 @@ import sys
 from pathlib import Path
 from typing import Optional
 
+from updater import PRESERVE_PATHS
+
 from PyQt6.QtCore import QObject, Qt, QThread, pyqtSignal
 from PyQt6.QtWidgets import (
     QDialog,
@@ -20,6 +22,27 @@ from PyQt6.QtWidgets import (
 )
 
 logger = logging.getLogger("jd2021.ui.widgets.update_dialog")
+
+_PRESERVED_SUMMARY = (
+    "ℹ️  The following are kept during a zip update:\n"
+    "  • Your settings  (installer_settings.json)\n"
+    "  • Downloaded maps  (mapDownloads/)\n"
+    "  • Cache & temp files  (cache/, temp/)\n"
+    "  • Browser profile  (.browser-profile/)\n"
+    "  • Tools  (tools/)\n"
+    "  • Logs  (logs/)\n"
+    "  • Song databases  (jdnext_songdb_synth.json, assets/songdb/, map_readjust_index.json)\n"
+    "  • Env overrides  (.env)"
+)
+
+
+def _is_already_preserved(path: Path, project_root: Path) -> bool:
+    """Return True if *path* sits under a top-level folder that PRESERVE_PATHS already covers."""
+    try:
+        rel = path.resolve().relative_to(project_root.resolve())
+        return rel.parts[0].lower() in PRESERVE_PATHS
+    except Exception:
+        return False
 
 
 class _UpdateWorker(QObject):
@@ -127,6 +150,15 @@ class UpdateResultDialog(QDialog):
         )
         layout.addWidget(info)
 
+        if not r.is_git_repo:
+            preserved_label = QLabel(_PRESERVED_SUMMARY)
+            preserved_label.setWordWrap(True)
+            preserved_label.setStyleSheet(
+                "color: #2a6dc8; font-size: 11px; border: 1px solid #2a6dc8; "
+                "padding: 8px; border-radius: 4px;"
+            )
+            layout.addWidget(preserved_label)
+
         layout.addStretch()
         self._add_close_button(layout)
 
@@ -180,31 +212,45 @@ class UpdateResultDialog(QDialog):
         method_label.setStyleSheet("color: #888; font-size: 11px;")
         layout.addWidget(method_label)
 
-        # --- Insider-path warning (zip-mode only) ----------------------------
-        # Detect user-configured paths that live inside the project root.
-        # These would be swept by a naive zip update.  We auto-preserve them,
-        # but we must still warn the user clearly so they aren't surprised.
+        # --- Zip-mode info block ---------------------------------------------
+        # Always show what gets preserved so users aren't afraid to update.
         self._insider_paths: list = []
         if not r.is_git_repo:
+            preserved_label = QLabel(_PRESERVED_SUMMARY)
+            preserved_label.setWordWrap(True)
+            preserved_label.setStyleSheet(
+                "color: #2a6dc8; font-size: 11px; border: 1px solid #2a6dc8; "
+                "padding: 8px; border-radius: 4px;"
+            )
+            layout.addWidget(preserved_label)
+
+            # --- Insider-path warning ----------------------------------------
+            # Detect user-configured paths that live inside the project root and
+            # are NOT already covered by PRESERVE_PATHS.  Only those are at risk.
             try:
                 self._insider_paths = self._updater.detect_user_paths_inside_root()
             except Exception:
                 pass  # fail silently — warning is best-effort
 
-        if self._insider_paths:
-            insider_names = "\n".join(f"  • {p}" for p in self._insider_paths)
+        at_risk_paths = [
+            p for p in self._insider_paths
+            if not _is_already_preserved(p, self._updater.project_root)
+        ]
+
+        if at_risk_paths:
+            insider_names = "\n".join(f"  • {p}" for p in at_risk_paths)
             risk_label = QLabel(
-                "🚨  WARNING — Paths inside the installer folder\n\n"
+                "🚨  WARNING — Unprotected paths inside the installer folder\n\n"
                 "The following user-configured locations are inside the installer\n"
-                "directory and would normally be deleted by a zip update:\n\n"
+                "directory and are NOT automatically preserved by the updater:\n\n"
                 f"{insider_names}\n\n"
                 "The updater will auto-preserve these paths this time, but\n"
-                "it is strongly recommended to move your game installation\n"
-                "outside the installer folder to avoid future accidents."
+                "it is strongly recommended to move these files/folders outside\n"
+                "the installer directory to avoid accidental data loss on future updates."
             )
             risk_label.setWordWrap(True)
             risk_label.setStyleSheet(
-                "color: #cc2222; font-size: 11px; font-weight: bold;"
+                "color: #cc2222; font-size: 11px; font-weight: bold; "
                 "border: 1px solid #cc2222; padding: 8px; border-radius: 4px;"
             )
             layout.addWidget(risk_label)
@@ -256,21 +302,27 @@ class UpdateResultDialog(QDialog):
         if self._update_thread is not None and self._update_thread.isRunning():
             return
 
-        # If user-configured paths live inside the installer root, require an
-        # explicit second confirmation before proceeding with the update.
-        insider_paths = getattr(self, "_insider_paths", [])
-        if insider_paths:
-            path_list = "\n".join(f"  • {p}" for p in insider_paths)
+        # If user-configured paths live inside the installer root AND are not
+        # already covered by PRESERVE_PATHS, require an explicit second
+        # confirmation before proceeding with the update.
+        all_insider_paths = getattr(self, "_insider_paths", [])
+        at_risk_paths = [
+            p for p in all_insider_paths
+            if not _is_already_preserved(p, self._updater.project_root)
+        ]
+        if at_risk_paths:
+            path_list = "\n".join(f"  • {p}" for p in at_risk_paths)
             reply = QMessageBox.warning(
                 self,
-                "Confirm Update With Insider Paths",
-                "⚠️  Your settings point to paths inside the installer folder:\n\n"
+                "Confirm Update With Unprotected Paths",
+                "⚠️  Your settings point to paths inside the installer folder\n"
+                "that are NOT automatically preserved:\n\n"
                 f"{path_list}\n\n"
-                "The updater will preserve these paths automatically.\n"
+                "The updater will preserve these paths automatically this time.\n"
                 "However, any sub-paths NOT listed in your settings will NOT\n"
                 "be protected.\n\n"
-                "It is strongly recommended to move your game installation\n"
-                "outside the installer folder.\n\n"
+                "It is strongly recommended to move these files/folders outside\n"
+                "the installer directory to avoid accidental data loss on future updates.\n\n"
                 "Proceed with the update anyway?",
                 QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
                 QMessageBox.StandardButton.No,

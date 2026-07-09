@@ -55,6 +55,8 @@ PRESERVE_PATHS: set[str] = {
     ".browser-profile",
     ".git",
     ".venv",
+    "venv",           # alternate venv layout some users create without the dot
+    ".env",           # AppConfig env_file — user env overrides at the project root
     "tools",          # portable git, python, AssetStudio, vgmstream — never wipe
     "__pycache__",
     ".pytest_cache",
@@ -187,6 +189,9 @@ class Updater:
             "browser_profile_dir",
             "assetstudio_cli_path",
             "vgmstream_path",
+            "jdlo_auth_path",   # Optional[Path] — JDLO auth file may live inside installer
+            "ffmpeg_path",      # str field, but can hold an absolute path inside installer
+            "ffprobe_path",     # same
         }
 
         found: list[Path] = []
