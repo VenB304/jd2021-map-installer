@@ -105,11 +105,15 @@ class BinaryReader:
     def skip(self, n: int) -> None:
         self.pos += n
 
+    def clean_string(self, n: int, errors: str = "ignore") -> str:
+        s = self.data[self.pos : self.pos + n].decode("utf-8", errors=errors)
+        self.pos += n
+        return s.split("\x00", 1)[0]
+
     def len_string(self) -> str:
         n = self.u32()
-        s = self.data[self.pos : self.pos + n].decode("utf-8", errors="replace")
-        self.pos += n
-        return s
+        return self.clean_string(n, errors="replace")
+
 
     def interned_string(self) -> int:
         return self.u32()
@@ -365,11 +369,9 @@ def parse_dtape(data: bytes, map_name: str) -> DanceTape:
 
         if entry_class in (108, 112, 56):
             namelen = r.u32()
-            name = r.data[r.pos : r.pos + namelen].decode("utf-8", errors="ignore")
-            r.pos += namelen
+            name = r.clean_string(namelen, errors="ignore")
             pathlen = r.u32()
-            path = r.data[r.pos : r.pos + pathlen].decode("utf-8", errors="ignore")
-            r.pos += pathlen
+            path = r.clean_string(pathlen, errors="ignore")
             r.u32()  # atlindex
             r.u32()  # unknown2
 
@@ -640,8 +642,7 @@ def parse_ktape(data: bytes, map_name: str) -> KaraokeTape:
             pitch = struct.unpack_from(">f", r.data, r.pos)[0]
             r.pos += 4
             lyriclen = r.u32()
-            lyric = r.data[r.pos : r.pos + lyriclen].decode("utf-8", errors="ignore")
-            r.pos += lyriclen
+            lyric = r.clean_string(lyriclen, errors="ignore")
 
             if entry_class == 80:
                 isendofline = r.u32()
@@ -699,11 +700,9 @@ def parse_cinematic_tape(data: bytes, map_name: str) -> CinematicTape:
                 entry_duration = r.u32()
                 r.skip(4)  # empty
                 pathlen = r.u32()
-                path = r.data[r.pos : r.pos + pathlen].decode("utf-8", errors="ignore")
-                r.pos += pathlen
+                path = r.clean_string(pathlen, errors="ignore")
                 filelen = r.u32()
-                filename = r.data[r.pos : r.pos + filelen].decode("utf-8", errors="ignore")
-                r.pos += filelen
+                filename = r.clean_string(filelen, errors="ignore")
                 r.skip(4)
                 if entries > 1:
                     r.skip(12)
@@ -723,11 +722,9 @@ def parse_cinematic_tape(data: bytes, map_name: str) -> CinematicTape:
                 entry_starttime = r.u32()
                 entry_duration = r.u32()
                 pathlen = r.u32()
-                path = r.data[r.pos : r.pos + pathlen].decode("utf-8", errors="ignore")
-                r.pos += pathlen
+                path = r.clean_string(pathlen, errors="ignore")
                 filelen = r.u32()
-                filename = r.data[r.pos : r.pos + filelen].decode("utf-8", errors="ignore")
-                r.pos += filelen
+                filename = r.clean_string(filelen, errors="ignore")
                 r.skip(4)
                 loop = r.u32()
                 if entries > 1:

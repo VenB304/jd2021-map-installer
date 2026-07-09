@@ -697,3 +697,19 @@ def test_batch_worker_merges_bundle_map_list_and_skips_duplicates(tmp_path: Path
     assert discovered
     assert discovered[0] == ["MapA", "MapB", "MapC"]
     assert installed == ["MapA", "MapB", "MapC"]
+
+
+def test_binary_reader_null_termination():
+    from jd2021_installer.parsers.binary_ckd import BinaryReader
+    # Test len_string with trailing null byte
+    data = b"\x00\x00\x00\x06hello\x00"
+    reader = BinaryReader(data)
+    assert reader.len_string() == "hello"
+    assert reader.pos == 10
+
+    # Test clean_string with middle null byte
+    data2 = b"\x00\x00\x00\x07abc\x00def"
+    reader2 = BinaryReader(data2)
+    assert reader2.len_string() == "abc"
+    assert reader2.pos == 11
+

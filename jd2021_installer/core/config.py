@@ -119,6 +119,32 @@ class AppConfig(BaseModel):
         pattern=r"^(fallback_down|fallback_up)$"
     )
 
+    def __init__(self, **data):
+        super().__init__(**data)
+        project_root = Path(__file__).resolve().parent.parent.parent
+        # Resolve Path fields
+        for field in (
+            "game_directory",
+            "download_root",
+            "cache_directory",
+            "temp_directory",
+            "app_icon_path",
+            "gesture_template_path",
+            "browser_profile_dir",
+        ):
+            val = getattr(self, field, None)
+            if val is not None:
+                p = Path(val)
+                if not p.is_absolute():
+                    setattr(self, field, (project_root / p).resolve())
+        # Resolve string paths (e.g. ffmpeg, ffprobe, vgmstream, assetstudio_cli_path)
+        for field in ("ffmpeg_path", "ffprobe_path", "vgmstream_path", "assetstudio_cli_path"):
+            val = getattr(self, field, None)
+            if val is not None and isinstance(val, str):
+                p = Path(val)
+                if (p.is_absolute() is False) and (len(p.parts) > 1 or p.suffix):
+                    setattr(self, field, str((project_root / p).resolve()))
+
     class Config:
         env_prefix = "JD2021_"
         env_file = ".env"
